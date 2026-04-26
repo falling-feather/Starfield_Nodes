@@ -163,6 +163,13 @@ export interface GameState {
   weatherClouds: WeatherCloud[];
   /** 屏幕震动强度（外部触发） */
   screenShake: number;
+  // === §25 bench instrumentation：累计统计字段（局内单调递增） ===
+  /** 局内累计敌人击杀数 */
+  enemiesKilled: number;
+  /** 局内累计玩家建造节点数（不含初始/敌人节点） */
+  nodesBuilt: number;
+  /** 局内累计资源花费（建造扣费总和） */
+  resourcesSpent: number;
 }
 
 /** 漂浮星云 — 暂时遮挡视野 */

@@ -136,6 +136,9 @@ export class Game {
       timeScale: 1,
       weatherClouds: [],
       screenShake: 0,
+      enemiesKilled: 0,
+      nodesBuilt: 0,
+      resourcesSpent: 0,
     };
   }
 
@@ -174,6 +177,9 @@ export class Game {
 
     this.nodesBuilt = 0;
     this.enemiesKilled = 0;
+    this.state.enemiesKilled = 0;
+    this.state.nodesBuilt = 0;
+    this.state.resourcesSpent = 0;
     this.statsSaved = false;
     this.bossSpawned = false;
     this.elapsedTime = 0;
@@ -350,7 +356,10 @@ export class Game {
     const enemiesBefore = this.state.enemies.length;
     updateEnemies(this.state, dt);
     const killed = enemiesBefore - this.state.enemies.length;
-    if (killed > 0) this.enemiesKilled += killed;
+    if (killed > 0) {
+      this.enemiesKilled += killed;
+      this.state.enemiesKilled += killed; // §25 bench instrumentation
+    }
 
     // 核心受损检测（成就用）
     if (this.noCoreDamage) {

@@ -10,7 +10,7 @@ import {
   SPAWN_DIST_RANDOM,
   BOSS_SPAWN_DIST,
 } from './data/spawn';
-import { ENEMY_DEATH_REWARDS, DEFAULT_ENEMY_REWARD } from './data/balance';
+import { ENEMY_DEATH_REWARDS, DEFAULT_ENEMY_REWARD, RUNTIME } from './data/balance';
 import { dist } from './graph';
 import { getNebulaSlowFactor } from './graph';
 import { sfxHit, sfxKill, sfxSplit, sfxDisrupt, sfxNodeHit } from './audio';
@@ -34,7 +34,7 @@ function pointToSegDist(
 
 export function spawnEnemy(state: GameState, difficultyMult: number = 1): void {
   const wave = state.wave;
-  const count = 1 + Math.floor(wave / 3);
+  const count = 1 + Math.floor(wave / RUNTIME.enemySpawnCountDivisor);
 
   // 找到玩家最前线节点的位置，从附近生成敌人
   const aliveNodes = state.nodes.filter(n => n.status !== 'destroyed');
