@@ -9,7 +9,8 @@ import {
 import { NODE_CONFIGS } from './data/nodes';
 import { EDGE_CONFIGS } from './data/edges';
 import { COLORS } from './ui-tokens';
-import { OVERCHARGE, COMBAT } from './data/balance';
+import { OVERCHARGE, COMBAT, ENERGY_COSTS, ENERGY_GAINS, ECONOMY } from './data/balance';
+import { ENEMY_BASE_SPEED, DEFAULT_ENEMY_BASE_SPEED } from './data/enemies';
 import { sfxTesla, sfxFactory, sfxTrapExplode, sfxShoot, sfxOvercharge } from './audio';
 import { rand } from './rng';
 import { emitDestructionParticles } from './particles';
@@ -416,7 +417,7 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
       case 'mine':
         // 矿机产出资源 — 超载: 3倍 | 进化(精炼厂): +邻居数量奖励 + 产出晶体
         {
-          let output = (oc ? 6 : 2) * node.level;
+          let output = (oc ? ECONOMY.mineOutputOvercharge : ECONOMY.mineOutputBase) * node.level;
           if (ev) {
             const neighbors = state.edges.filter(
               e => e.sourceId === node.id || e.targetId === node.id
@@ -427,17 +428,17 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
           }
           state.resources += output;
         }
-        node.currentEnergy -= 5;
+        node.currentEnergy -= ENERGY_COSTS.mine;
         break;
       case 'turret':
         // 炮塔 — 进化(狙击炮): 射程翻倍+穿透 | 超载: 双发
         fireTurret(state, node, b.damageMultiplier, b.rangeMultiplier * (ev ? 2 : 1), ev);
         if (oc) fireTurret(state, node, b.damageMultiplier, b.rangeMultiplier * (ev ? 2 : 1), ev);
-        node.currentEnergy -= oc ? 15 : 10;
+        node.currentEnergy -= oc ? ENERGY_COSTS.turret.oc : ENERGY_COSTS.turret.n;
         break;
       case 'energy':
         // 能量站 — 进化(核聚变): 双倍自充+自动充能最低邻居 | 超载: 广播
-        node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + (ev ? 6 : 3));
+        node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + (ev ? ENERGY_GAINS.energy.e : ENERGY_GAINS.energy.n));
         if (ev) evolvedEnergyAssist(state, node);
         if (oc) overchargeEnergyBroadcast(state, node);
         break;
@@ -446,15 +447,15 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         if (oc) overchargeHealPulse(state, node);
         else healNearbyNodes(state, node, ev);
         if (ev) evolvedShieldArmor(state, node);
-        node.currentEnergy -= oc ? 12 : 8;
+        node.currentEnergy -= oc ? ENERGY_COSTS.shield.oc : ENERGY_COSTS.shield.n;
         break;
       case 'tesla':
         // 连锁塔 — 进化(雷暴): 电击连锁跳跃 | 超载: 双倍
-        node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + 5);
+        node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + ENERGY_GAINS.tesla);
         teslaDamageEnemies(state, node, b.damageMultiplier * (oc ? 2 : 1), ev);
         break;
       case 'beacon':
-        node.currentEnergy -= 2;
+        node.currentEnergy -= ENERGY_COSTS.beacon;
         break;
       case 'factory':
         // 工厂 — 进化(航母): AoE附带减速 | 超载: 加速
@@ -462,7 +463,7 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
           const interval = oc ? 2 : 4;
           if (state.tick % interval === 0) {
             factoryAttack(state, node, b.damageMultiplier, b.rangeMultiplier, ev);
-            node.currentEnergy -= 15;
+            node.currentEnergy -= ENERGY_COSTS.factory;
           }
         }
         break;
@@ -471,7 +472,7 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         if (ev) evolvedMagnetPull(state, node, b.rangeMultiplier, oc);
         else if (oc) overchargeMagnetSlow(state, node, b.rangeMultiplier);
         else magnetSlowEnemies(state, node, b.rangeMultiplier);
-        node.currentEnergy -= 5;
+        node.currentEnergy -= ENERGY_COSTS.magnet;
         break;
       case 'trap':
         if (trapDetonate(state, node, b.damageMultiplier)) {
@@ -482,61 +483,61 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         // 维修站 — 进化(纳米工坊): 双倍修复+更大范围 | 超载: 全力修复脉冲
         if (oc) overchargeRepairPulse(state, node, ev);
         else repairNearbyNodes(state, node, ev);
-        node.currentEnergy -= oc ? 15 : 8;
+        node.currentEnergy -= oc ? ENERGY_COSTS.repair.oc : ENERGY_COSTS.repair.n;
         break;
       case 'sniper':
         // 狙击手 — 每3tick开一枪 | 进化(死神): 击杀溅射 | 超载: 3倍暴击
         if (state.tick % 3 === 0) {
           fireSniper(state, node, b.damageMultiplier, b.rangeMultiplier * (ev ? 1.5 : 1), ev, oc);
-          node.currentEnergy -= oc ? 20 : 12;
+          node.currentEnergy -= oc ? ENERGY_COSTS.sniper.oc : ENERGY_COSTS.sniper.n;
         }
         break;
       case 'buffer':
         // 缓冲器 — 进化(增幅器): 双倍充能+更大范围 | 超载: 能量脉冲
         if (oc) overchargeBufferPulse(state, node, ev);
         else bufferBoostNearby(state, node, ev);
-        node.currentEnergy -= oc ? 12 : 6;
+        node.currentEnergy -= oc ? ENERGY_COSTS.buffer.oc : ENERGY_COSTS.buffer.n;
         break;
       case 'collector':
         // 采集器 — 附近敌人越多产出越高 | 进化(量子拾荒): 产晶体 | 超载: 无上限
         collectorHarvest(state, node, ev, oc);
-        node.currentEnergy -= 4;
+        node.currentEnergy -= ENERGY_COSTS.collector;
         break;
       case 'interceptor':
         // 拦截器 — 快速点防御 | 进化(护卫者): 双发+扩大范围 | 超载: 全方位扫射
         fireInterceptor(state, node, b.damageMultiplier, ev, oc);
         if (ev) fireInterceptor(state, node, b.damageMultiplier, ev, oc);
-        node.currentEnergy -= oc ? 8 : 5;
+        node.currentEnergy -= oc ? ENERGY_COSTS.interceptor.oc : ENERGY_COSTS.interceptor.n;
         break;
       case 'radar':
         // 雷达 — 锁定敌人DoT | 进化(全息雷达): 隐身双倍+范围大 | 超载: 全范围扫描
         radarLockDamage(state, node, b.damageMultiplier, ev, oc);
-        node.currentEnergy -= 3;
+        node.currentEnergy -= ENERGY_COSTS.radar;
         break;
       case 'portal':
         // 传送门 — 将敌人传送回远处 | 进化(虫洞门): 2目标+更远 | 超载: 全部传送
         portalTeleport(state, node, ev, oc);
-        node.currentEnergy -= 5;
+        node.currentEnergy -= ENERGY_COSTS.portal;
         break;
       case 'blackhole':
         // 黑洞 — 引力拉拽+碾压伤害 | 进化(奇点): 更强拉拽+中心重伤 | 超载: 全域引力
         blackholeGravity(state, node, b.damageMultiplier, ev, oc);
-        node.currentEnergy -= 6;
+        node.currentEnergy -= ENERGY_COSTS.blackhole;
         break;
       case 'echo':
         // 回声塔 — 复制相邻节点能力 | 进化(回响核心): 同时复制全部 | 超载: 增强效果
         echoMimic(state, node, b, ev, oc);
-        node.currentEnergy -= 4;
+        node.currentEnergy -= ENERGY_COSTS.echo;
         break;
       case 'toxin':
         // 毒雾 — 范围持续毒伤+减速 | 进化(瘟疫之源): 死亡扩散+更强 | 超载: 大范围剧毒
         toxinCloud(state, node, b.damageMultiplier, ev, oc);
-        node.currentEnergy -= 3;
+        node.currentEnergy -= ENERGY_COSTS.toxin;
         break;
       case 'arc':
         // 电弧链 — 闪电弹跳多目标 | 进化(裂雷): 更多弹跳+更高伤害 | 超载: 无衰减
         arcChainLightning(state, node, b.damageMultiplier, ev, oc);
-        node.currentEnergy -= 4;
+        node.currentEnergy -= ENERGY_COSTS.arc;
         break;
       case 'kamikaze':
         // 自爆 — 充能满后核爆自毁 | 进化(超新星): 更大范围+残留伤害 | 超载: 立即引爆
@@ -684,9 +685,9 @@ function arcChainLightning(state: GameState, arc: GameNode, damageMult: number, 
 
   const range = overcharged ? COMBAT.arc.range.oc : (evolved ? COMBAT.arc.range.e : COMBAT.arc.range.n);
   const baseDmg = (overcharged ? COMBAT.arc.damage.oc : (evolved ? COMBAT.arc.damage.e : COMBAT.arc.damage.n)) * arc.level * damageMult;
-  const maxBounces = overcharged ? 6 : (evolved ? 4 : 2);
+  const maxBounces = overcharged ? COMBAT.arc.maxBounces.oc : (evolved ? COMBAT.arc.maxBounces.e : COMBAT.arc.maxBounces.n);
   const bounceRange = evolved ? COMBAT.arc.bounceRange.e : COMBAT.arc.bounceRange.n;
-  const decay = overcharged ? 1.0 : (evolved ? 0.9 : 0.8);
+  const decay = overcharged ? COMBAT.arc.decay.oc : (evolved ? COMBAT.arc.decay.e : COMBAT.arc.decay.n);
 
   // 找第一个目标（范围内最近的）
   let firstTarget: typeof state.enemies[0] | null = null;
@@ -775,7 +776,7 @@ function echoMimic(state: GameState, echo: GameNode, b: TechBonuses, evolved: bo
   }
   if (neighbors.length === 0) return;
 
-  const echoMult = overcharged ? 1.5 : 1.0;
+  const echoMult = overcharged ? COMBAT.echo.overchargeMult : 1.0;
   const dmg = b.damageMultiplier * echoMult;
   const rng = b.rangeMultiplier;
 
@@ -787,7 +788,7 @@ function echoMimic(state: GameState, echo: GameNode, b: TechBonuses, evolved: bo
     const proxy: GameNode = {
       ...echo,
       type: target.type,
-      level: Math.max(1, Math.ceil(echo.level * 0.8)), // 稍弱于原版
+      level: Math.max(1, Math.ceil(echo.level * COMBAT.echo.proxyLevelScale)), // 稍弱于原版
     };
 
     switch (target.type) {
@@ -814,7 +815,7 @@ function blackholeGravity(state: GameState, bh: GameNode, damageMult: number, ev
 
   const range = overcharged ? COMBAT.blackhole.range.oc : (evolved ? COMBAT.blackhole.range.e : COMBAT.blackhole.range.n);
   const crushRange = overcharged ? COMBAT.blackhole.crushRange.oc : (evolved ? COMBAT.blackhole.crushRange.e : COMBAT.blackhole.crushRange.n);
-  const pullStr = overcharged ? 1.2 : (evolved ? 0.8 : 0.5);
+  const pullStr = overcharged ? COMBAT.blackhole.pullStrength.oc : (evolved ? COMBAT.blackhole.pullStrength.e : COMBAT.blackhole.pullStrength.n);
   const crushDmg = (overcharged ? COMBAT.blackhole.crushDamage.oc : (evolved ? COMBAT.blackhole.crushDamage.e : COMBAT.blackhole.crushDamage.n)) * bh.level * damageMult;
 
   for (const enemy of state.enemies) {
@@ -832,8 +833,8 @@ function blackholeGravity(state: GameState, bh: GameNode, damageMult: number, ev
     // 碾压伤害 — 中心区域
     if (d <= crushRange) {
       let dmg = crushDmg * (1 - d / crushRange); // 越近伤害越高
-      // 进化: 极近(<20px)三倍伤害
-      if (evolved && d < 20) dmg *= 3;
+      // 进化: 极近冗伤害
+      if (evolved && d < COMBAT.blackhole.closeDistance) dmg *= COMBAT.blackhole.closeDamageMult;
       enemy.hp -= dmg;
     }
   }
@@ -920,27 +921,27 @@ function fireInterceptor(state: GameState, interceptor: GameNode, damageMult: nu
 
 // ===== 采集器收集资源 =====
 function collectorHarvest(state: GameState, collector: GameNode, evolved: boolean, overcharged: boolean): void {
-  const range = overcharged ? 300 : (evolved ? 240 : 180);
+  const range = overcharged ? COMBAT.collector.range.oc : (evolved ? COMBAT.collector.range.e : COMBAT.collector.range.n);
   let nearbyCount = 0;
   for (const enemy of state.enemies) {
     if (dist(collector, enemy) <= range) nearbyCount++;
   }
   if (nearbyCount === 0) return;
 
-  const cap = overcharged ? nearbyCount : Math.min(nearbyCount, 3);
-  const output = cap * collector.level * (evolved ? 1.5 : 1);
+  const cap = overcharged ? nearbyCount : Math.min(nearbyCount, COMBAT.collector.maxNearbyCap);
+  const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1);
   state.resources += Math.floor(output);
 
-  // 进化(量子拾荒): 3+敌人在范围内时每tick产1晶体
-  if (evolved && nearbyCount >= 3) {
+  // 进化(量子拾荒): crystalThreshold+敌人在范围内时每tick产1晶体
+  if (evolved && nearbyCount >= COMBAT.collector.crystalThreshold) {
     state.crystals += 1;
   }
 }
 
 // ===== 缓冲器能量增幅 =====
 function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean): void {
-  const range = evolved ? 200 : 160;
-  const boost = (evolved ? 4 : 2) * buffer.level;
+  const range = evolved ? COMBAT.buffer.range.e : COMBAT.buffer.range.n;
+  const boost = (evolved ? COMBAT.buffer.boostPerLevel.e : COMBAT.buffer.boostPerLevel.n) * buffer.level;
   for (const node of state.nodes) {
     if (node.id === buffer.id || node.status === 'destroyed') continue;
     if (node.owner === 'neutral') continue;
@@ -952,14 +953,14 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
 
 /** 超载缓冲器：大范围能量脉冲 + 临时超充 */
 function overchargeBufferPulse(state: GameState, buffer: GameNode, evolved: boolean): void {
-  const range = evolved ? 280 : 230;
-  const boost = (evolved ? 12 : 8) * buffer.level;
+  const range = evolved ? COMBAT.bufferPulse.range.e : COMBAT.bufferPulse.range.n;
+  const boost = (evolved ? COMBAT.bufferPulse.boostPerLevel.e : COMBAT.bufferPulse.boostPerLevel.n) * buffer.level;
   for (const node of state.nodes) {
     if (node.id === buffer.id || node.status === 'destroyed') continue;
     if (node.owner === 'neutral') continue;
     if (dist(buffer, node) <= range) {
-      // 超充：可超过 maxEnergy 的 120%
-      const cap = node.maxEnergy * 1.2;
+      // 超充：可超过 maxEnergy 的 overchargeCapRatio
+      const cap = node.maxEnergy * COMBAT.bufferPulse.overchargeCapRatio;
       node.currentEnergy = Math.min(cap, node.currentEnergy + boost);
     }
   }
@@ -995,7 +996,7 @@ function fireSniper(state: GameState, sniper: GameNode, damageMult: number, rang
     if (target.enemy.hp <= 0) {
       // 溅射伤害
       const splashRange = COMBAT.sniper.splashRange;
-      const splashDmg = damage * 0.5;
+      const splashDmg = damage * COMBAT.sniper.splashDamageRatio;
       for (const e of state.enemies) {
         if (e.id === target.enemy.id) continue;
         if (dist(target.enemy, e) <= splashRange) {
@@ -1120,7 +1121,7 @@ function factoryAttack(state: GameState, factory: GameNode, damageMult: number, 
       enemy.hitFlash = 1;
       // 进化(航母): AoE 附带减速
       if (evolved) {
-        enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * 0.5);
+        enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * COMBAT.factory.evolvedSlowFactor);
       }
     }
   }
@@ -1169,22 +1170,22 @@ function overchargeEnergyBroadcast(state: GameState, energyNode: GameNode): void
 
     const neighbor = nodeMap.get(neighborId);
     if (!neighbor || neighbor.status === 'destroyed') continue;
-    // 忽略容量限制，可超过 maxEnergy（但不超过 120%）
-    const boost = 10;
-    const cap = neighbor.maxEnergy * 1.2;
+    // 忽略容量限制，可超过 maxEnergy（但不超过 capRatio）
+    const boost = COMBAT.energy.ocBroadcastBoost;
+    const cap = neighbor.maxEnergy * COMBAT.energy.ocBroadcastCapRatio;
     neighbor.currentEnergy = Math.min(cap, neighbor.currentEnergy + boost);
   }
 }
 
 /** 超载护盾：更大范围治疗 + 恢复邻居能量 */
 function overchargeHealPulse(state: GameState, shield: GameNode): void {
-  const range = 220; // 正常 150，超载 220
+  const range = COMBAT.shield.ocPulseRange;
   for (const node of state.nodes) {
     if (node.id === shield.id || node.status === 'destroyed') continue;
     if (dist(shield, node) <= range) {
-      node.hp = Math.min(node.maxHp, node.hp + 8 * shield.level);
-      node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + 5);
-      if (node.status === 'damaged' && node.hp > node.maxHp * 0.5) {
+      node.hp = Math.min(node.maxHp, node.hp + COMBAT.shield.ocPulseHealPerLevel * shield.level);
+      node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + COMBAT.shield.ocPulseEnergyHeal);
+      if (node.status === 'damaged' && node.hp > node.maxHp * COMBAT.shield.ocPulseStatusRestoreRatio) {
         node.status = 'normal';
       }
     }
@@ -1229,20 +1230,20 @@ function evolvedEnergyAssist(state: GameState, energyNode: GameNode): void {
     }
   }
 
-  if (lowestNeighbor && lowestRatio < 0.8) {
-    const boost = 8;
+  if (lowestNeighbor && lowestRatio < COMBAT.energy.evolvedAssistThreshold) {
+    const boost = COMBAT.energy.evolvedAssistBoost;
     lowestNeighbor.currentEnergy = Math.min(lowestNeighbor.maxEnergy, lowestNeighbor.currentEnergy + boost);
   }
 }
 
 /** 进化护盾(堡垒): 范围内节点受到伤害减少（通过恢复HP模拟） */
 function evolvedShieldArmor(state: GameState, shield: GameNode): void {
-  const range = 200;
+  const range = COMBAT.shield.evolvedArmorRange;
   for (const node of state.nodes) {
     if (node.id === shield.id || node.status === 'destroyed') continue;
     if (dist(shield, node) <= range) {
       // 每tick恢复少量HP（模拟30%伤害减免效果）
-      node.hp = Math.min(node.maxHp, node.hp + 3);
+      node.hp = Math.min(node.maxHp, node.hp + COMBAT.shield.evolvedArmorHealPerTick);
     }
   }
 }
@@ -1255,7 +1256,7 @@ function evolvedMagnetPull(state: GameState, magnet: GameNode, rangeMult: number
 
   for (const enemy of state.enemies) {
     const d = dist(magnet, enemy);
-    if (d <= range && d > 10) {
+    if (d <= range && d > COMBAT.magnetEvolved.minPullDist) {
       enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * slowFactor);
       // 拉拽
       const dx = magnet.x - enemy.x;
@@ -1267,17 +1268,7 @@ function evolvedMagnetPull(state: GameState, magnet: GameNode, rangeMult: number
 }
 
 function getBaseSpeed(type: string): number {
-  switch (type) {
-    case 'scout': return 2.5;
-    case 'heavy': return 1;
-    case 'swarm': return 3;
-    case 'boss': return 0.5;
-    case 'stealth': return 2.8;
-    case 'splitter': return 1.5;
-    case 'disruptor': return 2.0;
-    case 'healer': return 1.2;
-    default: return 2;
-  }
+  return ENEMY_BASE_SPEED[type] ?? DEFAULT_ENEMY_BASE_SPEED;
 }
 
 // ===== 陷阱引爆 =====

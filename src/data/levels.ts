@@ -54,7 +54,8 @@ export const LEVELS: LevelConfig[] = [
     objective: 'boss',
     targetWaves: 20,
     hasBoss: true,
-    bossWave: 15,
+    // §24 调优 ④：bossWave 15 -> 18，给玩家更多时间扩张
+    bossWave: 18,
     timeLimit: 0,
     nodeCount: 40,
     difficultyMult: 1.2,
@@ -114,7 +115,8 @@ export const LEVELS: LevelConfig[] = [
     objective: 'boss',
     targetWaves: 25,
     hasBoss: true,
-    bossWave: 20,
+    // §24 调优 ④：bossWave 20 -> 22
+    bossWave: 22,
     timeLimit: 0,
     nodeCount: 45,
     difficultyMult: 1.8,

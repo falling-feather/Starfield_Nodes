@@ -517,6 +517,9 @@ export class InputManager {
     const node = createNode(x, y, this.buildMode);
     this.state.nodes.push(node);
     this.state.resources -= cost;
+    // §25 bench instrumentation：记录玩家建造行为
+    this.state.nodesBuilt += 1;
+    this.state.resourcesSpent += cost;
     sfxBuild();
     this.buildMode = null;
   }

@@ -29,7 +29,9 @@ export const NODE_CONFIGS: Record<NodeType, {
     glowColor: '#ffaa00', cost: 40, description: '矿机 - 产生资源',
   },
   shield: {
-    maxEnergy: 100, maxHp: 200, activationThreshold: 40, radius: 20,
+    // §24 调优 ③：maxHp 200 -> 300（×1.5），增强 wave 8-9 阵地韧性
+    // §29.3 复核：autoUpgrade 下边际为零（升到 level 5 后 maxHp×2.25 主导），但保留为 manual play 兜底
+    maxEnergy: 100, maxHp: 300, activationThreshold: 40, radius: 20,
     glowColor: '#8844ff', cost: 60, description: '护盾 - 保护附近节点',
   },
   relay: {
