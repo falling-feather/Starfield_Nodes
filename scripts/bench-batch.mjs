@@ -37,6 +37,8 @@ function parseArgs(argv) {
     nodesMatrix: '',
     out: 'bench.csv',
     timeoutMs: 60000,
+    autoUpgrade: false,
+    abAutoUpgrade: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
@@ -49,8 +51,10 @@ function parseArgs(argv) {
     else if (k === '--nodes-matrix') { out.nodesMatrix = v; i++; }
     else if (k === '--out') { out.out = v; i++; }
     else if (k === '--timeout') { out.timeoutMs = parseInt(v, 10) || 60000; i++; }
+    else if (k === '--auto-upgrade') { out.autoUpgrade = true; }
+    else if (k === '--ab-autoupgrade') { out.abAutoUpgrade = true; }
     else if (k === '-h' || k === '--help') {
-      console.log('Usage: node scripts/bench-batch.mjs [--seeds 1,2,3] [--levels 1] [--waves 10] [--speed 8] [--nodes a,b,c | --nodes-matrix "name1=a,b;name2=a,b,c"] [--out bench.csv] [--timeout 60000]');
+      console.log('Usage: node scripts/bench-batch.mjs [--seeds 1,2,3] [--levels 1] [--waves 10] [--speed 8] [--nodes a,b,c | --nodes-matrix "name1=a,b;name2=a,b,c"] [--out bench.csv] [--timeout 60000] [--auto-upgrade] [--ab-autoupgrade]');
       process.exit(0);
     }
   }
@@ -146,44 +150,50 @@ async function main() {
 
   const results = [];
   let runIdx = 0;
+  // §30：--ab-autoupgrade 下每 (seed,level,pool) 跑两次（autoUpgrade=0 和 =1）
+  const auModes = args.abAutoUpgrade ? [false, true] : [args.autoUpgrade];
+  const totalRunsActual = totalRuns * auModes.length;
+  if (args.abAutoUpgrade) console.log(`[bench-batch] AB mode: ×${auModes.length} runs (autoUpgrade=off,on) = ${totalRunsActual} total`);
   for (const levelId of levels) {
     for (const pool of nodePools) {
       for (const seed of seeds) {
-        runIdx++;
-        const url = `${previewUrl}?bench=1&seed=${seed}&level=${levelId}&waves=${args.waves}&speed=${args.speed}&nodes=${encodeURIComponent(pool.nodes)}`;
-        const page = await ctx.newPage();
-        page.on('console', (msg) => {
-          const t = msg.type();
-          if (t === 'error' || t === 'warning' || /\[bench\]|\[seed\]/.test(msg.text())) {
-            console.log(`  [page:${t}] ${msg.text()}`);
-          }
-        });
-        page.on('pageerror', (err) => console.log(`  [page:pageerror] ${err.message}`));
-        const t0 = Date.now();
-        try {
-          await page.goto(url, { waitUntil: 'load' });
-          const result = await page.waitForFunction(
-            () => /** @type {any} */ (window).__benchResult,
-            null,
-            { timeout: args.timeoutMs }
-          );
-          const data = await result.jsonValue();
-          // 注入 pool 元信息（客户端不知道 pool 名）
-          data.poolName = pool.name;
-          data.nodes = pool.nodes;
-          const wallMs = Date.now() - t0;
-          console.log(`[bench-batch] (${runIdx}/${totalRuns}) pool=${pool.name} seed=${seed} level=${levelId} → ${data.outcome} wave=${data.reachedWave} score=${data.finalScore} ticks=${data.totalTicks} wall=${wallMs}ms`);
-          results.push(data);
-        } catch (err) {
-          console.error(`[bench-batch] pool=${pool.name} seed=${seed} level=${levelId} FAILED: ${err.message}`);
-          results.push({
-            seed, levelId, targetWaves: args.waves, speed: args.speed,
-            poolName: pool.name, nodes: pool.nodes,
-            reachedWave: -1, finalScore: -1, totalTicks: -1, finalNodeCount: -1, finalEnemyCount: -1,
-            outcome: 'error', elapsedMs: -1, perWave: [], error: err.message,
+        for (const au of auModes) {
+          runIdx++;
+          const url = `${previewUrl}?bench=1&seed=${seed}&level=${levelId}&waves=${args.waves}&speed=${args.speed}&nodes=${encodeURIComponent(pool.nodes)}${au ? '&autoUpgrade=1' : ''}`;
+          const page = await ctx.newPage();
+          page.on('console', (msg) => {
+            const t = msg.type();
+            if (t === 'error' || t === 'warning' || /\[bench\]|\[seed\]/.test(msg.text())) {
+              console.log(`  [page:${t}] ${msg.text()}`);
+            }
           });
-        } finally {
-          await page.close();
+          page.on('pageerror', (err) => console.log(`  [page:pageerror] ${err.message}`));
+          const t0 = Date.now();
+          try {
+            await page.goto(url, { waitUntil: 'load' });
+            const result = await page.waitForFunction(
+              () => /** @type {any} */ (window).__benchResult,
+              null,
+              { timeout: args.timeoutMs }
+            );
+            const data = await result.jsonValue();
+            data.poolName = pool.name;
+            data.nodes = pool.nodes;
+            data.autoUpgrade = au ? 1 : 0;
+            const wallMs = Date.now() - t0;
+            console.log(`[bench-batch] (${runIdx}/${totalRunsActual}) pool=${pool.name} seed=${seed} level=${levelId} au=${au?1:0} → ${data.outcome} wave=${data.reachedWave} score=${data.finalScore} ticks=${data.totalTicks} wall=${wallMs}ms`);
+            results.push(data);
+          } catch (err) {
+            console.error(`[bench-batch] pool=${pool.name} seed=${seed} level=${levelId} au=${au?1:0} FAILED: ${err.message}`);
+            results.push({
+              seed, levelId, targetWaves: args.waves, speed: args.speed,
+              poolName: pool.name, nodes: pool.nodes, autoUpgrade: au ? 1 : 0,
+              reachedWave: -1, finalScore: -1, totalTicks: -1, finalNodeCount: -1, finalEnemyCount: -1,
+              outcome: 'error', elapsedMs: -1, perWave: [], error: err.message,
+            });
+          } finally {
+            await page.close();
+          }
         }
       }
     }
@@ -194,12 +204,12 @@ async function main() {
   // ---------- outputs ----------
   const outPath = resolve(repoRoot, args.out);
   mkdirSync(dirname(outPath), { recursive: true });
-  const csvHeader = 'poolName,seed,levelId,targetWaves,speed,reachedWave,finalScore,totalTicks,finalNodeCount,finalEnemyCount,outcome,elapsedMs';
+  const csvHeader = 'poolName,seed,levelId,targetWaves,speed,autoUpgrade,reachedWave,finalScore,totalTicks,finalNodeCount,finalEnemyCount,outcome,elapsedMs';
   const csvLines = [csvHeader];
   for (const r of results) {
     csvLines.push([
       r.poolName ?? 'default',
-      r.seed, r.levelId, r.targetWaves, r.speed,
+      r.seed, r.levelId, r.targetWaves, r.speed, r.autoUpgrade ?? 0,
       r.reachedWave, r.finalScore, r.totalTicks,
       r.finalNodeCount, r.finalEnemyCount,
       r.outcome, r.elapsedMs,
@@ -237,6 +247,56 @@ async function main() {
         const sGo = sub.filter(r => r.outcome === 'gameover').length;
         const sRt = sub.filter(r => r.outcome === 'reached_target').length;
         console.log(`  [${pool.name.padEnd(12)}] avgScore=${sAvgScore.padStart(6)} avgWave=${sAvgWave} won=${sWon} gameover=${sGo} reached_target=${sRt} (n=${sub.length})`);
+      }
+    }
+
+    // §30 · AB 模式：并排 autoUpgrade=0 / =1 对比表
+    if (args.abAutoUpgrade) {
+      console.log('[bench-batch] AB autoUpgrade aggregate (off vs on):');
+      const groups = (k) => ok.filter(r => (r.autoUpgrade ?? 0) === k);
+      const fmt = (arr) => {
+        if (!arr.length) return 'n=0';
+        const s = (arr.reduce((a, r) => a + r.finalScore, 0) / arr.length).toFixed(1);
+        const w = (arr.reduce((a, r) => a + r.reachedWave, 0) / arr.length).toFixed(2);
+        const won = arr.filter(r => r.outcome === 'won').length;
+        return `n=${arr.length} avgScore=${s.padStart(6)} avgWave=${w} won=${won}`;
+      };
+      console.log(`  [autoUpgrade=off] ${fmt(groups(0))}`);
+      console.log(`  [autoUpgrade=on ] ${fmt(groups(1))}`);
+      for (const pool of nodePools) {
+        const off = ok.filter(r => r.poolName === pool.name && (r.autoUpgrade ?? 0) === 0);
+        const on  = ok.filter(r => r.poolName === pool.name && (r.autoUpgrade ?? 0) === 1);
+        if (!off.length && !on.length) continue;
+        console.log(`  [${pool.name.padEnd(12)}] off:${fmt(off)} | on:${fmt(on)}`);
+      }
+    }
+
+    // §32 · nodeStats 聚合：evolved 数 + level 分布（仅有 nodeStats 字段的 runs）
+    const withStats = ok.filter(r => r.nodeStats);
+    if (withStats.length) {
+      console.log('[bench-batch] nodeStats aggregate (avg per run):');
+      const aggGroup = (arr, label) => {
+        if (!arr.length) return;
+        const avgEv = {};
+        const avgLv = {};
+        for (const r of arr) {
+          for (const [t, c] of Object.entries(r.nodeStats.evolvedByType ?? {})) {
+            avgEv[t] = (avgEv[t] ?? 0) + c;
+          }
+          for (const [lv, c] of Object.entries(r.nodeStats.levelDist ?? {})) {
+            avgLv[lv] = (avgLv[lv] ?? 0) + c;
+          }
+        }
+        const evStr = Object.entries(avgEv).map(([t, c]) => `${t}=${(c/arr.length).toFixed(2)}`).join(' ') || '(none)';
+        const lvStr = ['1','2','3','4','5'].map(lv => `L${lv}=${((avgLv[lv]??0)/arr.length).toFixed(1)}`).join(' ');
+        console.log(`  [${label.padEnd(18)}] evolved: ${evStr}`);
+        console.log(`  [${label.padEnd(18)}] levelDist: ${lvStr} (n=${arr.length})`);
+      };
+      if (args.abAutoUpgrade) {
+        aggGroup(withStats.filter(r => (r.autoUpgrade ?? 0) === 0), 'autoUpgrade=off');
+        aggGroup(withStats.filter(r => (r.autoUpgrade ?? 0) === 1), 'autoUpgrade=on');
+      } else {
+        aggGroup(withStats, 'all');
       }
     }
   }

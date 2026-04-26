@@ -86,28 +86,43 @@ if (!args.noPerWave) {
   lines.push('');
   for (const [name, rs] of pools) {
     // 收集所有 wave_end 样本（按 wave 编号分组）
-    const byWave = new Map(); // wave -> {scores, enemy, elapsed}
+    const byWave = new Map(); // wave -> {scores, enemy, elapsed, nodes, kills, built, spent}
     for (const r of rs) {
       if (!Array.isArray(r.perWave)) continue;
       for (const w of r.perWave) {
         if (w.kind !== 'wave_end') continue;
-        if (!byWave.has(w.wave)) byWave.set(w.wave, { scores: [], enemy: [], elapsed: [], nodes: [] });
+        if (!byWave.has(w.wave)) byWave.set(w.wave, { scores: [], enemy: [], elapsed: [], nodes: [], kills: [], built: [], spent: [] });
         const slot = byWave.get(w.wave);
         slot.scores.push(w.score);
         slot.enemy.push(w.enemyCount);
         slot.elapsed.push(w.elapsedMs);
         slot.nodes.push(w.nodeCount);
+        // §25 instrumentation：旧报告无此字段时跳过聚合
+        if (typeof w.kills === 'number') slot.kills.push(w.kills);
+        if (typeof w.built === 'number') slot.built.push(w.built);
+        if (typeof w.spent === 'number') slot.spent.push(w.spent);
       }
     }
     if (byWave.size === 0) continue;
+    // 探测样本是否包含 §25 字段
+    const hasInstr = [...byWave.values()].some(s => s.kills.length > 0 || s.built.length > 0 || s.spent.length > 0);
     lines.push(`### pool: \`${name}\``);
     lines.push('');
-    lines.push('| wave | n | avgScore ± sd | avgEnemy | avgNodes | avgElapsedMs |');
-    lines.push('|-----:|--:|--------------:|---------:|---------:|-------------:|');
+    if (hasInstr) {
+      lines.push('| wave | n | avgScore ± sd | avgEnemy | avgNodes | avgKills | avgBuilt | avgSpent | avgElapsedMs |');
+      lines.push('|-----:|--:|--------------:|---------:|---------:|---------:|---------:|---------:|-------------:|');
+    } else {
+      lines.push('| wave | n | avgScore ± sd | avgEnemy | avgNodes | avgElapsedMs |');
+      lines.push('|-----:|--:|--------------:|---------:|---------:|-------------:|');
+    }
     const sortedWaves = [...byWave.keys()].sort((a, b) => a - b);
     for (const w of sortedWaves) {
       const s = byWave.get(w);
-      lines.push(`| ${w} | ${s.scores.length} | ${fmt(mean(s.scores), 1)} ± ${fmt(stddev(s.scores), 1)} | ${fmt(mean(s.enemy), 1)} | ${fmt(mean(s.nodes), 1)} | ${fmt(mean(s.elapsed), 0)} |`);
+      if (hasInstr) {
+        lines.push(`| ${w} | ${s.scores.length} | ${fmt(mean(s.scores), 1)} ± ${fmt(stddev(s.scores), 1)} | ${fmt(mean(s.enemy), 1)} | ${fmt(mean(s.nodes), 1)} | ${fmt(mean(s.kills), 1)} | ${fmt(mean(s.built), 1)} | ${fmt(mean(s.spent), 0)} | ${fmt(mean(s.elapsed), 0)} |`);
+      } else {
+        lines.push(`| ${w} | ${s.scores.length} | ${fmt(mean(s.scores), 1)} ± ${fmt(stddev(s.scores), 1)} | ${fmt(mean(s.enemy), 1)} | ${fmt(mean(s.nodes), 1)} | ${fmt(mean(s.elapsed), 0)} |`);
+      }
     }
     lines.push('');
   }
