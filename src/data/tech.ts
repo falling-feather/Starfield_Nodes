@@ -1,0 +1,123 @@
+// 科技树数据层
+// 抽离自 src/tech.ts（Phase B-1）
+import type { TechNode } from '../tech';
+
+export function createTechTree(): TechNode[] {
+  return [
+    // === Tier 1: 基础科技（无前置） ===
+    {
+      id: 'efficient_links',
+      name: '高效链路',
+      description: '连线带宽 +4',
+      cost: 80,
+      icon: '⟡',
+      color: '#00ffff',
+      unlocked: false,
+      requires: [],
+      effect: { type: 'boost_throughput', amount: 4 },
+    },
+    {
+      id: 'reinforced_nodes',
+      name: '强化结构',
+      description: '所有节点 HP +30%',
+      cost: 100,
+      icon: '◈',
+      color: '#8844ff',
+      unlocked: false,
+      requires: [],
+      effect: { type: 'boost_hp', multiplier: 1.3 },
+    },
+    {
+      id: 'core_overcharge',
+      name: '核心超频',
+      description: '核心产能 +10',
+      cost: 120,
+      icon: '⚡',
+      color: '#00ff88',
+      unlocked: false,
+      requires: [],
+      effect: { type: 'core_production', amount: 10 },
+    },
+
+    // === Tier 2: 进阶科技 ===
+    {
+      id: 'plasma_turrets',
+      name: '等离子炮塔',
+      description: '炮塔伤害 ×1.5',
+      cost: 200,
+      icon: '⊕',
+      color: '#ff4444',
+      unlocked: false,
+      requires: ['efficient_links'],
+      effect: { type: 'boost_damage', multiplier: 1.5 },
+    },
+    {
+      id: 'quantum_relay',
+      name: '量子中继',
+      description: '最大连线距离 +80',
+      cost: 180,
+      icon: '◎',
+      color: '#44aaff',
+      unlocked: false,
+      requires: ['efficient_links'],
+      effect: { type: 'max_edge_length', amount: 80 },
+    },
+    {
+      id: 'energy_matrix',
+      name: '能量矩阵',
+      description: '所有节点最大能量 ×1.4',
+      cost: 220,
+      icon: '⬡',
+      color: '#00ff88',
+      unlocked: false,
+      requires: ['core_overcharge'],
+      effect: { type: 'boost_energy', multiplier: 1.4 },
+    },
+    {
+      id: 'nano_repair',
+      name: '纳米修复',
+      description: '所有节点每Tick自动修复 3HP',
+      cost: 250,
+      icon: '✦',
+      color: '#44ff44',
+      unlocked: false,
+      requires: ['reinforced_nodes'],
+      effect: { type: 'auto_repair', amount: 3 },
+    },
+
+    // === Tier 3: 高级科技 ===
+    {
+      id: 'economic_boom',
+      name: '经济繁荣',
+      description: '所有建造费用 ×0.7',
+      cost: 350,
+      icon: '◆',
+      color: '#ffaa00',
+      unlocked: false,
+      requires: ['energy_matrix', 'nano_repair'],
+      effect: { type: 'reduce_cost', multiplier: 0.7 },
+    },
+    {
+      id: 'sniper_protocol',
+      name: '狙击协议',
+      description: '炮塔射程 ×1.6',
+      cost: 300,
+      icon: '⊗',
+      color: '#ff6644',
+      unlocked: false,
+      requires: ['plasma_turrets'],
+      effect: { type: 'turret_range', multiplier: 1.6 },
+    },
+    {
+      id: 'shield_unlock',
+      name: '能盾科技',
+      description: '解锁护盾节点建造',
+      cost: 150,
+      icon: '◈',
+      color: '#8844ff',
+      unlocked: false,
+      requires: ['reinforced_nodes'],
+      effect: { type: 'unlock_node', nodeType: 'shield' },
+    },
+  ];
+}

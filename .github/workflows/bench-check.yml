@@ -1,0 +1,67 @@
+name: Bench regression check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 该 workflow 与 deploy.yml 的 pages 并发组无冲突
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      BENCH_KEEP: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        run: npm run build
+
+      - name: Run bench regression check
+        run: npm run bench:check
+
+      - name: Generate aggregate report
+        if: always()
+        run: |
+          if [ -f bench-ci.json ]; then
+            node scripts/bench-analyze.mjs --in bench-ci.json --out bench-report.md
+            echo '## Bench Report' >> "$GITHUB_STEP_SUMMARY"
+            cat bench-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'bench-ci.json not found, skip analyze' >&2
+          fi
+
+      - name: Upload bench artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-ci-output
+          path: |
+            bench-ci.csv
+            bench-ci.json
+            bench-report.md
+          if-no-files-found: ignore

@@ -1,0 +1,20 @@
+{
+  "args": {
+    "seeds": "1,2,3",
+    "levels": "1",
+    "waves": 5,
+    "speed": 8,
+    "nodesMatrix": "full=energy,turret,mine,shield,relay;noMine=energy,turret,shield,relay;turretOnly=energy,turret"
+  },
+  "expected": [
+    { "poolName": "full",       "seed": 1, "levelId": 1, "outcome": "reached_target", "reachedWave": 5, "totalTicks": 120, "finalNodeCount": 30 },
+    { "poolName": "full",       "seed": 2, "levelId": 1, "outcome": "reached_target", "reachedWave": 5, "totalTicks": 120, "finalNodeCount": 30 },
+    { "poolName": "full",       "seed": 3, "levelId": 1, "outcome": "reached_target", "reachedWave": 5, "totalTicks": 120, "finalNodeCount": 30 },
+    { "poolName": "noMine",     "seed": 1, "levelId": 1, "outcome": "reached_target", "reachedWave": 5, "totalTicks": 120, "finalNodeCount": 30 },
+    { "poolName": "noMine",     "seed": 2, "levelId": 1, "outcome": "reached_target", "reachedWave": 5, "totalTicks": 120, "finalNodeCount": 30 },
+    { "poolName": "noMine",     "seed": 3, "levelId": 1, "outcome": "reached_target", "reachedWave": 5, "totalTicks": 120, "finalNodeCount": 30 },
+    { "poolName": "turretOnly", "seed": 1, "levelId": 1, "outcome": "reached_target", "reachedWave": 5, "totalTicks": 120, "finalNodeCount": 30 },
+    { "poolName": "turretOnly", "seed": 2, "levelId": 1, "outcome": "reached_target", "reachedWave": 5, "totalTicks": 120, "finalNodeCount": 30 },
+    { "poolName": "turretOnly", "seed": 3, "levelId": 1, "outcome": "reached_target", "reachedWave": 5, "totalTicks": 120, "finalNodeCount": 30 }
+  ]
+}
