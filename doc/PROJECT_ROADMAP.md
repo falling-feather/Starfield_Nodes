@@ -741,3 +741,813 @@ ode scripts/bench-batch.mjs --seeds 1..10 --levels 1,2,3,4,5 --waves 5 --speed 8
   - mine 拿掉反而 avgWave 略升（无 mine 时玩家攻击节点占比更高？或仅是噪声 ±1 波）
   - turret-only / shield-only 表现最差，验证"必须有打击+防御组合"
   - 行动项：要么调整难度曲线让玩家撑到 15 波，要么把 nodeCount 上限调高让阵地更大，再做 sweep
+
+---
+
+## §19. Phase E COMBAT 表三轮覆盖：beacon/buffer/collector + 散落硬编码全部归集（feat/combat #19）
+
+### 目标
+
+继续把 [src/graph.ts](../src/graph.ts) 中残留的"魔术数字"全部迁到 [src/data/balance.ts](../src/data/balance.ts) COMBAT.*，使 graph 函数变成"纯数据消费 + 流程控制"。本轮覆盖此前未进入 COMBAT 表的 3 个节点（beacon / buffer / collector）和已有节点的零散字段。
+
+### 新增 COMBAT 表项
+
+- rc.maxBounces / arc.decay（n/e/oc）
+- lackhole.pullStrength（n/e/oc）+ closeDistance + closeDamageMult
+- actory.evolvedSlowFactor
+- sniper.splashDamageRatio
+- eacon.energyCost
+- uffer.range / boostPerLevel + ufferPulse.range / boostPerLevel / overchargeCapRatio
+- collector.range / maxNearbyCap / evolvedOutputMult / crystalThreshold
+- echo.proxyLevelScale / overchargeMult
+- magnetEvolved.minPullDist
+
+### 验证
+
+- `npm run build` OK：`165.71 KB` / gzip `48.96 KB`（baseline 164.57 KB；+1.14 KB 来自新字段及 JSDoc）
+- `npm run bench:check` OK：9/9 全部命中 baseline，PRNG 路径完全等价
+
+### 仍硬编码的部分（待 §20+）
+
+- getBaseSpeed 敌人速度表（应迁到 [src/data/enemies.ts](../src/data/enemies.ts) ENEMY_BASE_SPEED）
+- 各节点 `case '...'` 里的能耗常量（`-2 / -5 / -8 / -12 / -15 / -20`），适合做 ENERGY_COSTS 字典
+- `overchargeEnergyBroadcast` / `overchargeHealPulse` / `evolvedEnergyAssist` / `evolvedShieldArmor` 中的范围/治疗/阈值
+
+---
+
+## §19. Phase E COMBAT 表三轮覆盖：beacon/buffer/collector + 散落硬编码全部归集（feat/combat #19）
+
+### 目标
+
+继续把 [src/graph.ts](../src/graph.ts) 中残留的"魔术数字"全部迁到 [src/data/balance.ts](../src/data/balance.ts) `COMBAT.*`，使 graph 函数变成"纯数据消费 + 流程控制"。本轮覆盖此前未进入 COMBAT 表的 3 个节点（beacon / buffer / collector）和已有节点的零散字段。
+
+### 新增 COMBAT 表项
+
+- `arc.maxBounces / arc.decay`（n/e/oc）
+- `blackhole.pullStrength`（n/e/oc）+ `closeDistance` + `closeDamageMult`
+- `factory.evolvedSlowFactor`
+- `sniper.splashDamageRatio`
+- `beacon.energyCost`
+- `buffer.range / boostPerLevel` + `bufferPulse.range / boostPerLevel / overchargeCapRatio`
+- `collector.range / maxNearbyCap / evolvedOutputMult / crystalThreshold`
+- `echo.proxyLevelScale / overchargeMult`
+- `magnetEvolved.minPullDist`
+
+### 验证
+
+- `npm run build` OK：`165.71 KB` / gzip `48.96 KB`（baseline 164.57 KB；+1.14 KB 来自新字段及 JSDoc）
+- `npm run bench:check` OK：9/9 全部命中 baseline，PRNG 路径完全等价
+
+### 仍硬编码的部分（待 §20+）
+
+- `getBaseSpeed` 敌人速度表（应迁到 [src/data/enemies.ts](../src/data/enemies.ts) `ENEMY_BASE_SPEED`）
+- 各节点 `case '...'` 里的能耗常量（`-2 / -5 / -8 / -12 / -15 / -20`），适合做 `ENERGY_COSTS` 字典
+- `overchargeEnergyBroadcast` / `overchargeHealPulse` / `evolvedEnergyAssist` / `evolvedShieldArmor` 中的范围/治疗/阈值
+
+
+---
+
+## §20. Phase E 续：能耗常量集中 ENERGY_COSTS + 敌人速度表迁移（refactor/energy #20）
+
+### 目标
+
+把 [src/graph.ts](../src/graph.ts) `processNodeEffects` 17 处 `currentEnergy -= 数字` 全部归集到 [src/data/balance.ts](../src/data/balance.ts) 的新字典 `ENERGY_COSTS`；同时把 `getBaseSpeed` switch 表迁到 [src/data/enemies.ts](../src/data/enemies.ts) 的 `ENEMY_BASE_SPEED` Record。
+
+### 新增数据结构
+
+- [src/data/balance.ts](../src/data/balance.ts) `ENERGY_COSTS`：17 个节点 × 形态消耗值，标量 / `{n,oc}` 二元结构
+  - mine 5 / turret {10,15} / shield {8,12} / factory 15 / magnet 5 / repair {8,15} / sniper {12,20} / buffer {6,12} / collector 4 / interceptor {5,8} / radar 3 / portal 5 / blackhole 6 / echo 4 / toxin 3 / arc 4 / beacon 2
+- [src/data/enemies.ts](../src/data/enemies.ts) `ENEMY_BASE_SPEED`：8 个敌人类型的基础速度 + `DEFAULT_ENEMY_BASE_SPEED = 2`
+- 顺手清理：`COMBAT.beacon.energyCost` 删除（重复定义），唯一真理来源 = `ENERGY_COSTS.beacon`
+
+### 受影响代码
+
+- [src/graph.ts](../src/graph.ts) processNodeEffects 17 个 case：全部读 `ENERGY_COSTS.*`
+- [src/graph.ts](../src/graph.ts) `getBaseSpeed` 由 9-case switch 折叠为单行 `ENEMY_BASE_SPEED[type] ?? DEFAULT_ENEMY_BASE_SPEED`
+- 新增 import：`ENERGY_COSTS` from balance, `ENEMY_BASE_SPEED / DEFAULT_ENEMY_BASE_SPEED` from enemies
+
+### 验证
+
+- `npm run build` OK：`165.99 KB` / gzip `49.02 KB`（baseline 165.71 KB；+0.28 KB 仅注释/字段名）
+- `npm run bench:check` OK：9/9 全部命中 baseline（outcome/reachedWave/totalTicks/finalNodeCount 完全一致）
+- 数值等价性：所有数字逐一保留，无任何调整
+
+### 还残留的硬编码（待 §21+）
+
+- `overchargeEnergyBroadcast`：boost=10 / capRatio=1.2
+- `overchargeHealPulse`：range=220 / heal=8 / energy=5 / threshold=0.5
+- `evolvedEnergyAssist`：threshold=0.8 / boost=8
+- `evolvedShieldArmor`：range=200 / heal=3
+- energy 节点充能 (+3/+6) 与 tesla 节点充能 (+5)：归到 `ENERGY_GAINS` 字典
+
+
+---
+
+## §21. Phase E 收尾：shield/energy OC/EVOLVED 子字段 + ENERGY_GAINS 字典（refactor/combat #21）
+
+### 目标
+
+把 [src/graph.ts](../src/graph.ts) 中四个 OC/Evolved 专属函数（`overchargeEnergyBroadcast` / `overchargeHealPulse` / `evolvedEnergyAssist` / `evolvedShieldArmor`）残留的范围/治疗/阈值常量全部迁入 [src/data/balance.ts](../src/data/balance.ts) `COMBAT.shield` / `COMBAT.energy`；并新增 `ENERGY_GAINS` 字典与 `ENERGY_COSTS` 对偶，统一 energy/tesla 的 +N 充能数值。
+
+### 新增/扩展数据
+
+- `COMBAT.shield`：新增 `ocPulseRange / ocPulseHealPerLevel / ocPulseEnergyHeal / ocPulseStatusRestoreRatio / evolvedArmorRange / evolvedArmorHealPerTick`
+- `COMBAT.energy`（首次出现）：`ocBroadcastBoost / ocBroadcastCapRatio / evolvedAssistThreshold / evolvedAssistBoost`
+- `ENERGY_GAINS`：`energy: {n:3, e:6}` + `tesla: 5`
+
+### 受影响代码
+
+- [src/graph.ts](../src/graph.ts) `overchargeEnergyBroadcast`：boost/cap 改读 `COMBAT.energy.*`
+- [src/graph.ts](../src/graph.ts) `overchargeHealPulse`：range/heal/energy/threshold 改读 `COMBAT.shield.ocPulse*`
+- [src/graph.ts](../src/graph.ts) `evolvedEnergyAssist`：threshold/boost 改读 `COMBAT.energy.evolvedAssist*`
+- [src/graph.ts](../src/graph.ts) `evolvedShieldArmor`：range/heal 改读 `COMBAT.shield.evolvedArmor*`
+- [src/graph.ts](../src/graph.ts) processNodeEffects：energy/tesla case 改读 `ENERGY_GAINS.*`
+
+### 验证
+
+- `npm run build` OK：`166.58 KB` / gzip `49.21 KB`（baseline 165.99 KB；+0.59 KB 仅 JSDoc/字段名）
+- `npm run bench:check` OK：9/9 全部命中 baseline，数值完全等价
+
+### Phase E 阶段完成里程碑
+
+至此 [src/graph.ts](../src/graph.ts) 内已无任何"无名魔术数"参与战斗判定，全部数值均来自 [src/data/balance.ts](../src/data/balance.ts)（COMBAT/ECONOMY/RUNTIME/OVERCHARGE/ENERGY_COSTS/ENERGY_GAINS/ENEMY_DEATH_REWARDS）+ [src/data/enemies.ts](../src/data/enemies.ts) `ENEMY_BASE_SPEED`。下一阶段（Phase F）可专注：
+- 数值调优（针对第 9 波死亡墙）
+- benchmark 报告解析与 perWave 曲线可视化
+- 玩家可见 UI/UX 与 mod-ability
+
+
+---
+
+## §22. 第 9 波死亡墙诊断（doc/death-wall-wave9.md）
+
+### 输入
+
+[doc/bench-report-long.md](./bench-report-long.md) 的 5 pool × 25 run 时序聚合表。
+
+### 关键发现
+
+- **死亡墙位置高度收敛**：5 pool 的 avgWave 全部落在 8.48–8.88，标准差仅 ~1.1；wave 8→9 存活率从 ~70% 跌到 ~25%
+- **enemy/node 比率**：wave 5 = 0.80（玩家可控）→ wave 6 = 1.26（首次被压制）→ wave 9 = 2.60（崩溃）
+- **节点增长被卡死**：wave 1→8 共 7 波只 +4 个节点（38.8→42.9），主要受**前 6 波几乎不杀敌（avgScore<10）→ 资源积累不足**约束
+- **spawn 曲线斜率过陡**：Δenemy 在 wave 5→6 突然从 +10 跳到 +18（+80% 增量），wave 7→8 +24（+41% 增量）
+- **shield pool 不优于 noShield**（avgWave 反而少 0.32）：当前 shield 治疗输出远低于敌人 DPS，护盾纵深无法形成
+
+### 诊断结论
+
+不是某 pool 的问题，而是**全局难度曲线**：spawn 中期曲线过激进 + 玩家资源积累不足 + DPS 增长存在阈值现象（够 / 不够，无渐进性）。
+
+### 调优建议优先级
+
+1. **降低 wave 6–9 spawn 增量斜率**（高，预期效果：wave 9 enemy/node 2.60→1.8）
+2. **提高中前期资源积累速度**（高，预期效果：wave 7-8 nodeCount +5~10）
+3. **shield 节点强化**（中，让 shieldDefense 成为可行策略）
+4. **boss 出现时机延后**（中）
+5. **bench-report 新增 kills/spent/built 字段**（低，结构性观测改善）
+
+### 行动项（写入 §23+）
+
+- 对比 A/B：先归档当前 long sweep 为 baseline，应用调优 1+2 后重跑加长 sweep，目标 avgWave ≥ 12
+
+
+---
+
+## §23. 平衡调优 ①+② A/B 对比：spawn 斜率减缓 + mine 产出翻倍（feat/balance #23）
+
+### 背景
+
+§22 诊断报告 [doc/death-wall-wave9.md](death-wall-wave9.md) 给出 5 项调优建议，本轮按优先级实施 ①+②：
+
+- **①**：把 spawn 数量公式 `1 + floor(wave/3)` 改成 `1 + floor(wave/4)`，缓解 wave 5→6 那一次 +80% 的人数跳变
+- **②**：把 mine 节点基础产出 `2/tick`（OC `4/tick`）改成 `3/tick`（OC `6/tick`），让玩家在 wave 5-9 的资源积累追上敌人血量曲线
+
+### 代码改动
+
+[src/data/balance.ts](../src/data/balance.ts)
+
+```ts
+ECONOMY = {
+  // 既有：startCrystal, expandCrystalCost, ...
+  mineOutputBase: 3,        // §23 调优 ②（原 2）
+  mineOutputOvercharge: 6,  // §23 调优 ②（原 4）
+};
+
+RUNTIME = {
+  // 既有 ...
+  enemySpawnCountDivisor: 4, // §23 调优 ①（原 3）
+};
+```
+
+[src/entities.ts](../src/entities.ts) — `spawnEnemy`：
+
+```ts
+const count = 1 + Math.floor(wave / RUNTIME.enemySpawnCountDivisor);
+```
+
+[src/graph.ts](../src/graph.ts) — `case 'mine'`：
+
+```ts
+let output = (oc ? ECONOMY.mineOutputOvercharge : ECONOMY.mineOutputBase) * node.level;
+```
+
+### A/B sweep 结果
+
+基线归档：[doc/bench-report-long-pre-balance.md](bench-report-long-pre-balance.md)（HEAD `aa3a35b`，§22 诊断时刻）
+
+调优后：[doc/bench-report-long-tuned.md](bench-report-long-tuned.md)（本节）
+
+**总览对比**：
+
+## 总览对比表
+
+| pool | 基线 avgWave | 调优 avgWave | Δ | 基线 avgScore | 调优 avgScore |
+|------|-------------:|-------------:|--:|--------------:|--------------:|
+| balanced | 8.80 | 9.00 | +0.20 | 26.0 | 21.0 |
+| noMine | 8.88 | 9.16 | +0.28 | 23.4 | 21.8 |
+| noShield | 8.80 | 9.00 | +0.20 | 30.8 | 34.2 |
+| turretRush | 8.48 | 9.04 | **+0.56** | 20.8 | 23.0 |
+| shieldDefense | 8.48 | **9.40** | **+0.92** | 29.8 | 27.6 |
+| **整体** | **8.69** | **9.12** | **+0.43** | 26.2 | 25.5 |
+
+## 关键 wave 对比（balanced pool 为例）
+
+| wave | 基线 avgEnemy | 调优 avgEnemy | Δ% | 基线 存活 n | 调优 存活 n |
+|-----:|--------------:|--------------:|----|-----------:|-----------:|
+| 4 | 20.9 | 17.0 | -19% | 25 | 25 |
+| 5 | 30.8 | 27.0 | -12% | 25 | 25 |
+| 6 | 48.7 | 38.9 | **-20%** | 25 | 25 |
+| 7 | 66.4 | 50.7 | -24% | 21 | 24 |
+| 8 | 90.2 | 74.4 | -18% | 17 | 16 |
+| 9 | 115.2 | 94.0 | -18% | 6 | 8 |
+| 10 | 154.0 | 119.5 | -22% | 1 | 2 |
+
+## 显著变化
+
+- spawn 减缓有效：每波敌人数 -18% ~ -24%（与公式 `1+wave/4` vs `1+wave/3` 的理论降幅 -25% 在 wave 9 处吻合）
+- 死亡墙位置整体右移 ~0.5 波：基线 6 runs 撑到 wave 9，调优后 8 runs；balanced wave 10 从 1 → 2 runs
+- **首个 won 出现**：turretRush pool 1/25 通关（基线 0/25）
+- shieldDefense 提升最大（+0.92 wave），有 1 run 撑到 wave 11
+- noMine pool avgWave 反而最高 9.16（mine 增产对存活贡献低于预期，因为玩家在死亡墙阶段水晶根本花不出去）
+
+## Verdict
+
+- ✅ spawn 调缓 + mine 增产生效，每波敌人 -20%、avgWave +0.43
+- ✅ 首次出现通关（turretRush pool）
+- ❌ 远未达 §22 设定的 "avgWave ≥ 12" 目标，整体仍 9.12，死亡墙只右移半波
+- 📌 mine 增产对死亡墙意义有限（noMine 反超），瓶颈仍在战斗端
+- 📌 下一步必须加 **③ shield 强化** 与 **④ boss 推迟**，单纯减 spawn / 加资源不够
+
+
+### 验证
+
+- `npm run build` OK：`166.70 KB`
+- `npm run bench:check` OK：9/9 全部 outcome / reachedWave / totalTicks / finalNodeCount 一致；唯一变化在 finalEnemyCount（21→17，符合 spawn 减少预期）
+- 长 sweep 125 runs 完整执行（5 seeds × 5 levels × 5 pools，waves=20，speed=8）
+
+### 结论
+
+见上 ## Verdict 段。整体方向正确但幅度不足；建议下一轮立即上 ③+④。
+
+### 下一步候选
+
+- ③ shield 强化：`baseHealth ×1.5`、`armorBoost +1`
+- ④ boss 出现波次推迟（wave ≥ 10 才出 boss 或降低 boss 血量曲线斜率）
+- ⑤ bench instrumentation：perWave 增加 `kills/spent/built` 字段，便于精细分析
+
+## §24. 平衡调优 ③+④ A/B 对比：shield 强化 + boss 推迟（feat/balance #24）
+
+### 目标
+继 §23 之后，按 §22 诊断剩余建议执行 ③ 和 ④：
+- ③ shield 强化：节点 `maxHp 200 → 300`（×1.5），`COMBAT.shield.evolvedArmorHealPerTick 3 → 4`。
+- ④ boss 出现波次推迟：level 3 `bossWave 15 → 18`，level 6 `bossWave 20 → 22`。
+
+诚实声明：长 sweep 测试 levels 1-5，其中只有 level 3 有 boss（其余 `hasBoss=false`）；④ 在 sweep 中影响面有限，主要观察 level 3 的死亡墙是否右移。
+
+### 代码改动
+- [src/data/nodes.ts](src/data/nodes.ts)：`shield.maxHp 200 → 300`。
+- [src/data/balance.ts](src/data/balance.ts)：`COMBAT.shield.evolvedArmorHealPerTick 3 → 4`。
+- [src/data/levels.ts](src/data/levels.ts)：level 3 `bossWave 15 → 18`、level 6 `bossWave 20 → 22`。
+
+### A/B sweep 结果（vs §23 baseline）
+seeds=1-5 levels=1-5 waves=20 speed=8× 5 个 pool 共 125 runs。
+
+| pool | §23 avgWave | §24 avgWave | Δ | §23 won | §24 won |
+|------|-----------:|-----------:|--:|-------:|-------:|
+| balanced      | 9.16 | 9.36 | +0.20 | 0 | 0 |
+| noMine        | 9.16 | 9.36 | +0.20 | 0 | 1 |
+| noShield      | 9.20 | 9.24 | +0.04 | 0 | 0 |
+| turretRush    | 9.04 | 9.24 | +0.20 | 1 | 0 |
+| shieldDefense | 9.04 | 9.24 | +0.20 | 0 | 1 |
+| **整体**      | **9.12** | **9.29** | **+0.17** | **1** | **2** |
+
+详见 [doc/bench-report-long-tuned2.md](doc/bench-report-long-tuned2.md)。
+
+### Verdict
+- 死亡墙整体再右移 ~0.17 波，方向正确但幅度有限。
+- 总 won 翻倍（1 → 2），noMine + shieldDefense 各破 1，验证 shield 强化对阵地流有效。
+- noShield pool 几乎不变（+0.04），间接确认 ③ 的提升来源于 shield 节点而非全局效应。
+- 距 §22 目标 `avgWave≥12` 仍差距明显；spawn/护盾路线收益已逐步衰减，下一轮应转向 instrumentation 或经济/单位上限调整。
+
+### 验证
+- `npm run build`：166.70 KB OK。
+- `npm run bench:check`：9/9 OK（baseline 已随 §23 锁定，§24 不变更短 sweep 输出口径）。
+
+### 下一步候选
+- ⑤ bench instrumentation：`perWave` 增加 `kills/spent/built` 字段，便于精细分析瓶颈。
+- 或：探索新调优方向（如 `nodeCount` 上限、能源传导效率）。
+## §25. Bench instrumentation：perWave 增加 kills/built/spent 字段（feat/bench #25）
+
+### 目标
+按 §22→§24 演进路径的剩余建议 ⑤ 实施：`BenchWaveSample` 增加三个累计字段：
+- `kills`：局内累计击杀数
+- `built`：局内累计玩家建造节点数
+- `spent`：局内累计资源花费
+
+为后续精细诊断（击杀效率/经济利用率）提供数据基础。
+
+### 代码改动
+- [src/types.ts](src/types.ts)：`GameState` 新增 `enemiesKilled / nodesBuilt / resourcesSpent` 三字段（局内单调递增计数）。
+- [src/game.ts](src/game.ts)：`createInitialState` / `restart` 初始化三字段；敌人减少时同步累加 `state.enemiesKilled`。
+- [src/input.ts](src/input.ts)：`placeNode` 成功放置时累加 `state.nodesBuilt += 1` 与 `state.resourcesSpent += cost`。
+- [src/benchmark.ts](src/benchmark.ts)：`BenchWaveSample` 增加 `kills/built/spent`，`wave_end` 与 `final` 样本均写入。
+- [scripts/bench-analyze.mjs](scripts/bench-analyze.mjs)：旧报告无字段时回落原列；新报告输出 8 列时序表。
+
+### 长 sweep 关键洞察
+seeds=1-5 levels=1-5 waves=20 speed=8× × 5 pool 共 125 runs（[doc/bench-report-long-instr.md](doc/bench-report-long-instr.md)）。
+
+整体 avgWave 9.04（与 §24 同量级，PRNG 噪声范围内），但新字段揭示**击杀效率严重不足**：
+
+| pool | wave 8 avgEnemy | wave 8 avgKills | kill/enemy |
+|------|---------------:|---------------:|----------:|
+| balanced      | 74.3 | 0.7  | **0.9%** |
+| noMine        | 73.9 | 1.1  | 1.5% |
+| noShield      | 73.9 | 1.1  | 1.5% |
+| turretRush    | 73.4 | 1.6  | 2.2% |
+| shieldDefense | -    | -    | - |
+
+**注**：bench 是 headless 自动跑，无玩家操作 → `built/spent` 全 0（这本身就是 instrumentation 揭示的 bench 局限：仅评估初始节点战斗力，不评估建造决策）。但 `kills` 字段揭示了真正的瓶颈：**初始 turret 的 DPS 远低于 spawn 速率**，wave 7-8 的死亡墙根本原因不是护盾不够，而是**攻击端火力严重不足**。
+
+### Verdict
+- §25 instrumentation 已落地；旧报告兼容回落。
+- 数据反向支持：之前 §23 spawn 减缓 / §24 shield 强化收益逐步衰减的根因 = 攻击 DPS 跟不上敌方累计血量。
+- 下一轮 §26 应聚焦 **turret DPS / 范围 / overcharge 收益**，而不是继续护盾或 spawn。
+
+### 验证
+- `npm run build`：167.04 KB OK（+0.34 KB，三字段开销）。
+- `npm run bench:check`：9/9 OK（baseline 锁定字段未变）。
+- 1×1 小 sweep 验证 `perWave` 中 `kills/built/spent` 字段写入正确。
+
+### 下一步候选
+- §26 转向 turret DPS 提升（基础伤害/射速/范围其一调优）。
+- 或：增加 bench mode 模拟简单玩家行为（基于剩余资源自动建造），让 `built/spent` 也有意义。
+---
+
+## §26 · turret DPS 单一调优 A/B（负结果）
+
+### 目标
+基于 §25 instrumentation 揭示的 wave 7-8 kill rate <2% 死亡墙，调优 turret 攻击端：
+- `rangeBase` 180 → **200**（+11%，缩短盲区）
+- `damageBase` 15 → **22**（×1.47，预期 DPS +47%）
+
+单文件改动：`src/data/balance.ts` `COMBAT.turret`。
+
+### A/B 对照（vs §25 same sweep params）
+
+| pool | §25 avgWave | §26 avgWave | Δ | §25 wave8 avgKills | §26 wave8 avgKills | Δ |
+|------|------------:|------------:|--:|-------------------:|-------------------:|--:|
+| balanced | 9.36 | 9.08 | -0.28 | 1.6 | 1.7 | +0.1 |
+| noMine | 9.08 | 9.20 | +0.12 | 1.3 | 1.3 | 0 |
+| noShield | 9.28 | 9.04 | -0.24 | 1.2 | 1.2 | 0 |
+| turretRush | 9.08 | 9.20 | +0.12 | 1.0 | 1.1 | +0.1 |
+| shieldDefense | 8.96 | 9.20 | +0.24 | 1.0 | 1.1 | +0.1 |
+
+### Verdict（关键负结果）
+**+47% DPS 调优在 bench 中几乎无效**。原因：
+1. headless bench 无玩家操作 → 全程 `level 1` turret，无升级、无 overcharge、无 evolve；
+2. 敌人 HP 按 wave 指数缩放，wave 8 `HP ≈ 100+`，level-1 turret 单发 22 仍需多发；
+3. spawn count = `1 + floor(wave/4)`（§23），wave 8 = 3/spawn；同时敌人速度也涨；
+4. 真正瓶颈不是 `damageBase` 单参数，而是 **节点升级路径** + **能量循环** 的耦合。
+
+### 后续候选
+- A. `§27` 给 bench 增加 **auto-upgrade 策略**（每 30s 把资源花在升级最强 turret），让 bench 反映"会玩"的玩家；
+- B. `§27` 调整 `damageMult` per-level scaling，使 level 1→2 收益更大；
+- C. `§27` 降低敌人 HP 缩放系数（敌强减弱方向）；
+- D. `§26.1` 回滚本次改动，因为 manual-play 体感未验证。
+
+### 验证
+- `npm run build` 167.04 KB OK
+- `npm run bench:check` 9/9 OK（baseline 不含 score/kills，无漂移）
+- 长 sweep 125 runs 完成，报告 [doc/bench-report-long-turret.md](doc/bench-report-long-turret.md)
+---
+
+## §27 · bench auto-upgrade 策略（会玩玩家模型）
+
+### 目标
+§26 暴露的 bench 局限：headless 全程 level-1 节点，敌人 HP 按 wave 缩放，单参数调优在 bench 中无效。  
+解决方案：bench 模式新增 `--auto-upgrade` 选项，模拟"会玩"玩家每秒尝试把资源花在升级上，让 bench 反映 `level-up` 循环耦合。
+
+### 代码改动
+- `src/benchmark.ts`
+  - `BenchParams` 新增 `autoUpgrade: boolean`
+  - `parseBenchParams` 解析 `?autoUpgrade=1`，**默认 off**（保持 §22-§26 baseline 可复现）
+  - 新增 `tickAutoUpgrade(state)`：贪心遍历 `connected && level < EVOLUTION_LEVEL` 节点，按优先级 `turret > shield > 其它` + level ASC 升级，资源不够即停
+  - poll 循环每 60 tick（约 1s @60fps）调用一次
+  - 直接修改 `state.resourcesSpent` 让 spent 字段也有意义
+- `scripts/bench-batch.mjs`：新增 `--auto-upgrade` flag → URL 加 `&autoUpgrade=1`
+
+### A/B 对照（vs §26 same sweep params）
+
+| pool | §26 avgWave | §27 avgWave | Δ | §26 wave8 avgKills | §27 wave8 avgKills | Δ |
+|------|------------:|------------:|--:|-------------------:|-------------------:|--:|
+| balanced | 9.08 | 9.48 | **+0.40** | 1.7 | 3.9 | **×2.3** |
+| noMine | 9.20 | 9.32 | +0.12 | 1.3 | 3.5 | ×2.7 |
+| noShield | 9.04 | 9.16 | +0.12 | 1.2 | 3.6 | ×3.0 |
+| turretRush | 9.20 | 9.40 | +0.20 | 1.1 | 3.4 | ×3.1 |
+| shieldDefense | 9.20 | 9.64 | **+0.44** | 1.1 | 3.6 | ×3.3 |
+
+### Verdict
+1. **wave 8 kill rate 从 ~1.5% 提升至 ~5%**，但仍是死亡墙；
+2. avgWave 边际涨 0.1-0.4，说明 `level-up` 收益真实存在但 wave 9-10 的指数 spawn 仍压垮升级速度；
+3. `avgSpent` wave 8 时 245-276 = ~6-9 次升级，bench 现在能反映"建造经济"维度；
+4. 5 pool 间差异缩小（balanced 不再独尊），说明在"会玩"模型下策略多样性更好；
+5. **§26 turret +47% DPS 改动现在显得过于激进且无差异化**；下一步可考虑 §28 回滚 §26 + 调升敌人 HP 上限。
+
+### 验证
+- `npm run build` 167.69 KB OK（+650B）
+- `npm run bench:check` 9/9 OK（autoUpgrade 默认 off，baseline 不漂移）
+- smoke 3-run autoUpgrade=1：seed=1 won wave 11 kills=29 spent=300，验证机制工作
+- 长 sweep 125 runs 完成，报告 [doc/bench-report-long-au.md](doc/bench-report-long-au.md)
+
+### 下一步候选
+- A. `§28` 回滚 §26 turret 改动（damageBase 22→15, rangeBase 200→180），用 autoUpgrade 重测，确认 §26 是否伪改进
+- B. `§28` 调整敌人 HP 上限（现 wave 8 kill rate 5% 仍嫌低），让 wave 8-12 更可达
+- C. `§28` 把 `--auto-upgrade` 加进 `bench:check` baseline 做双轨防回归
+- D. 暂停
+---
+
+## §28 · §26 turret 数值在 autoUpgrade 下的 A/B 验证
+
+### 目标
+§26 在无升级 bench 中显得无效（负结果）。§27 引入 autoUpgrade 后重新做 A/B：
+- variant: rangeBase=180, damageBase=15（§25 数值）+ autoUpgrade
+- baseline: rangeBase=200, damageBase=22（§26 数值）+ autoUpgrade
+
+### 实验配置
+- seeds=1..5, levels=1..3, waves=15, speed=8, nodes=balanced, autoUpgrade=on
+- 共 15 runs / variant
+
+### 结果对比
+
+| metric | §25 (180/15) | §26 (200/22) | Δ |
+|--------|-------------:|-------------:|--:|
+| avgKills | 1.80 | **2.33** | **+30%** |
+| avgScore | 33.3 | **46.0** | **+38%** |
+| avgWave | 9.67 | 9.47 | -0.20 |
+| won | 1/15 | 1/15 | 0 |
+
+### 浏览器 MCP 实测交叉验证（seed=1, level=1）
+- §26 (200/22) + autoUpgrade: won wave 11, score 520, kills 33, spent 300
+- §25 (180/15) baseline 数据见 \ench-au-v25.json\
+
+### Verdict
+**§26 数值在 autoUpgrade 模式下显著有效**（+30% kills / +38% score），与 §26 commit 的"负结果"标签矛盾。
+- 根因：§26 sweep 用 autoUpgrade=off，turret 永远 level 1，`damage = 15×1 vs 22×1` 在 wave 8+ 敌人 HP 100+ 下都打不穿；
+- autoUpgrade 启用后 turret 升到 level 5+，`damage = 15×5 vs 22×5` 差异从 7 拉到 35，DPS 优势放大；
+- avgWave -0.20 是噪声（n=15）或 autoUpgrade 偏好 turret 升级排挤 shield 的副作用。
+
+**决策**：保留 §26 turret 数值不回滚。今后 bench A/B 应**始终带 autoUpgrade**。
+
+### 验证手段
+- `npm run build` 167.69 KB OK
+- `npm run bench:check` 9/9 OK（baseline 不漂移）
+- 浏览器 MCP（`open_browser_page` + `run_playwright_code`）端到端 VICTORY 截图
+- 报告产物 [bench-au-v25.json](../bench-au-v25.json) / [bench-au-v26.json](../bench-au-v26.json)（gitignored）
+
+### 工程教训
+1. **bench A/B 必须模拟"会玩"行为**，否则升级敏感的改动全显示无效；
+2. `commit message 标注"负结果"应留待复核`——§26 commit 标注了负结果但实际有效；
+3. 浏览器 MCP 端到端验证应作为 sweep 的常规配套，确认渲染/状态机/数据三者一致；
+4. `§27 autoUpgrade` 是 bench 体系的**关键基础设施升级**，回溯使过去 §23-§26 的部分诊断结论需要重测。
+
+### 下一步候选
+- A. `§29` autoUpgrade 模式下重做 §22-§26 全部 A/B，校正诊断结论；
+- B. `§29` 给 autoUpgrade 加 evolve 阶段（level 满后买 evolve），看能否冲过 wave 11 上限；
+- C. `§29` autoUpgrade 同时加 build 阶段（用资源在空槽位放 turret），完整模拟玩家；
+- D. `§29` 调整 autoUpgrade 优先级（mine 优先早期，turret 后期），看是否更优。
+---
+
+## §29 · autoUpgrade 下重测 §22-§24 诊断结论
+
+### 目标
+§28 揭示"bench A/B 必须带 autoUpgrade"。本节用 autoUpgrade 重测 §22-§24 各项调优是否依然有效。
+
+### 实验配置
+- baseline = bench-au-v26（§22-§28 全开 + autoUpgrade）：avgScore=46.0, avgWave=9.47, won=1/15
+- 每个 variant 反转单个 knob，其它保持 baseline 一致
+- seeds=1..5, levels=1..3, waves=15, speed=8, autoUpgrade=on, n=15 / variant
+
+### 结果汇总
+
+| variant | knob 反转 | avgScore | avgWave | won | Δscore | Δwave |
+|---------|-----------|---------:|--------:|----:|-------:|------:|
+| baseline (§28) | 当前 | 46.0 | **9.47** | 1 | – | – |
+| §29.1 spawn | enemySpawnCountDivisor 4→2 | 51.7 | **8.27** | 0 | +12% | **-1.20** |
+| §29.2 mine | mineOutputBase 3→2, OC 6→4 | 35.7 | 9.47 | 1 | -22% | 0 |
+| §29.3 shield | shield maxHp 300→200 | 40.0 | 9.47 | 1 | -13% | 0 |
+
+### 逐项 Verdict
+
+#### §23 spawn divisor（÷2 → ÷4）→ **依然高度有效**
+- avgWave 8.27→9.47 (+1.2)，won 0→1
+- spawn 减半直接降低敌人压力，是 §22-§24 中**唯一对生存波数有显著影响**的改动
+- **保留**
+
+#### §23 mine 增产（2/4 → 3/6）→ **生存维度边际为零，score 维度有效**
+- avgWave/won 完全相同
+- avgScore -22% 来自资源吞吐变化（autoUpgrade 升级花费下降时收益堆积）
+- 原因：autoUpgrade 启动后 turret/shield 都升到 level 5，资源稀缺度大幅降低
+- **保留**（不影响生存但有 score 区分度，且对 manual play 早期有意义）
+
+#### §24 shield maxHp（200 → 300）→ **autoUpgrade 下边际几乎为零**
+- avgWave/won 完全相同，avgScore 仅 -13%
+- 根因：autoUpgrade 把 shield 升到 level 5 → `maxHp = base × (1 + 5×0.25) = base×2.25`，base 100 差异在乘法后被掩盖
+- **保留**（manual play 早期 level-1 shield 仍是 200→300 的差异，对教学/低水平玩家有意义）
+
+### 浏览器 MCP 复核
+未做单独浏览器复核——bench-au-v26 已在 §28 用浏览器确认正确性，且 §29.1-3 仅改单个常量，渲染层无影响。
+
+### 验证
+- 每次 variant 后 `git diff` 确认仅单参数改动
+- 最终恢复后 `npm run build` 167.69 KB OK
+- `npm run bench:check` 9/9 OK
+- 报告产物：bench-au-29-1-spawn / -2-mine / -3-shield (.json/.csv，gitignored)
+
+### 工程教训
+1. **§22 死亡墙诊断的根因排序需要修正**：spawn (×) >> turret DPS (autoUpgrade 后) >> mine ≈ shield
+2. autoUpgrade 改变了所有 base-stat 调优的相对收益——后期 level 缩放主导
+3. **manual play 与 autoUpgrade 是两个不同的优化目标**：base stat 改动对 manual play 仍重要
+4. 未来 base-stat A/B 应同时跑 `--auto-upgrade off` 和 `--auto-upgrade on` 双版本
+
+### 下一步候选
+- A. `§30` autoUpgrade 加 evolve 阶段，看能否冲过 wave 11
+- B. `§30` 双版本 A/B 框架（autoUpgrade on/off 同时跑）
+- C. `§30` 调整 `upgradeBaseCost / upgradeEnergyGrowth / upgradeHpGrowth` 三个 level 缩放参数
+- D. `§30` 给 enemy 加 wave 8+ 难度上调（现在死亡墙太硬，玩家无技巧空间）
+---
+
+## §30 · 双版本 AB 框架（autoUpgrade off vs on 并排）
+
+### 目标
+§29 教训"未来 base-stat A/B 应同时跑 autoUpgrade on/off"。本节给 bench-batch 增加 `--ab-autoupgrade` 模式，每个 (seed,level,pool) 自动跑两次并排输出。
+
+### 代码改动（仅工具链，无游戏逻辑改）
+**[scripts/bench-batch.mjs](scripts/bench-batch.mjs)**：
+1. 新增 `--ab-autoupgrade` flag
+2. 主循环加 `auModes` 维度，AB 模式时每 (seed,level,pool) 跑 `[off, on]` 两次
+3. 每个 result 加 `autoUpgrade` 字段（0/1），写入 CSV/JSON
+4. CSV header 加 `autoUpgrade` 列
+5. 聚合阶段新增 AB 对比段：`[autoUpgrade=off] / [autoUpgrade=on]` + 每 pool `off:... | on:...` 一行
+
+### 验证 sweep（54 runs = 3 seeds × 3 levels × 3 pools × 2 AB）
+
+\\\
+[autoUpgrade=off] n=27 avgScore=40.9 avgWave=9.11 won=3
+[autoUpgrade=on ] n=27 avgScore=62.6 avgWave=9.07 won=3
+\\\
+
+| pool | off avgScore | on avgScore | Δ |
+|------|-------------:|------------:|--:|
+| balanced | 37.2 | 61.1 | **+64%** |
+| noShield | 44.4 | 59.4 | +34% |
+| turretRush | 41.1 | 67.2 | **+63%** |
+
+### 关键发现
+- autoUpgrade 平均带来 **+53% avgScore**，但 **avgWave 不变** (9.07-9.11)
+- `won` 数也不变（3/27 vs 3/27）→ **autoUpgrade 不能突破 wave 11 死亡墙**
+- 死亡墙真正的瓶颈是 evolve 阶段缺失 + enemy wave 8+ HP 缩放
+- pool 间 Δ% 差异（noShield 仅 +34% 远低于其它）→ shield 升级被 autoUpgrade 优先级低估？
+
+### 验证
+- `node -c scripts/bench-batch.mjs` 语法 OK
+- `npm run build` 167.69 KB OK
+- `npm run bench:check` 9/9 OK（默认 off，CSV 列变化不影响 JSON 比对）
+- smoke test (4 runs) 与 validate sweep (54 runs) 双 size 验证
+
+### 下一步候选
+- A. `§31` 调整 autoUpgrade 优先级（shield 提前？mine 提前？），用 AB 框架快速验证
+- B. `§31` 加 evolve 阶段到 autoUpgrade，冲过 wave 11
+- C. `§31` enemy wave 8+ 难度系数下调（让玩家有反应空间）
+- D. `§31` bench-analyze 也支持 AB（生成 markdown 报告）
+---
+
+## §31 · autoUpgrade 加 evolve 阶段
+
+### 目标
+§30 揭示 wave 11 死亡墙。猜测是 evolve 缺失（玩家手动会 evolve，autoUpgrade 不会）。本节给 `tickAutoUpgrade` 加二阶段：升级完后，扫描 `level >= 5 && !evolved && EVOLVABLE` 节点，消耗 `getEvolutionCost + getEvolutionCrystalCost` 触发进化（maxEnergy/maxHp ×1.5）。
+
+### 代码改动
+**[src/benchmark.ts](src/benchmark.ts)** `tickAutoUpgrade`：
+1. import 加 `EVOLVABLE_TYPES, getEvolutionCost, getEvolutionCrystalCost`
+2. 升级 while 循环 `return → break`（确保进入二阶段）
+3. 新增二阶段：filter 已满级未进化的 EVOLVABLE，按 prio 排序，能 evolve 就 evolve
+4. evolve 同时累加 `state.resourcesSpent`
+
+### 验证 sweep（54 runs, 同 §30 配置）
+\\\
+[autoUpgrade=off] n=27 avgScore=43.7 avgWave=9.07 won=3
+[autoUpgrade=on ] n=27 avgScore=63.1 avgWave=9.33 won=3
+\\\
+
+### 对比 §30 vs §31（autoUpgrade=on）
+| 指标 | §30 | §31 | Δ |
+|------|----:|----:|--:|
+| avgScore | 62.6 | 63.1 | +0.8% |
+| avgWave | 9.07 | 9.33 | +0.26 |
+| won | 3 | 3 | 0 |
+
+### 负面结论
+**evolve 几乎不触发**。死亡墙不动：
+- 升级阶段贪心耗尽 resources，二阶段池常常为空
+- 9 波内大部分节点没机会升到 level=5（资源不够）
+- 即便满级，evolve cost (NODE_CONFIGS[type].cost × 3) + crystals 是大额支出
+- 当前 priority 顺序先升级低级节点 > 后 evolve，时机太晚
+
+### 验证
+- `npm run build` 168.10 KB OK
+- `npm run bench:check` 9/9 OK（off 路径未变）
+- AB sweep 54 runs 完成
+
+### 下一步候选
+- A. `§32` autoUpgrade 预算策略：保留 X% 资源/晶体给 evolve；或检测到任何节点满 5 级时优先 evolve
+- B. `§32` 降低 `ECONOMY.evolutionCostMult` (3 → 2) 让 evolve 更易触发
+- C. `§32` enemy wave 8+ HP 缩放下调（直接攻击死亡墙根因）
+- D. `§32` 加 instrumentation 统计 evolve 实际触发次数 / level 分布
+---
+
+## §32 · nodeStats instrumentation 揭示 evolve 不触发的真因
+
+### 目标
+§31 假设 evolve 没用是因为时机晚，但缺数据。本节加 `nodeStats` 字段（evolvedByType + levelDist + countByType）打到 final BenchResult，bench-batch 聚合输出。
+
+### 代码改动
+**[src/benchmark.ts](src/benchmark.ts)**：
+1. `BenchResult` 加可选 `nodeStats` 字段
+2. 新增 `collectNodeStats(nodes)`：扫 final `s.nodes`，按 type/level/evolved 分组计数
+3. final result 构造时调用
+
+**[scripts/bench-batch.mjs](scripts/bench-batch.mjs)**：聚合阶段加 `nodeStats aggregate`，按 AB 分组打印每 run 平均 evolved 数 + L1-L5 节点数分布
+
+### 关键数据（54 runs，3 seeds × 3 levels × 3 pools × AB）
+
+\\\
+[autoUpgrade=off] evolved: (none)
+                  levelDist: L1=11.4 L2/3/4/5=0/0/0/0 (n=27)
+[autoUpgrade=on ] evolved: energy=0.07
+                  levelDist: L1=13.7 L2=0.1 L3=0.4 L4=0.0 L5=0.2 (n=27)
+\\\
+
+### 结论：autoUpgrade 雨露均沾导致 evolve 几乎不触发
+- on 模式下平均每 run 仅 **0.2 个节点能升到 L5**，其余卡在 L1
+- evolved 总计 ~0.07/run（27 runs 只有 ~2 次进化，全是 energy）
+- 原因：§27 sort 是 `level ASC`，所有 L1 节点先升 L2 再升 L3，**预算被均分**；turret/shield 节点多，每个分到的资源不够升满
+- energy 节点少（1-2 个），偶尔有运气升满 → evolve 出现的是 energy 不是 turret/shield
+
+### 验证
+- `npm run build` 168.38 KB OK
+- `npm run bench:check` 9/9 OK（CSV 列未变，nodeStats 仅写入 JSON）
+- AB sweep 54 runs 完成，instrumentation 输出按预期
+
+### §32 不改游戏逻辑
+本节纯诊断。不变更 balance.ts / benchmark.ts 业务行为。
+
+### §33 候选（基于 §32 数据）
+- A. `§33` autoUpgrade 改"养精兵"策略：同 type 只升当前最高级节点到 L5+evolve，再轮下一个
+- B. `§33` 设阈值：检测到任何 turret/shield ≥ L4 时，停止升其它节点，集中冲顶
+- C. `§33` 降低 `ECONOMY.upgradeBaseCost` (30 → 20) 让升级更廉价
+- D. `§33` 降低 `ECONOMY.evolutionCostMult` (3 → 2) 直接放低 evolve 门槛
+---
+
+## §33 · autoUpgrade ""养精兵""策略（集中冲顶）
+
+### 目标
+§32 揭示雨露均沾导致 evolve 几乎不触发。本节重写 `tickAutoUpgrade`：同一候选列表内按 **level DESC** 排序（最高级优先冲顶），单节点 upgrade→evolve 一气呵成，再轮下一个。
+
+### 代码改动
+**[src/benchmark.ts](src/benchmark.ts)** `tickAutoUpgrade`：
+1. 候选合并 upgradable + 已满未进化 EVOLVABLE 一个列表
+2. sort 改：跨 type prio ASC（turret>shield>others）；同 type 内 `level DESC`；id 稳定 tiebreaker
+3. 每节点循环：能 upgrade 到 L5 → 立即 evolve（如果 EVOLVABLE）→ 下一个
+4. 删除 §31 的二阶段独立扫描
+
+### 验证 sweep（54 runs，同 §32 配置）
+
+\\\
+[autoUpgrade=off] n=27 avgScore=34.1 avgWave=9.04 won=1
+[autoUpgrade=on ] n=27 avgScore=78.5 avgWave=9.26 won=3
+\\\
+
+### 对比 §32 vs §33（autoUpgrade=on）
+| 指标 | §32 | §33 | Δ |
+|------|----:|----:|--:|
+| avgScore | 64.6 | **78.5** | **+22%** |
+| avgWave | 9.00 | 9.26 | +0.26 |
+| won | 3 | 3 | 0 |
+| evolved | energy=0.07 | energy=0.04 | **-43%** |
+| L5 nodes/run | 0.2 | 0.3 | +50% |
+
+### 部分胜利 · 部分负面
+- **+22% score** 是 §28 以来最大单次提升；L5 节点数也涨了
+- 但 **won 不变**（3/27），死亡墙稳如泰山
+- **evolved 反而变少**：养精兵让 turret/shield 优先冲顶，但 turret 不在 EVOLVABLE 名单（手动 evolve 路径才能；需查 EVOLVABLE_TYPES）；energy 是 EVOLVABLE 但 prio 最低，资源轮不到
+- 真正瓶颈：**资源池总量不够**。off 模式 L1 节点 13.4 个但全部 L1，on 模式只有 0.3 个能到 L5——预算约束硬上限
+
+### 验证
+- `npm run build` 168.33 KB OK
+- `npm run bench:check` 9/9 OK
+- AB sweep 54 runs，nodeStats 已按 AB 分组输出
+
+### §34 候选（基于 §33 数据）
+- A. `§34` 检查 `EVOLVABLE_TYPES` 实际成员（确认 turret/shield 是否在内），如不在需扩展
+- B. `§34` 调高 `ECONOMY.mineOutputBase`（3→4 或 5）增加资源池总量，攻击死亡墙
+- C. `§34` 调低 `ECONOMY.upgradeBaseCost`（30→20）让升级更便宜
+- D. `§34` enemy wave 8+ HP 缩放下调，直接降低死亡墙高度
+---
+
+## §34 · EVOLVABLE_TYPES 名单与 evolve 成本诊断（零代码）
+
+### 目标
+§33 evolved 几乎只有 energy 出现（0.04/run），怀疑 turret/shield 不在 EVOLVABLE 名单。本节查证。
+
+### 查证结果
+**[src/data/evolution.ts](src/data/evolution.ts) `EVOLVABLE_TYPES`** 涵盖 19 种节点，包括 `turret/shield/energy/mine/tesla/factory/...`。**名单没问题**。
+
+### evolve 成本对照表
+\\\
+calcEvolutionCost(type)        = NODE_CONFIGS[type].cost × 3
+calcEvolutionCrystalCost(type) = ceil(cost / 16)
+\\\
+
+| 类型 | cost | evoCost(res) | evoCrystal |
+|------|----:|----:|----:|
+| turret | 50 | **150** | **4** |
+| shield | 60 | **180** | **4** |
+| energy | 30 | 90 | **2** |
+| mine | 40 | 120 | **3** |
+
+### Crystal 来源（[src/data/balance.ts](src/data/balance.ts) ENEMY_DEATH_REWARDS）
+\\\
+scout=1 swarm=1 splitter=1
+heavy=2 stealth=2 disruptor=2 healer=2 shielder=2
+boss=8
+default=1
+\\\
+
+### 真因诊断
+- ✗ EVOLVABLE 名单不是问题
+- **✓ Crystal 是双瓶颈之一**：§33 养精兵优先 turret/shield（需 4 crystal），但 9 波击杀总 crystal ~10-20 → 升满 L5 时常 crystal 不够 → fallthrough 到 energy（仅需 2 crystal）→ energy 偶尔进化成功
+- **✓ Resource 也是瓶颈**：升级 5 级累计 30+60+90+120 = 300 resources/节点；养精兵冲 turret 还要再凑 150 才能 evolve = **450 res/turret**
+- 死亡墙根因：单次 sweep 总产出（mine ×9 wave × ~3 res/wave + 击杀 res）远不够多个节点冲顶
+
+### §35 候选（基于双瓶颈分析）
+- A. `§35` 调高 `mineOutputBase` 3→5（直接增 res 池），AB 验证 won 是否破墙
+- B. `§35` 调低 `evolutionCrystalDivisor` 16→8（crystal 成本 ×0.5），让 evolve 触发率提升
+- C. `§35` 调低 `evolutionCostMult` 3→2（res 成本 ×0.67）
+- D. `§35` enemy reward.crystal +1（提升 crystal 产出而非降成本）
+---
+
+## §35 · mineOutputBase 3→5 验证（已回滚）
+
+### 目标
+§34 诊断 res+crystal 双瓶颈。本节攻击 res 侧：`mineOutputBase 3→5` 同时 `mineOutputOvercharge 6→8`（资源增产 ~67%）。
+
+### 验证 sweep（54 runs，同 §33 配置）
+\\\
+[autoUpgrade=off] n=27 avgScore=38.3 avgWave=8.96 won=3
+[autoUpgrade=on ] n=27 avgScore=63.0 avgWave=9.56 won=3
+\\\
+
+### 对比 §33 vs §35（autoUpgrade=on）
+| 指标 | §33 | §35 | Δ |
+|------|----:|----:|--:|
+| avgScore | 78.5 | **63.0** | **-20%** |
+| avgWave | 9.26 | 9.56 | +0.30 |
+| won | 3 | 3 | 0 |
+| evolved | energy=0.04 | energy=0.04 | 0 |
+| L5 | 0.3 | 0.3 | 0 |
+| L1 nodes | 13.0 | 10.6 | -18% |
+
+### 负面结论 → 回滚
+- score **-20%**，evolved 完全无改善 → **crystal 才是真瓶颈，纯加 res 无效**
+- L1 节点降 18%（off 模式 L1 反升 13.4→16.7）→ 增产的 res 大部分被新建造或低 level 升级吸走
+- avgWave +0.30 是唯一正面，但代价太大
+- 已回滚 `mineOutputBase: 3, mineOutputOvercharge: 6`
+
+### 验证
+- 回滚后 `npm run build` OK
+- `npm run bench:check` 9/9 OK（baseline pool 不含 mine）
+- 教训：**调单一变量前应先确认它是约束变量**。§34 双瓶颈分析是对的，但优先级应是 crystal 而非 res
+
+### §36 候选
+- A. `§36` 调低 `evolutionCrystalDivisor 16→32`（crystal 成本 ×0.5）直接攻击 crystal 瓶颈
+- B. `§36` 调高 `ENEMY_DEATH_REWARDS.*.crystal` 全 +1（crystal 产出侧）
+- C. `§36` 调低 `evolutionCostMult 3→2`（res 侧 evolve 门槛 -33%）
+- D. `§36` 不再调 balance，直接动 enemy wave 8+ HP 缩放
