@@ -21,6 +21,9 @@ export class InputManager {
   private state: GameState;
   private buildMode: BuildMode = null;
   private onRestart: () => void;
+  /** V1.1.0：暂停菜单触发的"返回选卡"与"返回标题"回调 */
+  private onExitToLevelSelect: (() => void) | null;
+  private onExitToTitle: (() => void) | null;
   techState: TechState;
   allowedNodeTypes: NodeType[] | null = null;
   // 摄像机拖拽
@@ -48,9 +51,19 @@ export class InputManager {
   private boundContextMenu: (e: Event) => void;
   private ui: UI | null;
 
-  constructor(canvas: HTMLCanvasElement, state: GameState, onRestart: () => void, techState: TechState, ui?: UI) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    state: GameState,
+    onRestart: () => void,
+    techState: TechState,
+    ui?: UI,
+    onExitToLevelSelect?: () => void,
+    onExitToTitle?: () => void,
+  ) {
     this.state = state;
     this.onRestart = onRestart;
+    this.onExitToLevelSelect = onExitToLevelSelect ?? null;
+    this.onExitToTitle = onExitToTitle ?? null;
     this.techState = techState;
     this.canvas = canvas;
     this.ui = ui ?? null;
@@ -102,6 +115,29 @@ export class InputManager {
     const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
+
+    // V1.1.0：暂停菜单打开时独占左键点击
+    if (e.button === 0 && this.ui?.pauseMenuOpen) {
+      const hit = this.ui.pauseMenuAreas.find(
+        a => sx >= a.x && sx <= a.x + a.w && sy >= a.y && sy <= a.y + a.h,
+      );
+      if (hit) {
+        this.ui.pauseMenuIndex = hit.idx;
+        this.triggerPauseMenu(hit.idx);
+      }
+      return;
+    }
+
+    // V1.0.6：科技树打开时拦截左键点击 → 点中可研究卡片则研究，未命中也不透过到画布
+    if (e.button === 0 && this.techState.showPanel && this.ui) {
+      const hit = this.ui.techCardAreas.find(
+        a => sx >= a.x && sx <= a.x + a.w && sy >= a.y && sy <= a.y + a.h,
+      );
+      if (hit && hit.available) {
+        researchTech(hit.techId, this.techState, this.state);
+      }
+      return;
+    }
 
     // Ctrl + 左键 拖拽平移摄像机
     if (e.button === 0 && e.ctrlKey) {
@@ -370,8 +406,19 @@ export class InputManager {
 
     const action = getActionForKey(key);
 
+    // V1.1.0：暂停菜单打开时独占输入
+    if (this.ui?.pauseMenuOpen) {
+      this.handlePauseMenuKey(key);
+      return;
+    }
+
+    // V1.1.0：游戏失败时按重启键 → 直接返回选卡（不再原地重开本关）
     if (this.state.gameOver && action === 'restart') {
-      this.onRestart();
+      if (this.onExitToLevelSelect) {
+        this.onExitToLevelSelect();
+      } else {
+        this.onRestart();
+      }
       return;
     }
 
@@ -384,11 +431,12 @@ export class InputManager {
       return;
     }
 
-    // 科技树面板内的数字键 → 研究科技
+    // 科技树面板内的数字键 → 研究科技（V1.0.6：键 0 映射第10个科技）
     if (this.techState.showPanel) {
-      const num = parseInt(key);
-      if (num >= 1 && num <= this.techState.tree.length) {
-        const techIdx = num - 1;
+      let techIdx = -1;
+      if (key >= '1' && key <= '9') techIdx = parseInt(key) - 1;
+      else if (key === '0') techIdx = 9;
+      if (techIdx >= 0 && techIdx < this.techState.tree.length) {
         researchTech(this.techState.tree[techIdx].id, this.techState, this.state);
       }
       if (key === 'escape') {
@@ -426,32 +474,25 @@ export class InputManager {
       return;
     }
 
-    // 建造快捷键
-    const buildMap: Record<string, NodeType> = {
-      '1': 'energy',
-      '2': 'turret',
-      '3': 'mine',
-      '4': 'shield',
-      '5': 'relay',
-      '6': 'tesla',
-      '7': 'core',
-      '8': 'beacon',
-      '9': 'factory',
-      '0': 'magnet',
-      '-': 'trap',
-      '=': 'repair',
-      '\\': 'sniper',
-      ']': 'buffer',
-      '[': 'collector',
-      "'": 'interceptor',
-      ';': 'radar',
-      '`': 'portal',
-      '.': 'blackhole',
-      '/': 'echo',
-      ',': 'toxin',
-      'q': 'arc',
-      'e': 'kamikaze',
-    };
+    // 建造快捷键：优先使用 allowedNodeTypes 选择顺序动态绑定数字键 1..9,0（V1.0.5）
+    // 未提供 allowedNodeTypes 时退回到原有24 键静态表（充当高阶、调试、 bench 场景默认）
+    const numKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+    const buildMap: Record<string, NodeType> = {};
+    if (this.allowedNodeTypes && this.allowedNodeTypes.length > 0) {
+      // 动态按选择顺序绑定
+      for (let i = 0; i < Math.min(numKeys.length, this.allowedNodeTypes.length); i++) {
+        buildMap[numKeys[i]] = this.allowedNodeTypes[i];
+      }
+    } else {
+      // 退回静态表
+      Object.assign(buildMap, {
+        '1': 'energy', '2': 'turret', '3': 'mine', '4': 'shield', '5': 'relay',
+        '6': 'tesla', '7': 'core', '8': 'beacon', '9': 'factory', '0': 'magnet',
+        '-': 'trap', '=': 'repair', '\\': 'sniper', ']': 'buffer', '[': 'collector',
+        "'": 'interceptor', ';': 'radar', '`': 'portal', '.': 'blackhole', '/': 'echo',
+        ',': 'toxin', 'q': 'arc', 'e': 'kamikaze',
+      } as Record<string, NodeType>);
+    }
 
     if (buildMap[key]) {
       const nodeType = buildMap[key];
@@ -485,14 +526,89 @@ export class InputManager {
       return;
     }
 
-    // ESC 取消
+    // ESC 取消 / 唤起暂停菜单（V1.1.0）
     if (key === 'escape') {
+      // 优先级 1：取消上下文（连线/建造/选中节点）
       if (this.state.draggingFrom) {
         this.state.draggingFrom = null;
         return;
       }
-      this.buildMode = null;
-      this.state.selectedNodeId = null;
+      if (this.buildMode || this.state.selectedNodeId || this.state.selectedNodeIds.length > 0) {
+        this.buildMode = null;
+        this.state.selectedNodeId = null;
+        this.state.selectedNodeIds = [];
+        return;
+      }
+      // 优先级 2：游戏运行中（非 gameOver/levelWon/教程）→ 打开暂停菜单
+      if (this.ui && !this.state.gameOver && !this.state.levelWon && !isTutorialActive()) {
+        this.openPauseMenu();
+      }
+    }
+  }
+
+  /** V1.1.0：打开暂停菜单 */
+  private openPauseMenu(): void {
+    if (!this.ui) return;
+    this.ui.pauseMenuOpen = true;
+    this.ui.pauseMenuIndex = 0;
+    this.state.paused = true;
+  }
+
+  /** V1.1.0：关闭暂停菜单 */
+  private closePauseMenu(): void {
+    if (!this.ui) return;
+    this.ui.pauseMenuOpen = false;
+    this.state.paused = false;
+  }
+
+  /** V1.1.0：暂停菜单内键盘处理 */
+  private handlePauseMenuKey(key: string): void {
+    if (!this.ui) return;
+    const len = this.ui.pauseMenuItems.length;
+    if (key === 'escape') {
+      this.closePauseMenu();
+      return;
+    }
+    if (key === 'arrowup' || key === 'w') {
+      this.ui.pauseMenuIndex = (this.ui.pauseMenuIndex - 1 + len) % len;
+      return;
+    }
+    if (key === 'arrowdown' || key === 's') {
+      this.ui.pauseMenuIndex = (this.ui.pauseMenuIndex + 1) % len;
+      return;
+    }
+    if (key >= '1' && key <= '9') {
+      const idx = parseInt(key) - 1;
+      if (idx < len) this.triggerPauseMenu(idx);
+      return;
+    }
+    if (key === 'enter' || key === ' ') {
+      this.triggerPauseMenu(this.ui.pauseMenuIndex);
+      return;
+    }
+  }
+
+  /** V1.1.0：执行暂停菜单某项 */
+  private triggerPauseMenu(idx: number): void {
+    if (!this.ui) return;
+    const item = this.ui.pauseMenuItems[idx];
+    if (!item) return;
+    switch (item.action) {
+      case 'resume':
+        this.closePauseMenu();
+        break;
+      case 'restart':
+        this.closePauseMenu();
+        this.onRestart();
+        break;
+      case 'levels':
+        this.closePauseMenu();
+        if (this.onExitToLevelSelect) this.onExitToLevelSelect();
+        break;
+      case 'title':
+        this.closePauseMenu();
+        if (this.onExitToTitle) this.onExitToTitle();
+        break;
     }
   }
 

@@ -1,5 +1,6 @@
 // ===== 关卡定义系统 =====
 import type { NodeType } from './types';
+import { LEVELS } from './data/levels';
 
 export type ObjectiveType = 'survive' | 'boss' | 'protect' | 'timed';
 
@@ -41,7 +42,7 @@ export interface LevelConfig {
 }
 
 // LEVELS 已迁移至 src/data/levels.ts，从此处重新导出以保持向后兼容
-export { LEVELS } from './data/levels';
+export { LEVELS };
 
 export function getUnlockedLevels(clearedLevelIds: number[]): LevelConfig[] {
   return LEVELS.filter(l => l.unlockRequires === 0 || clearedLevelIds.includes(l.unlockRequires));

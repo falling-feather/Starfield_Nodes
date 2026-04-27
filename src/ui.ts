@@ -42,6 +42,23 @@ export class UI {
   selectedEdgeType: EdgeType = 'standard';
   /** 节点面板按钮命中区域（屏幕坐标） */
   nodeButtons: { action: string; x: number; y: number; w: number; h: number; enabled: boolean }[] = [];
+  /** 科技树卡片点击区（V1.0.6）：drawTechPanel 负责填充，input.ts 负责命中检测 */
+  techCardAreas: { idx: number; techId: string; x: number; y: number; w: number; h: number; available: boolean; unlocked: boolean }[] = [];
+
+  // ── V1.1.0 暂停菜单 ──
+  /** 暂停菜单是否打开（独立于 state.paused：菜单打开 → state.paused = true，但 P 键暂停不会打开菜单） */
+  pauseMenuOpen: boolean = false;
+  /** 当前高亮的菜单项索引 */
+  pauseMenuIndex: number = 0;
+  /** 暂停菜单条目（label + action token，由 input.ts 解释执行） */
+  readonly pauseMenuItems: { label: string; action: 'resume' | 'restart' | 'levels' | 'title' }[] = [
+    { label: '继续', action: 'resume' },
+    { label: '重开本关', action: 'restart' },
+    { label: '返回选卡', action: 'levels' },
+    { label: '返回标题', action: 'title' },
+  ];
+  /** 暂停菜单条目命中区（屏幕坐标），由 drawPauseMenu 填充，onMouseDown 命中检测 */
+  pauseMenuAreas: { idx: number; x: number; y: number; w: number; h: number }[] = [];
 
   // ── 微动效状态 ──
   /** HUD 首次进入战斗时的淡入起点（ms） */
@@ -101,8 +118,13 @@ export class UI {
       this.drawTutorial(state);
     }
 
-    if (state.paused && !this.techState?.showPanel && !isTutorialActive()) {
+    if (state.paused && !this.techState?.showPanel && !isTutorialActive() && !this.pauseMenuOpen) {
       this.drawPaused(state);
+    }
+
+    // V1.1.0 暂停菜单
+    if (this.pauseMenuOpen) {
+      this.drawPauseMenu(state);
     }
 
     // 节点环形菜单（绘制在暂停遮罩之上）
@@ -590,7 +612,8 @@ export class UI {
     ctx.lineTo(state.canvasWidth, panelY);
     ctx.stroke();
 
-    const allBuildTypes: { key: string; type: NodeType; label: string }[] = [
+    // 静态表：仅作为未限制节点选择场景下的退回（如 bench / 调试）
+    const fallbackBuildTypes: { key: string; type: NodeType; label: string }[] = [
       { key: '1', type: 'energy', label: '能量站' },
       { key: '2', type: 'turret', label: '炮塔' },
       { key: '3', type: 'mine', label: '矿机' },
@@ -616,10 +639,22 @@ export class UI {
       { key: 'E', type: 'kamikaze', label: '自爆' },
     ];
 
-    // 按允许列表过滤
-    const buildTypes = this.allowedNodeTypes
-      ? allBuildTypes.filter(bt => this.allowedNodeTypes!.includes(bt.type))
-      : allBuildTypes;
+    // V1.0.5：有 allowedNodeTypes 时按玩家选择顺序绑定数字键 1..9,0
+    const NUM_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+    const NODE_LABELS: Partial<Record<NodeType, string>> = Object.fromEntries(
+      fallbackBuildTypes.map(bt => [bt.type, bt.label]),
+    ) as Partial<Record<NodeType, string>>;
+
+    let buildTypes: { key: string; type: NodeType; label: string }[];
+    if (this.allowedNodeTypes && this.allowedNodeTypes.length > 0) {
+      buildTypes = this.allowedNodeTypes.slice(0, NUM_KEYS.length).map((type, i) => ({
+        key: NUM_KEYS[i],
+        type,
+        label: NODE_LABELS[type] ?? type,
+      }));
+    } else {
+      buildTypes = fallbackBuildTypes;
+    }
 
     const startX = 10;
     ctx.font = FONT.md;
@@ -760,7 +795,10 @@ export class UI {
 
     ctx.font = FONT.base;
     ctx.fillStyle = COLORS.text.faint;
-    ctx.fillText(`◆ ${Math.floor(state.resources)} 可用资源  |  [T] 关闭  |  点击数字键研究`, cx, py + 46);
+    ctx.fillText(`◆ ${Math.floor(state.resources)} 可用资源  ·  鼠标点击 / 数字键研究 (1-9, 0)  ·  [Esc] 关闭`, cx, py + 46);
+
+    // 重置点击区【V1.0.6】
+    this.techCardAreas = [];
 
     // 绘制各科技节点
     const tree = this.techState.tree;
@@ -809,6 +847,15 @@ export class UI {
         ctx.fillRect(cardX, ty, cardW, cardH);
         ctx.strokeRect(cardX, ty, cardW, cardH);
 
+        // 记录点击区（V1.0.6：全部记录，点击时依赖 available 判断是否生效）
+        const techIdx = tree.indexOf(tech);
+        this.techCardAreas.push({
+          idx: techIdx,
+          techId: tech.id,
+          x: cardX, y: ty, w: cardW, h: cardH,
+          available, unlocked: tech.unlocked,
+        });
+
         // 图标
         ctx.font = FONT.xxl;
         ctx.fillStyle = tech.unlocked ? tech.color : available ? tech.color : COLORS.text.disabled;
@@ -845,13 +892,14 @@ export class UI {
           }
         }
 
-        // 快捷键提示（可研究的科技）
+        // 快捷键提示（V1.0.6：第10个科技用键 0，仅可研究状态显示）
         if (available) {
           const keyIdx = tree.indexOf(tech);
+          const slotKey = keyIdx < 9 ? String(keyIdx + 1) : '0';
           ctx.fillStyle = COLORS.accent.purple;
           ctx.font = 'bold 18px monospace';
           ctx.textAlign = 'right';
-          ctx.fillText(`[${keyIdx + 1}]`, cardX + cardW - 8, ty + 18);
+          ctx.fillText(`[${slotKey}]`, cardX + cardW - 8, ty + 18);
           ctx.textAlign = 'left';
         }
       }
@@ -958,6 +1006,73 @@ export class UI {
     ctx.fillStyle = COLORS.text.muted;
     ctx.font = '21px monospace';
     ctx.fillText('[P] 继续', state.canvasWidth / 2, state.canvasHeight / 2 + 40);
+
+    ctx.restore();
+  }
+
+  /** V1.1.0 暂停菜单：ESC 唤起的居中弹层 */
+  private drawPauseMenu(state: GameState): void {
+    const ctx = this.ctx;
+    ctx.save();
+
+    // 半透明遮罩
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
+
+    const cx = state.canvasWidth / 2;
+    const cy = state.canvasHeight / 2;
+    const itemW = 320;
+    const itemH = 56;
+    const gap = 12;
+    const titleH = 80;
+    const totalH = titleH + this.pauseMenuItems.length * (itemH + gap) - gap + 60;
+    const top = cy - totalH / 2;
+
+    // 标题
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = COLORS.accent.cyan;
+    ctx.fillStyle = COLORS.accent.cyan;
+    ctx.font = 'bold 42px monospace';
+    ctx.fillText('⏸ 暂停', cx, top + 30);
+    ctx.shadowBlur = 0;
+
+    // 菜单项
+    this.pauseMenuAreas = [];
+    const startY = top + titleH;
+    for (let i = 0; i < this.pauseMenuItems.length; i++) {
+      const item = this.pauseMenuItems[i];
+      const y = startY + i * (itemH + gap);
+      const x = cx - itemW / 2;
+      const isHover = this.pauseMenuIndex === i;
+
+      // 卡片背景
+      ctx.fillStyle = isHover ? 'rgba(0,200,220,0.18)' : 'rgba(20,30,40,0.85)';
+      ctx.strokeStyle = isHover ? COLORS.accent.cyan : COLORS.border.cyanFaint;
+      ctx.lineWidth = isHover ? 2 : 1;
+      ctx.fillRect(x, y, itemW, itemH);
+      ctx.strokeRect(x, y, itemW, itemH);
+
+      // 文字
+      ctx.fillStyle = isHover ? COLORS.accent.cyan : COLORS.text.muted;
+      ctx.font = isHover ? 'bold 22px monospace' : '20px monospace';
+      ctx.fillText(item.label, cx, y + itemH / 2);
+
+      // 数字快捷键
+      ctx.fillStyle = COLORS.text.faint;
+      ctx.font = '14px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(`[${i + 1}]`, x + itemW - 12, y + 14);
+      ctx.textAlign = 'center';
+
+      this.pauseMenuAreas.push({ idx: i, x, y, w: itemW, h: itemH });
+    }
+
+    // 提示
+    ctx.fillStyle = COLORS.text.faint;
+    ctx.font = '14px monospace';
+    ctx.fillText('↑↓ 切换  ·  Enter 确认  ·  鼠标点击  ·  数字键 1-4  ·  Esc 继续', cx, startY + this.pauseMenuItems.length * (itemH + gap) + 16);
 
     ctx.restore();
   }

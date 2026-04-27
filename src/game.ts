@@ -41,6 +41,8 @@ export class Game {
   private bossSpawned: boolean = false;
   private elapsedTime: number = 0;
   private onLevelEnd: ((won: boolean) => void) | null = null;
+  private onExitToLevelSelect: (() => void) | null = null;
+  private onExitToTitle: (() => void) | null = null;
   private boundResize: (() => void) | null = null;
   private noCoreDamage: boolean = true;
 
@@ -50,12 +52,16 @@ export class Game {
     levelConfig?: LevelConfig,
     selectedNodes?: NodeType[],
     onLevelEnd?: (won: boolean) => void,
+    onExitToLevelSelect?: () => void,
+    onExitToTitle?: () => void,
   ) {
     this.canvas = canvas;
     this.profile = profile;
     this.levelConfig = levelConfig ?? null;
     this.selectedNodes = selectedNodes ?? null;
     this.onLevelEnd = onLevelEnd ?? null;
+    this.onExitToLevelSelect = onExitToLevelSelect ?? null;
+    this.onExitToTitle = onExitToTitle ?? null;
 
     this.state = this.createInitialState();
     this.techState = createTechState();
@@ -63,7 +69,15 @@ export class Game {
     this.ui = new UI(this.canvas.getContext('2d')!);
     this.ui.techState = this.techState;
     this.ui.unlockedAchievements = this.profile.unlockedAchievements ?? [];
-    this.input = new InputManager(this.canvas, this.state, () => this.restart(), this.techState, this.ui);
+    this.input = new InputManager(
+      this.canvas,
+      this.state,
+      () => this.restart(),
+      this.techState,
+      this.ui,
+      () => { this.onExitToLevelSelect?.(); },
+      () => { this.onExitToTitle?.(); },
+    );
 
     // 限制可用节点类型
     if (this.selectedNodes) {

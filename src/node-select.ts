@@ -10,7 +10,8 @@ export class NodeSelectScreen {
   private level: LevelConfig;
   private onConfirm: (selectedNodes: NodeType[]) => void;
   private available: NodeType[];
-  private selected: Set<NodeType> = new Set();
+  /** 玩家选择顺序（按 push 顺序保留，不去除则用 includes 判定） */
+  private selected: NodeType[] = [];
   private cursorIdx = 0;
   private animFrameId = 0;
   private time = 0;
@@ -34,9 +35,9 @@ export class NodeSelectScreen {
     this.onConfirm = onConfirm;
     this.available = level.availableNodes;
 
-    // 默认选中前 maxSelectedNodes 个
+    // 默认选中前 maxSelectedNodes 个（按 available 顺序入队）
     for (let i = 0; i < Math.min(level.maxSelectedNodes, this.available.length); i++) {
-      this.selected.add(this.available[i]);
+      this.selected.push(this.available[i]);
     }
 
     this.keyHandler = (e: KeyboardEvent) => this.handleKey(e);
@@ -66,15 +67,16 @@ export class NodeSelectScreen {
     } else if (key === ' ' || key === 'q') {
       e.preventDefault();
       const node = this.available[this.cursorIdx];
-      if (this.selected.has(node)) {
-        this.selected.delete(node);
-      } else if (this.selected.size < this.level.maxSelectedNodes) {
-        this.selected.add(node);
+      const idx = this.selected.indexOf(node);
+      if (idx >= 0) {
+        this.selected.splice(idx, 1);
+      } else if (this.selected.length < this.level.maxSelectedNodes) {
+        this.selected.push(node);
       }
     } else if (key === 'enter') {
-      if (this.selected.size > 0) {
+      if (this.selected.length > 0) {
         this.destroy();
-        this.onConfirm(Array.from(this.selected));
+        this.onConfirm([...this.selected]);
       }
     }
 
@@ -116,21 +118,22 @@ export class NodeSelectScreen {
       if (mx >= area.x && mx <= area.x + area.w && my >= area.y && my <= area.y + area.h) {
         const node = this.available[area.idx];
         this.cursorIdx = area.idx;
-        if (this.selected.has(node)) {
-          this.selected.delete(node);
-        } else if (this.selected.size < this.level.maxSelectedNodes) {
-          this.selected.add(node);
+        const sIdx = this.selected.indexOf(node);
+        if (sIdx >= 0) {
+          this.selected.splice(sIdx, 1);
+        } else if (this.selected.length < this.level.maxSelectedNodes) {
+          this.selected.push(node);
         }
         return;
       }
     }
 
     // 检查确认按钮
-    if (this.confirmArea && this.selected.size > 0) {
+    if (this.confirmArea && this.selected.length > 0) {
       if (mx >= this.confirmArea.x && mx <= this.confirmArea.x + this.confirmArea.w &&
         my >= this.confirmArea.y && my <= this.confirmArea.y + this.confirmArea.h) {
         this.destroy();
-        this.onConfirm(Array.from(this.selected));
+        this.onConfirm([...this.selected]);
       }
     }
   }
@@ -166,7 +169,7 @@ export class NodeSelectScreen {
 
     ctx.font = '13px monospace';
     ctx.fillStyle = COLORS.text.muted;
-    ctx.fillText(`已选 ${this.selected.size} / ${this.level.maxSelectedNodes}`, w / 2, 120);
+    ctx.fillText(`已选 ${this.selected.length} / ${this.level.maxSelectedNodes}（数字键将按选择顺序绑定）`, w / 2, 120);
 
     // 节点卡片（自适应网格 + 行滚动）
     const { cols, visibleRows } = this.getGridMetrics();
@@ -208,7 +211,8 @@ export class NodeSelectScreen {
       const cx = startX + col * (cardW + gapX);
       const cy = cardY + row * (cardH + gapY);
       const isCursor = i === this.cursorIdx;
-      const isSelected = this.selected.has(type);
+      const selOrder = this.selected.indexOf(type); // -1 = 未选
+      const isSelected = selOrder >= 0;
 
       // 卡片背景
       if (isSelected) {
@@ -261,11 +265,12 @@ export class NodeSelectScreen {
       const shortDesc = desc.length > 8 ? `${desc.slice(0, 8)}…` : desc;
       ctx.fillText(shortDesc, cx + cardW / 2, cy + 90);
 
-      // 选中标记
+      // 选中标记 + 绑定数字键序号（1..N，第10个显示 0）
       if (isSelected) {
+        const slotKey = selOrder < 9 ? String(selOrder + 1) : '0';
         ctx.font = 'bold 14px monospace';
         ctx.fillStyle = COLORS.accent.green;
-        ctx.fillText('✓', cx + cardW / 2, cy + 108);
+        ctx.fillText(`✓ [${slotKey}]`, cx + cardW / 2, cy + 108);
       }
     }
 
@@ -287,7 +292,7 @@ export class NodeSelectScreen {
     ctx.fillStyle = COLORS.text.muted;
     ctx.fillText('出战编队:', w / 2, previewY);
 
-    const selArr = Array.from(this.selected);
+    const selArr = this.selected;
     const perRow = Math.max(5, Math.floor((w - 80) / 44));
     const iconGap = 42;
     for (let i = 0; i < selArr.length; i++) {
@@ -299,7 +304,14 @@ export class NodeSelectScreen {
       const rowStartX = (w - rowCount * iconGap) / 2;
       ctx.font = FONT.lg;
       ctx.fillStyle = cfg.glowColor;
-      ctx.fillText(icons[type] || '?', rowStartX + col * iconGap + 18, previewY + 28 + row * 24);
+      const cx2 = rowStartX + col * iconGap + 18;
+      const cy2 = previewY + 28 + row * 24;
+      ctx.fillText(icons[type] || '?', cx2, cy2);
+      // 绑定数字键序号小角标
+      ctx.font = 'bold 9px monospace';
+      ctx.fillStyle = COLORS.accent.green;
+      const slotKey = i < 9 ? String(i + 1) : '0';
+      ctx.fillText(slotKey, cx2 + 12, cy2 - 8);
     }
 
     // 操作提示
@@ -308,7 +320,7 @@ export class NodeSelectScreen {
     ctx.fillText('点击切换 · ←→↑↓ / WASD 移动光标 · 空格选择 · Enter 确认', w / 2, h - 32);
 
     // 确认按钮
-    if (this.selected.size > 0) {
+    if (this.selected.length > 0) {
       const btnW = 160;
       const btnH = 36;
       const btnX = w / 2 - btnW / 2;
