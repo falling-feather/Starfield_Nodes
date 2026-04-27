@@ -159,6 +159,23 @@ export function dist(a: { x: number; y: number }, b: { x: number; y: number }): 
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 }
 
+// ===== 联动：shield 是否直连同方 repair（用于伤害减免） =====
+export function hasShieldRepairLink(state: GameState, node: GameNode): boolean {
+  if (node.type !== 'shield') return false;
+  for (const edge of state.edges) {
+    let otherId: string | null = null;
+    if (edge.sourceId === node.id) otherId = edge.targetId;
+    else if (edge.targetId === node.id) otherId = edge.sourceId;
+    if (!otherId) continue;
+    const other = state.nodes.find(n => n.id === otherId);
+    if (!other || other.status === 'destroyed') continue;
+    if (other.type !== 'repair') continue;
+    if (other.owner !== node.owner) continue;
+    return true;
+  }
+  return false;
+}
+
 // ===== 连线校验 =====
 export function canConnect(state: GameState, sourceId: string, targetId: string): boolean {
   if (sourceId === targetId) return false;

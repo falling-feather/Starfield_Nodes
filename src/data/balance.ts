@@ -152,6 +152,8 @@ export const COMBAT = {
     evolvedArmorRange: 200,
     /** §24 调优 ③：装甲每 tick 修复 3 -> 4，对应 §22 建议的 armorBoost +1 */
     evolvedArmorHealPerTick: 4,
+    /** 联动：shield 直连 player owned repair 时，受到的伤害 ×(1 - reduce) */
+    synergyRepairDamageReduce: 0.20,
   },
 
   /** 维修站：每 tick 修复 = healAmount × level */

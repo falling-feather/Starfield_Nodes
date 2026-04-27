@@ -507,6 +507,31 @@ export class Renderer {
         ctx.restore();
       }
 
+      // === 联动高亮：shield ↔ repair 同方直连（再生护甲） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'shield' && target.type === 'repair')
+          || (source.type === 'repair' && target.type === 'shield'))) {
+        ctx.save();
+        const pulse = 0.40 + Math.sin(this.time * 3) * 0.18;
+        ctx.strokeStyle = `rgba(140, 255, 180, ${pulse})`;
+        ctx.lineWidth = lw + 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        // 内层细高光
+        ctx.strokeStyle = `rgba(220, 255, 230, ${pulse * 0.5})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       if (edge.type === 'amplify' && active) {
         // 增幅线：双线 + 金色脉冲
         const nx = -dy / len * 3; // 法线偏移

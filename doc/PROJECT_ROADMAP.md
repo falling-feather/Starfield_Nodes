@@ -1880,3 +1880,65 @@ V1.1.2 / V1.1.3 完成「经济（buffer-collector）」「防御控场（portal
 - **下一对候选**：shield × repair 「再生护甲」、energy × buffer 「能量塔共振」
 - 待玩家进入第 2 关后回归 tesla-relay 视觉与平衡（重点关注：tesla 网络是否会一击全屏？是否需要把 ratio 从 0.6 降到 0.4？）
 - 考虑给玩家加一个「联动图鉴」面板（按 Tab/合适快捷键打开，列出已发现的联动对 + 描述）
+
+
+## §V1.1.5 节点机制纵深(4)：shield × repair 再生护甲（2026-04-27 增补 · Phase β-4）
+
+### 背景
+
+V1.1.2-V1.1.4 完成了三种联动模式：加成型（buffer-collector）、事件型（portal-interceptor）、扩展型（tesla-relay）。本次 shield × repair 引入第四种：**减免型**。
+
+shield 与 repair 都属于「保命流派」节点，但在原版机制下二者各做各的：shield 给邻居小幅修复 + 装甲，repair 给邻居更强修复。玩家很难感受到"为 shield 配 repair"的策略价值。
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+`COMBAT.shield` 新增：
+
+- `synergyRepairDamageReduce: 0.20` —— shield 直连 player owned repair 时，shield 自身受到的伤害 × 0.8
+
+#### 逻辑层 src/graph.ts
+
+- 新增导出 `hasShieldRepairLink(state, node) -> boolean`：检查给定 shield 节点是否有同方 repair 邻居（O(edges)）
+
+#### 物理层 src/entities.ts
+
+- 在敌人接触 shield 节点的伤害结算前判定联动并衰减伤害
+- `proj.damage` 那条针对的是友方投射物打敌人，不涉及节点防御，无需改动
+
+#### 渲染层 src/renderer.ts drawEdges
+
+- shield ↔ repair 同方边以双层柔光绘制：外层 rgba(140,255,180, 0.22~0.58) 实线 + 内层 rgba(220,255,230, ~0.29) 细线
+- 颜色与之前三对联动（金/粉紫/青蓝）形成"医疗白绿"识别度
+
+### 设计取舍
+
+- **不直接给 shield 治疗加成**（如 +25% healAmount）：会与 V1.1.2/V1.1.4 同质化；改用「受伤减免」让玩家感受到的是「shield 变得更耐打」而不是「shield 变得更会治人」
+- **只对 shield 自身有效**：repair 节点本身不获得联动减伤，避免 shield-repair 互相成为不死阵
+- **不与 evolved/overcharged 叠加效应**：减免与现有 hp 修复并存即可，避免堆叠到接近无敌
+- **每次接触都计算 hasShieldRepairLink**：当前节点/边数量级（< 100）下开销可忽略，不做缓存
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 126ms，bundle 176.24 KB（V1.1.4 +0.82 KB） |
+| 联动判定逻辑 | OK 单边 owner+type 配对 + 单层伤害减免 |
+| 游戏内手动实测 | TODO 与 V1.1.2-V1.1.4 一并在玩家进入第 3 关时验证（shield 在第 2 关已可用，但 repair 从第 3 关起才解锁） |
+
+### 联动总览（4 对已上线）
+
+| 联动对 | 模式 | 解锁关 | edge 高亮色 |
+|---|---|---|---|
+| tesla × relay | 扩展（覆盖范围+） | L2 | 青蓝快闪虚线 |
+| buffer × collector | 加成（产出+25%） | L3 | 金色实线 |
+| portal × interceptor | 事件（额外射击） | L3 | 粉紫慢虚线 |
+| shield × repair | 减免（受伤-20%） | L3 | 医疗白绿双层 |
+
+### 后续
+
+- **联动图鉴**面板（按 K 或 Tab 打开）：让玩家看到自己已经触发过哪些联动 + 描述
+- **新手提示**：第 2 关结束时提示玩家"试试把 tesla 接到 relay 上"
+- 待玩家进入 L2/L3 后做一次 4 对联动的总回归

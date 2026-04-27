@@ -13,6 +13,8 @@ import {
 import { ENEMY_DEATH_REWARDS, DEFAULT_ENEMY_REWARD, RUNTIME } from './data/balance';
 import { dist } from './graph';
 import { getNebulaSlowFactor } from './graph';
+import { hasShieldRepairLink } from './graph';
+import { COMBAT } from './data/balance';
 import { sfxHit, sfxKill, sfxSplit, sfxDisrupt, sfxNodeHit } from './audio';
 import { emitDestructionParticles } from './particles';
 import { rand } from './rng';
@@ -167,7 +169,12 @@ export function updateEnemies(state: GameState, dt: number): void {
       // 到达节点，造成伤害
       const targetNode = state.nodes.find(n => n.id === closestNode!.id);
       if (targetNode && d < targetNode.radius + enemy.radius) {
-        targetNode.hp -= enemy.damage * dt;
+        let dmg = enemy.damage * dt;
+        // 联动：shield 直连同方 repair 时受伤减免
+        if (targetNode.type === 'shield' && hasShieldRepairLink(state, targetNode)) {
+          dmg *= (1 - COMBAT.shield.synergyRepairDamageReduce);
+        }
+        targetNode.hp -= dmg;
         targetNode.hitFlash = 1;
         if (rand() < 0.02) sfxNodeHit(); // 低频触发，避免噪音
         if (targetNode.hp <= targetNode.maxHp * 0.3) {
