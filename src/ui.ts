@@ -52,6 +52,10 @@ export class UI {
   nodeButtons: { action: string; x: number; y: number; w: number; h: number; enabled: boolean }[] = [];
   /** 科技树卡片点击区（V1.0.6）：drawTechPanel 负责填充，input.ts 负责命中检测 */
   techCardAreas: { idx: number; techId: string; x: number; y: number; w: number; h: number; available: boolean; unlocked: boolean }[] = [];
+  /** V1.2.4：科技树滚动偏移（像素），由 input wheel 调整 */
+  private techScrollOffset = 0;
+  /** V1.2.4：科技树最大可滚动距离（drawTechPanel 内更新） */
+  private techMaxScroll = 0;
 
   // ── V1.1.0 暂停菜单 ──
   /** 暂停菜单是否打开（独立于 state.paused：菜单打开 → state.paused = true，但 P 键暂停不会打开菜单） */
@@ -793,7 +797,24 @@ export class UI {
     const cx = state.canvasWidth / 2;
     const cy = state.canvasHeight / 2;
     const panelW = 600;
-    const panelH = 440;
+    const headerH = 70;   // 标题 + 资源行
+    const footerH = 18;   // 底部内边距 + 滚动提示
+    const cardH = 75;
+    const cardGap = 15;   // 90 - 75
+    // 按 tier 分组（与下方一致）
+    const treeAll = this.techState.tree;
+    const t1c = treeAll.filter(t => t.requires.length === 0).length;
+    const t2c = treeAll.filter(t => t.requires.length === 1).length;
+    const t3c = treeAll.filter(t => t.requires.length >= 2).length;
+    const maxTierCount = Math.max(t1c, t2c, t3c);
+    const contentH = maxTierCount * (cardH + cardGap);
+    const maxPanelH = Math.floor(state.canvasHeight * 0.85);
+    const panelH = Math.min(maxPanelH, headerH + contentH + footerH + 10);
+    const visibleContentH = panelH - headerH - footerH - 10;
+    this.techMaxScroll = Math.max(0, contentH - visibleContentH);
+    if (this.techScrollOffset > this.techMaxScroll) this.techScrollOffset = this.techMaxScroll;
+    if (this.techScrollOffset < 0) this.techScrollOffset = 0;
+
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
 
@@ -817,7 +838,8 @@ export class UI {
 
     ctx.font = FONT.base;
     ctx.fillStyle = COLORS.text.faint;
-    ctx.fillText(`◆ ${Math.floor(state.resources)} 可用资源  ·  鼠标点击 / 数字键研究 (1-9, 0)  ·  [Esc] 关闭`, cx, py + 46);
+    const hint = this.techMaxScroll > 0 ? '  ·  滚轮翻页' : '';
+    ctx.fillText(`◆ ${Math.floor(state.resources)} 可用资源  ·  鼠标点击 / 数字键研究 (1-9, 0)  ·  [Esc] 关闭${hint}`, cx, py + 46);
 
     // 重置点击区【V1.0.6】
     this.techCardAreas = [];
@@ -825,7 +847,7 @@ export class UI {
     // 绘制各科技节点
     const tree = this.techState.tree;
     const colW = panelW / 3;
-    const startY = py + 70;
+    const startY = py + headerH;
 
     // 按 tier 分组
     const tier1 = tree.filter(t => t.requires.length === 0);
@@ -834,23 +856,40 @@ export class UI {
     const tiers = [tier1, tier2, tier3];
     const tierLabels = ['基 础', '进 阶', '高 级'];
 
+    // Tier 标签（不参与滚动）
+    for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
+      const tierX = px + tierIdx * colW;
+      const tierCx = tierX + colW / 2;
+      ctx.fillStyle = COLORS.text.border;
+      ctx.font = FONT.md;
+      ctx.textAlign = 'center';
+      ctx.fillText(tierLabels[tierIdx], tierCx, startY - 8);
+    }
+
+    // 卡片区裁剪 + 滚动
+    const clipY = startY + 4;
+    const clipH = visibleContentH;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(px, clipY, panelW, clipH);
+    ctx.clip();
+
     for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
       const tier = tiers[tierIdx];
       const tierX = px + tierIdx * colW;
       const tierCx = tierX + colW / 2;
 
-      // Tier 标签
-      ctx.fillStyle = COLORS.text.border;
-      ctx.font = FONT.md;
-      ctx.textAlign = 'center';
-      ctx.fillText(tierLabels[tierIdx], tierCx, startY - 8);
-
       for (let i = 0; i < tier.length; i++) {
         const tech = tier[i];
-        const ty = startY + 10 + i * 90;
+        const ty = startY + 10 + i * (cardH + cardGap) - this.techScrollOffset;
         const cardW = colW - 20;
-        const cardH = 75;
         const cardX = tierCx - cardW / 2;
+
+        // 视口剔除（不影响命中区，命中区也用滚动后坐标即可）
+        if (ty + cardH < clipY || ty > clipY + clipH) {
+          // 仍然不记录命中区（不可见就别点）
+          continue;
+        }
 
         const available = canResearch(tech, this.techState, state.resources);
 
@@ -926,21 +965,42 @@ export class UI {
         }
       }
 
-      // 绘制 tier 之间的连接线
+      // 绘制 tier 之间的连接线（也在裁剪区内随滚动）
       if (tierIdx < tiers.length - 1) {
         ctx.strokeStyle = COLORS.text.borderFaint;
         ctx.lineWidth = 0.5;
         ctx.setLineDash([3, 3]);
         const lineX = tierX + colW;
         ctx.beginPath();
-        ctx.moveTo(lineX, startY);
-        ctx.lineTo(lineX, startY + 280);
+        ctx.moveTo(lineX, clipY);
+        ctx.lineTo(lineX, clipY + clipH);
         ctx.stroke();
         ctx.setLineDash([]);
       }
     }
 
+    ctx.restore(); // 解除裁剪
+
+    // 滚动条（仅当可滚动时）
+    if (this.techMaxScroll > 0) {
+      const sbX = px + panelW - 6;
+      const sbY = clipY;
+      const sbH = clipH;
+      ctx.fillStyle = 'rgba(170,68,255,0.15)';
+      ctx.fillRect(sbX, sbY, 4, sbH);
+      const thumbH = Math.max(20, sbH * (clipH / contentH));
+      const thumbY = sbY + (sbH - thumbH) * (this.techScrollOffset / this.techMaxScroll);
+      ctx.fillStyle = COLORS.accent.purple;
+      ctx.fillRect(sbX, thumbY, 4, thumbH);
+    }
+
     ctx.restore();
+  }
+
+  /** V1.2.4：滚动科技树面板，由 input wheel 调用。delta 为像素，正值向下。 */
+  scrollTechPanel(delta: number): void {
+    if (!this.techState || !this.techState.showPanel) return;
+    this.techScrollOffset = Math.max(0, Math.min(this.techMaxScroll, this.techScrollOffset + delta));
   }
 
   private drawGameOver(state: GameState): void {

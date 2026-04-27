@@ -2447,3 +2447,73 @@ if (magnetLink) {
      - 难度选项（休闲/标准/极限）
      - roguelike 化：随机化敌人/节点/起点
      - 元进阶：跨局 perk 解锁
+
+
+## §V1.2.4 滚轮翻页·选卡 + 科技树（2026-04-27 增补 · Phase β-13）
+
+### 背景
+
+V1.2.3 上线后玩家反馈两处可用性卡点：
+1. **选卡界面**：节点池超过单屏行数时，只能键盘 W/S 切换游标触发自动滚动，鼠标用户无法直接滚动行
+2. **科技树面板**：固定 `panelH=440`，第 7-8 项科技超出可视区被裁掉（如 V1.2.x 进阶层 5 项时纳米修复/狙击协议溢出）
+
+### 实现
+
+#### src/node-select.ts
+
+- 新增 `wheelHandler` + `handleWheel()`：`e.deltaY > 0 ? +1 : -1`，`rowOffset` clamp 到 `[0, totalRows-visibleRows]`
+- 在 ctor 注册 `canvas.addEventListener('wheel', ..., { passive: false })`，destroy 时移除
+- `e.preventDefault()` 防止页面整体滚动
+
+#### src/ui.ts
+
+`drawTechPanel` 大改造（自适应高度 + 滚动）：
+
+- 新字段 `private techScrollOffset = 0` / `private techMaxScroll = 0`
+- 计算 `maxTierCount = max(t1, t2, t3)` → `contentH = maxTierCount * 90`
+- `panelH = min(viewportH * 0.85, headerH + contentH + footerH + 10)`
+- `visibleContentH = panelH - headerH - footerH - 10`
+- `techMaxScroll = max(0, contentH - visibleContentH)`
+- 每帧 clamp `techScrollOffset` 到 `[0, techMaxScroll]`
+- 卡片绘制区 `ctx.save() + ctx.rect(...) + ctx.clip()` 限制溢出
+- 卡片 ty 减去 `techScrollOffset`，可见区外 `continue` 跳过（包括点击区注册）
+- Tier 列分割虚线高度跟随 clipH
+- 当 `techMaxScroll > 0`：右侧 4px 紫色滚动条，thumb 高度按比例，标题行尾追加「· 滚轮翻页」提示
+- 新增 public `scrollTechPanel(delta)`：clamp 后写回偏移
+
+#### src/input.ts
+
+`onWheel` 开头加分流：
+```ts
+if (this.techState.showPanel && this.ui) {
+  this.ui.scrollTechPanel(e.deltaY);
+  return;
+}
+// else 镜头 zoom
+```
+
+### 设计取舍
+
+- **选卡用整行步进而非像素滚动**：行高 116+10=126，与一次滚轮 deltaY≈100 不匹配；按行步进保证视觉对齐，没必要中间态
+- **科技树用像素滚动**：tier 列高度独立、卡片高度统一 90，像素滚动允许平滑停在任意位置，配合 clip 不会切到中间卡片导致歧义（玩家能预判下一格）
+- **滚动只在内容溢出时启用**：低分辨率屏（700px+）才会触发，常规 1080p 玩家无感
+- **不引入额外快捷键**：鼠标滚轮是约定俗成手势，不污染 keybinds 表
+- **滚动条放在面板内右侧 4px**：避免遮挡 tier 列内容，紫色与面板主色一致
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK |
+| `npm run build` | OK 161ms，bundle 188.25 KB（V1.2.3 +1.55 KB） |
+| 选卡滚轮：节点 ≤ 单屏 | OK 不响应（maxOffset=0 早返） |
+| 选卡滚轮：节点超过单屏 | OK 一次滚动一行，到顶/底 clamp |
+| 科技树小屏（h=600） | OK panelH 自动收缩 + 显示滚动条 |
+| 科技树大屏（h=1080） | OK panelH=contentH，无滚动条 |
+| 科技树滚动后点击卡片 | OK 命中区随 ty 偏移，可见区外不可点 |
+| 镜头 zoom（科技树关闭时） | OK 行为不变 |
+
+### 后续
+
+- 可选优化：成就面板 / 联动图鉴 / 暂停菜单也可统一接入 `scrollPanel(delta)` 抽象（目前内容未溢出，先不做）
+- 长远：键盘 PageUp/PageDown 翻页（一次跳一屏）

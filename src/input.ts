@@ -672,6 +672,11 @@ export class InputManager {
 
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
+    // V1.2.4：科技树打开时滚轮翻页，不操作镜头
+    if (this.techState.showPanel && this.ui) {
+      this.ui.scrollTechPanel(e.deltaY);
+      return;
+    }
     const cam = this.state.camera;
     const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
     cam.targetZoom = Math.max(0.3, Math.min(2.0, cam.targetZoom * zoomFactor));
