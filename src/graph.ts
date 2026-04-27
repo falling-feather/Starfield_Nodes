@@ -928,13 +928,33 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
   }
   if (nearbyCount === 0) return;
 
+  // 联动：直连 player owned buffer 数量（用于产能加成 + 晶体阈值减免）
+  let bufferLinkCount = 0;
+  for (const edge of state.edges) {
+    let otherId: string | null = null;
+    if (edge.sourceId === collector.id) otherId = edge.targetId;
+    else if (edge.targetId === collector.id) otherId = edge.sourceId;
+    if (!otherId) continue;
+    const other = state.nodes.find(n => n.id === otherId);
+    if (!other || other.status === 'destroyed') continue;
+    if (other.type !== 'buffer') continue;
+    if (other.owner !== collector.owner) continue;
+    bufferLinkCount++;
+  }
+  const synergyMult = bufferLinkCount > 0 ? (1 + COMBAT.collector.synergyBufferBonus) : 1;
+
   const cap = overcharged ? nearbyCount : Math.min(nearbyCount, COMBAT.collector.maxNearbyCap);
-  const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1);
+  const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1) * synergyMult;
   state.resources += Math.floor(output);
 
   // 进化(量子拾荒): crystalThreshold+敌人在范围内时每tick产1晶体
-  if (evolved && nearbyCount >= COMBAT.collector.crystalThreshold) {
-    state.crystals += 1;
+  // 联动：每接 1 个 buffer，threshold -1（最低 1）
+  if (evolved) {
+    const reduce = bufferLinkCount * COMBAT.collector.synergyCrystalThresholdReduce;
+    const effectiveThreshold = Math.max(1, COMBAT.collector.crystalThreshold - reduce);
+    if (nearbyCount >= effectiveThreshold) {
+      state.crystals += 1;
+    }
   }
 }
 

@@ -311,7 +311,7 @@ export const COMBAT = {
     overchargeCapRatio: 1.2,
   },
 
-  /** 采集器：output = cap × level × (evolved ? evolvedOutputMult : 1) */
+  /** 采集器：output = cap × level × (evolved ? evolvedOutputMult : 1) × (1 + synergy) */
   collector: {
     range: { n: 180, e: 240, oc: 300 },
     /** 普通形态最多统计 cap 个敌人，超载无上限 */
@@ -320,6 +320,10 @@ export const COMBAT = {
     evolvedOutputMult: 1.5,
     /** 进化形态：附近敌人 ≥ crystalThreshold 时每 tick 产 1 晶体 */
     crystalThreshold: 3,
+    /** 联动：直连任一 player owned buffer 时产出 +bonus（不叠加多个） */
+    synergyBufferBonus: 0.25,
+    /** 联动：晶体阈值的 buffer 减免（每接一个 buffer 减 1，最低 1） */
+    synergyCrystalThresholdReduce: 1,
   },
 
   /** 回声塔：复制邻居能力时的代理节点 level 缩放 + 超载额外伤害乘数 */

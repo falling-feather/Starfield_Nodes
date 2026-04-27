@@ -449,6 +449,24 @@ export class Renderer {
         ctx.restore();
       }
 
+      // === 联动高亮：buffer ↔ collector 同方直连 ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'buffer' && target.type === 'collector')
+          || (source.type === 'collector' && target.type === 'buffer'))) {
+        ctx.save();
+        const pulse = 0.45 + Math.sin(this.time * 4) * 0.15;
+        ctx.strokeStyle = `rgba(255, 215, 96, ${pulse})`;
+        ctx.lineWidth = lw + 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       if (edge.type === 'amplify' && active) {
         // 增幅线：双线 + 金色脉冲
         const nx = -dy / len * 3; // 法线偏移
