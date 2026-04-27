@@ -158,6 +158,7 @@ export class Game {
       nodesBuilt: 0,
       resourcesSpent: 0,
       discoveredSynergies: new Set<string>(this.profile.discoveredSynergies ?? []),
+      pendingSynergyEvents: [],
     };
   }
 
@@ -239,6 +240,14 @@ export class Game {
 
     if (!this.state.paused && !this.state.gameOver && !this.state.levelWon) {
       this.update(dt);
+    }
+
+    // V1.2.1：消费本帧的「首次发现联动」事件，派发为世界内 toast
+    if (this.state.pendingSynergyEvents.length > 0) {
+      for (const id of this.state.pendingSynergyEvents) {
+        this.ui.pushSynergyToast(id);
+      }
+      this.state.pendingSynergyEvents.length = 0;
     }
 
     // 游戏结束或关卡胜利时保存统计 + 成就检测

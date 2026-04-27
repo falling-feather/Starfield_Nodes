@@ -172,6 +172,8 @@ export interface GameState {
   resourcesSpent: number;
   /** V1.1.7：已发现的联动 id 集合（跨局永久） */
   discoveredSynergies: Set<string>;
+  /** V1.2.1：本帧待处理的「首次发现」事件，由 graph/entities push、game.ts 在 tick 后消费给 UI 派发 toast */
+  pendingSynergyEvents: string[];
 }
 
 /** 漂浮星云 — 暂时遮挡视野 */

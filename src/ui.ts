@@ -30,6 +30,8 @@ export class UI {
   levelObjectiveText: string = '';
   /** 当前展示的成就通知队列 */
   private toasts: AchToast[] = [];
+  /** V1.2.1：联动首次发现的世界内 toast 队列 */
+  private synergyToasts: { id: string; timer: number }[] = [];
   /** 显示成就面板 */
   showAchievementPanel: boolean = false;
   /** 显示快捷键设置面板 */
@@ -177,6 +179,9 @@ export class UI {
 
     // 成就通知 Toast
     this.updateToasts(state);
+
+    // V1.2.1：联动首次发现 Toast
+    this.updateSynergyToasts(state);
   }
 
   /** 面板淡入淡出曲线 easeOutCubic */
@@ -1198,6 +1203,74 @@ export class UI {
       ctx.globalAlpha = 1;
     }
 
+    ctx.restore();
+  }
+
+  /** V1.2.1：由 Game 在 tick 后调用，把首次发现的联动加入世界 toast 队列 */
+  pushSynergyToast(id: string): void {
+    // 避免重复（同一 id 短时间内多次 push）
+    if (this.synergyToasts.some(t => t.id === id)) return;
+    this.synergyToasts.push({ id, timer: 4 });
+    if (this.synergyToasts.length > 3) this.synergyToasts = this.synergyToasts.slice(-3);
+    sfxAchievement(); // 复用成就音效，给玩家明确反馈
+  }
+
+  /** V1.2.1：渲染并衰减联动首次发现 Toast，位置在屏幕中央上方，避免与右侧成就 toast 抢位 */
+  private updateSynergyToasts(state: GameState): void {
+    if (this.synergyToasts.length === 0) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.shadowBlur = 0;
+
+    const toastW = 360;
+    const toastH = 56;
+    const startY = 70;
+    const cx = state.canvasWidth / 2;
+
+    for (let i = this.synergyToasts.length - 1; i >= 0; i--) {
+      const toast = this.synergyToasts[i];
+      toast.timer -= 1 / 60;
+      if (toast.timer <= 0) {
+        this.synergyToasts.splice(i, 1);
+        continue;
+      }
+      const s = this.SYNERGIES.find(x => x.id === toast.id);
+      if (!s) continue;
+
+      // 入场上滑动 + 出场渐隐
+      const inT = Math.min(1, (4 - toast.timer) / 0.25);
+      const eased = 1 - Math.pow(1 - inT, 3);
+      const alpha = Math.min(1, toast.timer);
+      const idx = this.synergyToasts.length - 1 - i;
+      const tx = cx - toastW / 2;
+      const ty = startY + idx * (toastH + 6) - (1 - eased) * 10;
+
+      ctx.globalAlpha = alpha;
+      // 背景：使用联动主题色边框
+      ctx.fillStyle = 'rgba(15,8,30,0.92)';
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 2;
+      ctx.fillRect(tx, ty, toastW, toastH);
+      ctx.strokeRect(tx, ty, toastW, toastH);
+
+      // 左侧装饰条
+      ctx.fillStyle = s.color;
+      ctx.fillRect(tx, ty, 4, toastH);
+
+      // 标题
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 16px monospace';
+      ctx.fillStyle = s.color;
+      ctx.fillText(`★ 首次发现联动`, tx + 14, ty + 16);
+
+      // 名称 + 模式
+      ctx.font = FONT.md;
+      ctx.fillStyle = COLORS.text.high;
+      ctx.fillText(`【${s.mode}】 ${s.name}  ·  ${s.pair}`, tx + 14, ty + 38);
+
+      ctx.globalAlpha = 1;
+    }
     ctx.restore();
   }
 

@@ -18,6 +18,17 @@ import { emitDestructionParticles } from './particles';
 let nodeIdCounter = 0;
 let edgeIdCounter = 0;
 
+/**
+ * V1.2.1：标记一对联动被触发。
+ * 仅在「首次发现」时把 id 推入 state.pendingSynergyEvents，供 UI 派发 toast。
+ * 重复触发幂等，无副作用。
+ */
+export function markSynergy(state: GameState, id: string): void {
+  if (state.discoveredSynergies.has(id)) return;
+  state.discoveredSynergies.add(id);
+  state.pendingSynergyEvents.push(id);
+}
+
 export function createNode(x: number, y: number, type: NodeType): GameNode {
   const cfg = NODE_CONFIGS[type];
   return {
@@ -896,7 +907,7 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
 
   for (const enemy of targets) {
     // 联动射击：在敌人被传送前发射，目标锁定该敌人 id（传送后投射物会追到新位置）
-    if (synergyInterceptors.length > 0) state.discoveredSynergies.add('portal-interceptor');
+    if (synergyInterceptors.length > 0) markSynergy(state, 'portal-interceptor');
     for (const inter of synergyInterceptors) {
       const dmg = COMBAT.interceptor.damage * inter.level * COMBAT.portal.synergyInterceptorDamageMult;
       state.projectiles.push({
@@ -989,7 +1000,7 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
     bufferLinkCount++;
   }
   const synergyMult = bufferLinkCount > 0 ? (1 + COMBAT.collector.synergyBufferBonus) : 1;
-  if (bufferLinkCount > 0) state.discoveredSynergies.add('buffer-collector');
+  if (bufferLinkCount > 0) markSynergy(state, 'buffer-collector');
 
   const cap = overcharged ? nearbyCount : Math.min(nearbyCount, COMBAT.collector.maxNearbyCap);
   const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1) * synergyMult;
@@ -1026,7 +1037,7 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
   }
   if (energyLinked) {
     boost *= COMBAT.buffer.synergyEnergyBoostMult;
-    state.discoveredSynergies.add('energy-buffer');
+    markSynergy(state, 'energy-buffer');
   }
   for (const node of state.nodes) {
     if (node.id === buffer.id || node.status === 'destroyed') continue;
@@ -1163,7 +1174,7 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
         const tip = nodeMap.get(e2.sourceId === other.id ? e2.targetId : e2.sourceId);
         if (!tip || tip.id === tesla.id || tip.status === 'destroyed') continue;
         secondHopSegs.push({ a: other, b: tip, dmg: secondDmg });
-        state.discoveredSynergies.add('tesla-relay');
+        markSynergy(state, 'tesla-relay');
       }
     }
   }
@@ -1307,7 +1318,7 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
       triggered = true;
     }
   }
-  if (triggered) state.discoveredSynergies.add('relay-energy');
+  if (triggered) markSynergy(state, 'relay-energy');
 }
 
 // ===== 超载专属效果 =====
