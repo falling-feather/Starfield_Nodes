@@ -458,6 +458,8 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + (ev ? ENERGY_GAINS.energy.e : ENERGY_GAINS.energy.n));
         if (ev) evolvedEnergyAssist(state, node);
         if (oc) overchargeEnergyBroadcast(state, node);
+        // V1.1.9 联动：relay 网络充能（结构型）
+        energyRelayNetwork(state, node);
         break;
       case 'shield':
         // 护盾 — 进化(堡垒): 给范围内节点伤害减免标记 | 超载: 脉冲
@@ -1273,6 +1275,39 @@ function magnetSlowEnemies(state: GameState, magnet: GameNode, rangeMult: number
       enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * slowFactor);
     }
   }
+}
+
+/** V1.1.9 联动：energy 直连 relay 时，沿 relay 链路给二跳同方节点少量充能（结构型） */
+function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
+  const boost = COMBAT.energy.synergyRelayNetworkBoost;
+  let triggered = false;
+  for (const edge of state.edges) {
+    if (edge.disruptedTimer > 0) continue;
+    let relayId: string | null = null;
+    if (edge.sourceId === energyNode.id) relayId = edge.targetId;
+    else if (edge.targetId === energyNode.id) relayId = edge.sourceId;
+    if (!relayId) continue;
+    const relay = state.nodes.find(n => n.id === relayId);
+    if (!relay || relay.status === 'destroyed') continue;
+    if (relay.type !== 'relay') continue;
+    if (relay.owner !== energyNode.owner) continue;
+
+    // 沿 relay 找二跳邻居（≠ energyNode 自己），给同方节点充能
+    for (const e2 of state.edges) {
+      if (e2.id === edge.id) continue;
+      if (e2.disruptedTimer > 0) continue;
+      let tipId: string | null = null;
+      if (e2.sourceId === relay.id) tipId = e2.targetId;
+      else if (e2.targetId === relay.id) tipId = e2.sourceId;
+      if (!tipId || tipId === energyNode.id) continue;
+      const tip = state.nodes.find(n => n.id === tipId);
+      if (!tip || tip.status === 'destroyed') continue;
+      if (tip.owner !== energyNode.owner) continue;
+      tip.currentEnergy = Math.min(tip.maxEnergy, tip.currentEnergy + boost);
+      triggered = true;
+    }
+  }
+  if (triggered) state.discoveredSynergies.add('relay-energy');
 }
 
 // ===== 超载专属效果 =====

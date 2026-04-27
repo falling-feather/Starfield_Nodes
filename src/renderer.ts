@@ -553,6 +553,34 @@ export class Renderer {
         ctx.restore();
       }
 
+      // === 联动高亮：energy ↔ relay 同方直连（V1.1.9 能量网络） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'energy' && target.type === 'relay')
+          || (source.type === 'relay' && target.type === 'energy'))) {
+        ctx.save();
+        // 蓝白电流向 relay 流动
+        const pulse = 0.50 + Math.sin(this.time * 5) * 0.20;
+        ctx.strokeStyle = `rgba(120, 200, 255, ${pulse})`;
+        ctx.lineWidth = lw + 1.5;
+        ctx.setLineDash([6, 2]);
+        ctx.lineDashOffset = -this.time * 150;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        // 内层亮白细线
+        ctx.strokeStyle = `rgba(220, 240, 255, ${pulse * 0.6})`;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       if (edge.type === 'amplify' && active) {
         // 增幅线：双线 + 金色脉冲
         const nx = -dy / len * 3; // 法线偏移

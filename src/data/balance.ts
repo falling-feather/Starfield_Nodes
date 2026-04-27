@@ -305,6 +305,8 @@ export const COMBAT = {
     /** 进化(核聚变)：能量比 < threshold 的邻居会获得 boost 充能 */
     evolvedAssistThreshold: 0.8,
     evolvedAssistBoost: 8,
+    /** V1.1.9 联动：energy 直连 relay 时，每 tick 给 relay 另一端的同方二跳节点充能 boost（结构型，第 6 对联动） */
+    synergyRelayNetworkBoost: 1.5,
   },
 
   /** 缓冲器：boost = boostPerLevel × level，叠到邻居 currentEnergy（上限 maxEnergy） */

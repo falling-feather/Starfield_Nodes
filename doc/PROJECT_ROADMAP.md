@@ -2118,3 +2118,74 @@ V1.1.2-V1.1.5 上线了 4 对联动并在 V1.1.6/V1.1.7 完成图鉴 + 发现追
 - 第 6 对联动候选：relay × energy 网络化（结构型）—— relay 串联 energy 时，energy 的能量广播范围沿 relay 链路扩散
 - 玩家在 L2/L3 回归一次 5 对联动 + 图鉴可读性
 - 若 5 对全做完后玩家仍想要更多机制纵深，可考虑「联动等级」：触发 N 次后强化效果（roguelike 化）
+
+
+## §V1.1.9 节点机制纵深(6)：energy × relay 能量网络（2026-05-01 增补 · Phase β-8）
+
+### 背景
+
+V1.1.8 上线第 5 对联动后，Phase β 缺一种「结构型」机制——前 5 对都是邻居范围内的属性加成 / 事件 / 减免，唯独没有「拓扑结构本身改变作用范围」的联动。本次 V1.1.9 用 `energy × relay` 补上这一类：energy 通过 relay 把每 tick 充能扩散到二跳邻居，让 relay 从「仅延长边距离」升级为「能量网络的中继点」。
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+`COMBAT.energy` 新增 `synergyRelayNetworkBoost: 1.5` —— energy 经由 relay 给二跳同方邻居每 tick +1.5 能量。
+
+#### 逻辑层 src/graph.ts
+
+新函数 `energyRelayNetwork(state, energyNode)`，在 `case 'energy'` 处理末尾常驻调用（不依赖超载/进化）：
+
+1. 遍历 edges 找 energy 直连的同方 relay
+2. 对每个 relay 再遍历 edges 找它的另一端（≠ energy 自己）
+3. 对所有同方二跳邻居 `tip.currentEnergy += 1.5`（受 maxEnergy 上限约束）
+4. 命中至少 1 个二跳节点时 `state.discoveredSynergies.add('relay-energy')`
+
+复杂度 O(E²)，但 E < 200，开销 < 0.1ms/tick。被 `disruptedTimer > 0` 的边自动跳过（与现有 `overchargeEnergyBroadcast` 行为一致），保留 EMP/disrupt 的反制空间。
+
+#### 渲染层 src/renderer.ts drawEdges
+
+新增 energy ↔ relay 同方边高亮：蓝白电流 `rgba(120, 200, 255, ~)` dash `[6, 2]`，dashOffset 速度 150/秒，外层粗 + 内层亮白细线（双层结构与 shield×repair 类似但配色完全不同）。
+
+#### UI 层 src/ui.ts
+
+`SYNERGIES[]` 加第 6 条 `relay-energy`，`mode = '结构'`（前所未有的新模式标签）；面板高度 510 → 590；进度 X / 6。
+
+### 设计取舍
+
+- **常驻效果，不依赖超载/进化**：保证玩家在 L1 拿到 relay 后立刻能感受到联动；如果挂在超载/进化上，新手玩家几乎接触不到结构型机制
+- **二跳邻居必须同方**：避免给敌方 relay 造成意外充能
+- **充能量小（1.5/tick）**：避免取代 buffer 的角色——buffer 是「范围内多目标 +大量」，relay 网络是「沿 edge 链路 +小量」，二者职能不冲突；玩家可同时叠加 V1.1.8 buffer×energy + V1.1.9 relay×energy，得到「中心 buffer 群覆盖 + relay 链路扩散」的双层供电网络
+- **不递归到三跳**：保持 O(E²) 而非更高阶；玩家如需远距离覆盖应自己造多个 energy
+- **mode = 结构**：标签明确告诉玩家这是改变拓扑作用范围，不是数值加成，与已有 4 个模式（加成/事件/扩展/减免）形成完整的 5 模式分类
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 116ms，bundle 182.64 KB（V1.1.8 +1.43 KB） |
+| 触发条件 | OK energy 直连同方 relay 且 relay 至少有 1 个其它同方邻居 |
+| 与 disrupt 兼容 | OK 跳过 disruptedTimer > 0 的边 |
+| 与 5 模式分类一致 | OK 加成 / 事件 / 扩展 / 减免 / 结构 全部齐 |
+| 游戏内手动实测 | TODO 与 V1.1.2-V1.1.8 一并在 L2/L3 回归 |
+
+### 联动总览（6 对已上线 · 5 模式齐）
+
+| 联动对 | 模式 | 解锁关 | edge 高亮色 |
+|---|---|---|---|
+| tesla × relay | 扩展（覆盖范围+） | L2 | 青蓝快闪虚线 |
+| energy × buffer | 加成（充能 +30%） | L2 | 电紫快闪虚线 |
+| energy × relay | 结构（二跳网络化） | L2 | 蓝白双层电流 |
+| buffer × collector | 加成（产出 +25%） | L3 | 金色实线 |
+| portal × interceptor | 事件（额外射击） | L3 | 粉紫慢虚线 |
+| shield × repair | 减免（受伤 -20%） | L3 | 医疗白绿双层 |
+
+### 后续
+
+- 5 个机制模式齐了，Phase β 的「联动机制」一阶段算完成
+- 待玩家进入 L2/L3 后做一次 6 对联动 + 图鉴 + 5 模式标签的整体回归
+- 进一步方向（按收益排序）：
+  1. 关卡结算面板加「本局新发现 N 对联动」提示，把 V1.1.7 的发现追踪闭环
+  2. 联动触发时的世界内反馈（节点闪光 / toast），降低错过感
+  3. 第 7 对候选：mine × tesla（电场矿区）、turret × portal（炮口陷阱）等——但需要更明确的设计目的
