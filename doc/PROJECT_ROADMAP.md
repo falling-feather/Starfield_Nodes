@@ -1551,3 +1551,44 @@ default=1
 - B. `§36` 调高 `ENEMY_DEATH_REWARDS.*.crystal` 全 +1（crystal 产出侧）
 - C. `§36` 调低 `evolutionCostMult 3→2`（res 侧 evolve 门槛 -33%）
 - D. `§36` 不再调 balance，直接动 enemy wave 8+ HP 缩放
+
+---
+
+## §V1.0.4 · 模态焦点栈 + 主题面板鼠标交互
+
+> 提交：V1.0.4 主题切换焦点栈与鼠标交互  
+> 日期：2026-04-27
+
+### 背景
+
+V1.0.3 修复线上关卡卡死后，进入「8 项产品化体验优化」迭代。V1.0.4 聚焦第 3 项：**键盘只对最顶层窗口生效 + 主题切换支持鼠标**。
+
+### 实现
+
+- 新增 `src/focus-stack.ts`：window 级 capture-phase keydown 拦截，栈非空时 `stopImmediatePropagation` 阻断后续监听，事件仅交给栈顶 handler
+- `src/main.ts` 在所有屏幕之前 `import './focus-stack'` 完成注册
+- `src/theme-picker.ts` 改造：
+  - 不再走原来的 isPickerOpen 全局态，而是 `pushModal(handler)` 注册键盘独占
+  - 列表项 `addEventListener('mouseenter')` 同步高亮，`addEventListener('click')` 立即应用并关闭
+  - 遮罩 click 关闭、Esc 关闭、Shift+T 二次关闭
+
+### Web 验证（http://127.0.0.1:4173/Starfield_Nodes/）
+
+| 验证项 | 结果 |
+|------|----|
+| Shift+T 打开主题面板 | ✅ 出现「选择主题」浮层与 6 个主题项 |
+| Enter 应用并关闭 | ✅ |
+| 鼠标点击 `[data-name=sakura]` 切换主题 | ✅ 面板自动关闭 |
+| 焦点栈独占：面板打开时按 Delete | ✅ overlay 不被关闭，登录页删除档案逻辑未触发 |
+| Esc 关闭 | ✅ |
+| Console error | 0 |
+
+### 后续 V1.0.x 待办（用户列出 8 项剩余）
+
+1. ESC 暂停菜单（设置 / 返回标题 / 重开关卡） → 中版本 V1.1.0
+2. 关卡失败重启直接进选卡页 + 杀旧进程
+4. 项目规划改为以本体内容为主（去除反作弊等优化项优先级）
+5. 节点选择按选择顺序绑定 1-5 键
+6. 科技树鼠标交互 + 按键 10→0 + UI 布局优化
+
+> 元规则：每改一项必走 build → preview → 浏览器 MCP 验证 → 文档同步；提交格式 `V{大}.{中}.{小}` 中文；中版本递增需分支合并管理。

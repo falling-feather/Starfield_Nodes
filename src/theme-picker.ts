@@ -2,10 +2,11 @@
 // 通过 Shift+T 唤出/关闭；点击或方向键+Enter 切换；Esc/点击遮罩关闭。
 import { listThemes, getThemeName, applyTheme, themeBus } from './themes';
 import { COLORS, FONT, withAlpha } from './ui-tokens';
+import { pushModal } from './focus-stack';
 
 let overlay: HTMLDivElement | null = null;
 let panel: HTMLDivElement | null = null;
-let escHandler: ((e: KeyboardEvent) => void) | null = null;
+let disposeModal: (() => void) | null = null;
 let themeChangeHandler: (() => void) | null = null;
 let highlightIdx = 0;
 
@@ -89,7 +90,7 @@ function renderList(): void {
   });
 
   const hint = document.createElement('div');
-  hint.textContent = '↑↓ 选择 · Enter 应用 · Esc 关闭';
+  hint.textContent = '鼠标点击 / ↑↓ 选择 · Enter 应用 · Esc 关闭';
   hint.style.cssText = `
     margin-top: 12px; padding-top: 10px;
     border-top: 1px solid ${COLORS.border.cyanGhost};
@@ -103,7 +104,7 @@ export function openThemePicker(): void {
   if (overlay) return;
   buildOverlay();
 
-  escHandler = (e: KeyboardEvent) => {
+  const handler = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
       e.preventDefault();
       closeThemePicker();
@@ -124,9 +125,13 @@ export function openThemePicker(): void {
         applyTheme(t.name);
         closeThemePicker();
       }
+    } else if (e.shiftKey && (e.key === 'T' || e.key === 't')) {
+      // 允许 Shift+T 在打开状态下再次按下来关闭面板
+      e.preventDefault();
+      closeThemePicker();
     }
   };
-  window.addEventListener('keydown', escHandler, true);
+  disposeModal = pushModal(handler);
 
   // 主题变更后刷新面板配色（实时响应）
   themeChangeHandler = () => {
@@ -142,9 +147,9 @@ export function openThemePicker(): void {
 
 export function closeThemePicker(): void {
   if (!overlay) return;
-  if (escHandler) {
-    window.removeEventListener('keydown', escHandler, true);
-    escHandler = null;
+  if (disposeModal) {
+    disposeModal();
+    disposeModal = null;
   }
   if (themeChangeHandler) {
     themeBus.removeEventListener('change', themeChangeHandler);

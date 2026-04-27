@@ -1,4 +1,5 @@
 import './style.css'
+import './focus-stack' // 模态焦点栈：必须在任何屏幕之前 import，完成 capture-phase keydown 拦截注册
 import { Game } from './game'
 import { LoginScreen } from './login'
 import { LevelSelectScreen } from './level-select'
