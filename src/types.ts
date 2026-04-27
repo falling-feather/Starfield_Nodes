@@ -33,6 +33,10 @@ export interface GameNode {
   expanded: boolean;
   /** 受击闪红强度 0~1，每帧衰减 */
   hitFlash: number;
+  /** V1.2.2：联动首次触发闪光强度 0~1，每帧衰减；用于在节点周围画一圈金色脉冲环 */
+  synergyFlash?: number;
+  /** V1.2.2：当前 synergyFlash 对应的联动颜色（用于渲染光环） */
+  synergyFlashColor?: string;
 }
 
 // ===== 领地系统 =====

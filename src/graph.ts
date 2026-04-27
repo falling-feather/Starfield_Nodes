@@ -22,12 +22,33 @@ let edgeIdCounter = 0;
  * V1.2.1：标记一对联动被触发。
  * 仅在「首次发现」时把 id 推入 state.pendingSynergyEvents，供 UI 派发 toast。
  * 重复触发幂等，无副作用。
+ *
+ * V1.2.2：可选传入参与触发的节点列表，首次触发时对这些节点设置 synergyFlash
+ * （配合 renderer 在节点周围画一圈金色脉冲环），让玩家在战斗世界中看清"哪两个节点产生了联动"。
  */
-export function markSynergy(state: GameState, id: string): void {
+export function markSynergy(state: GameState, id: string, nodes?: GameNode[]): void {
   if (state.discoveredSynergies.has(id)) return;
   state.discoveredSynergies.add(id);
   state.pendingSynergyEvents.push(id);
+  if (nodes && nodes.length > 0) {
+    const color = SYNERGY_FLASH_COLORS[id] ?? '#ffd760';
+    for (const n of nodes) {
+      if (!n) continue;
+      n.synergyFlash = 1;
+      n.synergyFlashColor = color;
+    }
+  }
 }
+
+/** V1.2.2：联动 id → 节点闪光颜色（与 ui.ts SYNERGIES / renderer edge 高亮颜色保持一致） */
+const SYNERGY_FLASH_COLORS: Record<string, string> = {
+  'tesla-relay': '#78dcff',
+  'buffer-collector': '#ffd760',
+  'portal-interceptor': '#ffaaff',
+  'shield-repair': '#8cffb4',
+  'energy-buffer': '#c882ff',
+  'relay-energy': '#78c8ff',
+};
 
 export function createNode(x: number, y: number, type: NodeType): GameNode {
   const cfg = NODE_CONFIGS[type];
@@ -172,7 +193,12 @@ export function dist(a: { x: number; y: number }, b: { x: number; y: number }): 
 
 // ===== 联动：shield 是否直连同方 repair（用于伤害减免） =====
 export function hasShieldRepairLink(state: GameState, node: GameNode): boolean {
-  if (node.type !== 'shield') return false;
+  return findShieldRepairLink(state, node) !== null;
+}
+
+/** V1.2.2：返回 shield 直连的同方 repair 节点（用于联动闪光定位），找不到返回 null */
+export function findShieldRepairLink(state: GameState, node: GameNode): GameNode | null {
+  if (node.type !== 'shield') return null;
   for (const edge of state.edges) {
     let otherId: string | null = null;
     if (edge.sourceId === node.id) otherId = edge.targetId;
@@ -182,9 +208,9 @@ export function hasShieldRepairLink(state: GameState, node: GameNode): boolean {
     if (!other || other.status === 'destroyed') continue;
     if (other.type !== 'repair') continue;
     if (other.owner !== node.owner) continue;
-    return true;
+    return other;
   }
-  return false;
+  return null;
 }
 
 // ===== 连线校验 =====
@@ -907,7 +933,7 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
 
   for (const enemy of targets) {
     // 联动射击：在敌人被传送前发射，目标锁定该敌人 id（传送后投射物会追到新位置）
-    if (synergyInterceptors.length > 0) markSynergy(state, 'portal-interceptor');
+    if (synergyInterceptors.length > 0) markSynergy(state, 'portal-interceptor', [portal, ...synergyInterceptors]);
     for (const inter of synergyInterceptors) {
       const dmg = COMBAT.interceptor.damage * inter.level * COMBAT.portal.synergyInterceptorDamageMult;
       state.projectiles.push({
@@ -988,6 +1014,7 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
 
   // 联动：直连 player owned buffer 数量（用于产能加成 + 晶体阈值减免）
   let bufferLinkCount = 0;
+  const linkedBuffers: GameNode[] = [];
   for (const edge of state.edges) {
     let otherId: string | null = null;
     if (edge.sourceId === collector.id) otherId = edge.targetId;
@@ -998,9 +1025,10 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
     if (other.type !== 'buffer') continue;
     if (other.owner !== collector.owner) continue;
     bufferLinkCount++;
+    linkedBuffers.push(other);
   }
   const synergyMult = bufferLinkCount > 0 ? (1 + COMBAT.collector.synergyBufferBonus) : 1;
-  if (bufferLinkCount > 0) markSynergy(state, 'buffer-collector');
+  if (bufferLinkCount > 0) markSynergy(state, 'buffer-collector', [collector, ...linkedBuffers]);
 
   const cap = overcharged ? nearbyCount : Math.min(nearbyCount, COMBAT.collector.maxNearbyCap);
   const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1) * synergyMult;
@@ -1023,6 +1051,7 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
   let boost = (evolved ? COMBAT.buffer.boostPerLevel.e : COMBAT.buffer.boostPerLevel.n) * buffer.level;
   // V1.1.8 联动：buffer 直连任一同方 energy 时，boost × synergyEnergyBoostMult
   let energyLinked = false;
+  let energyNode: GameNode | undefined;
   for (const edge of state.edges) {
     let otherId: string | null = null;
     if (edge.sourceId === buffer.id) otherId = edge.targetId;
@@ -1033,11 +1062,12 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
     if (other.type !== 'energy') continue;
     if (other.owner !== buffer.owner) continue;
     energyLinked = true;
+    energyNode = other;
     break;
   }
   if (energyLinked) {
     boost *= COMBAT.buffer.synergyEnergyBoostMult;
-    markSynergy(state, 'energy-buffer');
+    markSynergy(state, 'energy-buffer', energyNode ? [buffer, energyNode] : [buffer]);
   }
   for (const node of state.nodes) {
     if (node.id === buffer.id || node.status === 'destroyed') continue;
@@ -1174,7 +1204,7 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
         const tip = nodeMap.get(e2.sourceId === other.id ? e2.targetId : e2.sourceId);
         if (!tip || tip.id === tesla.id || tip.status === 'destroyed') continue;
         secondHopSegs.push({ a: other, b: tip, dmg: secondDmg });
-        markSynergy(state, 'tesla-relay');
+        markSynergy(state, 'tesla-relay', [tesla, other]);
       }
     }
   }
@@ -1292,6 +1322,7 @@ function magnetSlowEnemies(state: GameState, magnet: GameNode, rangeMult: number
 function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
   const boost = COMBAT.energy.synergyRelayNetworkBoost;
   let triggered = false;
+  const involvedRelays: GameNode[] = [];
   for (const edge of state.edges) {
     if (edge.disruptedTimer > 0) continue;
     let relayId: string | null = null;
@@ -1304,6 +1335,7 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
     if (relay.owner !== energyNode.owner) continue;
 
     // 沿 relay 找二跳邻居（≠ energyNode 自己），给同方节点充能
+    let relayUsed = false;
     for (const e2 of state.edges) {
       if (e2.id === edge.id) continue;
       if (e2.disruptedTimer > 0) continue;
@@ -1316,9 +1348,11 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
       if (tip.owner !== energyNode.owner) continue;
       tip.currentEnergy = Math.min(tip.maxEnergy, tip.currentEnergy + boost);
       triggered = true;
+      relayUsed = true;
     }
+    if (relayUsed) involvedRelays.push(relay);
   }
-  if (triggered) markSynergy(state, 'relay-energy');
+  if (triggered) markSynergy(state, 'relay-energy', [energyNode, ...involvedRelays]);
 }
 
 // ===== 超载专属效果 =====

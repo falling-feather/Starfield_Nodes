@@ -427,6 +427,10 @@ export class Game {
       if (node.hitFlash > 0) {
         node.hitFlash = Math.max(0, node.hitFlash - 3 * dt);
       }
+      // V1.2.2：联动闪光衰减（1.2 秒消退）
+      if (node.synergyFlash !== undefined && node.synergyFlash > 0) {
+        node.synergyFlash = Math.max(0, node.synergyFlash - dt / 1.2);
+      }
     }
     for (const enemy of this.state.enemies) {
       if (enemy.hitFlash > 0) {

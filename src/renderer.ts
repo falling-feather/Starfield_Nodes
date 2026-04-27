@@ -999,6 +999,31 @@ export class Renderer {
       ctx.stroke();
     }
 
+    // V1.2.2：联动首次触发金色脉冲环（外扩动画 + 渐隐）
+    if (node.synergyFlash !== undefined && node.synergyFlash > 0) {
+      ctx.shadowBlur = 0;
+      const f = node.synergyFlash;
+      const color = node.synergyFlashColor ?? '#ffd760';
+      // 三层光环：外扩 + 衰减
+      for (let layer = 0; layer < 3; layer++) {
+        const t = (1 - f) + layer * 0.18;
+        const r = node.radius * (1.4 + t * 1.6);
+        const a = f * (0.55 - layer * 0.18);
+        if (a <= 0) continue;
+        ctx.strokeStyle = this.withAlpha(color, a);
+        ctx.lineWidth = 2.5 * f;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // 内层高亮描边
+      ctx.strokeStyle = this.withAlpha(color, f * 0.85);
+      ctx.lineWidth = 2 * f;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.radius + 1, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 
