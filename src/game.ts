@@ -45,6 +45,8 @@ export class Game {
   private onExitToTitle: (() => void) | null = null;
   private boundResize: (() => void) | null = null;
   private noCoreDamage: boolean = true;
+  /** V1.2.0：本局开始前已发现的联动 id，用于结算面计算「本局首次发现」 */
+  private synergiesAtStart: Set<string> = new Set();
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -70,6 +72,7 @@ export class Game {
     this.ui.techState = this.techState;
     this.ui.unlockedAchievements = this.profile.unlockedAchievements ?? [];
     this.ui.discoveredSynergies = new Set(this.profile.discoveredSynergies ?? []);
+    this.synergiesAtStart = new Set(this.profile.discoveredSynergies ?? []);
     this.input = new InputManager(
       this.canvas,
       this.state,
@@ -286,6 +289,13 @@ export class Game {
         }
       }
       this.ui.discoveredSynergies = new Set(this.profile.discoveredSynergies);
+
+      // V1.2.0：计算本局首次发现的联动 id，供结算面展示
+      const newSynergies: string[] = [];
+      for (const id of this.state.discoveredSynergies) {
+        if (!this.synergiesAtStart.has(id)) newSynergies.push(id);
+      }
+      this.ui.newSynergiesThisRun = newSynergies;
 
       saveProfile(this.profile);
       if (this.onLevelEnd) {

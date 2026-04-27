@@ -42,6 +42,8 @@ export class UI {
   unlockedAchievements: string[] = [];
   /** V1.1.7：存档已发现的联动 id（由外部设置） */
   discoveredSynergies: Set<string> = new Set();
+  /** V1.2.0：本局首次发现的联动 id 列表（结算面展示） */
+  newSynergiesThisRun: string[] = [];
   /** 当前选中的连线类型（由InputManager同步） */
   selectedEdgeType: EdgeType = 'standard';
   /** 节点面板按钮命中区域（屏幕坐标） */
@@ -965,6 +967,9 @@ export class UI {
     ctx.font = '21px monospace';
     ctx.fillText('[R] 重新开始', state.canvasWidth / 2, state.canvasHeight / 2 + 90);
 
+    // V1.2.0：本局首次发现的联动
+    this.drawNewSynergiesBlock(state, state.canvasHeight / 2 + 130);
+
     ctx.restore();
   }
 
@@ -999,7 +1004,38 @@ export class UI {
     ctx.font = '21px monospace';
     ctx.fillText('即将返回关卡选择...', state.canvasWidth / 2, state.canvasHeight / 2 + 90);
 
+    // V1.2.0：本局首次发现的联动
+    this.drawNewSynergiesBlock(state, state.canvasHeight / 2 + 130);
+
     ctx.restore();
+  }
+
+  /** V1.2.0：在结算面板下方展示「本局首次发现的联动」 */
+  private drawNewSynergiesBlock(state: GameState, baseY: number): void {
+    const list = this.newSynergiesThisRun;
+    if (!list || list.length === 0) return;
+    const ctx = this.ctx;
+    const cx = state.canvasWidth / 2;
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 22px monospace';
+    ctx.fillStyle = COLORS.accent.yellowHi;
+    ctx.fillText(`★ 本局首次发现 ${list.length} 对联动`, cx, baseY);
+
+    ctx.font = FONT.base;
+    ctx.fillStyle = COLORS.text.high;
+    let y = baseY + 28;
+    for (const id of list) {
+      const s = this.SYNERGIES.find(x => x.id === id);
+      if (!s) continue;
+      ctx.fillStyle = s.color;
+      ctx.fillText(`【${s.mode}】 ${s.name}  ·  ${s.pair}`, cx, y);
+      y += 22;
+    }
+    ctx.fillStyle = COLORS.text.muted;
+    ctx.font = FONT.sm;
+    ctx.fillText(`按 [${(getKey('synergy') || 'y').toUpperCase()}] 查看图鉴`, cx, y + 6);
   }
 
   private drawPaused(state: GameState): void {
