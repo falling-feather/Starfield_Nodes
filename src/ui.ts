@@ -45,6 +45,21 @@ export class UI {
   /** 科技树卡片点击区（V1.0.6）：drawTechPanel 负责填充，input.ts 负责命中检测 */
   techCardAreas: { idx: number; techId: string; x: number; y: number; w: number; h: number; available: boolean; unlocked: boolean }[] = [];
 
+  // ── V1.1.0 暂停菜单 ──
+  /** 暂停菜单是否打开（独立于 state.paused：菜单打开 → state.paused = true，但 P 键暂停不会打开菜单） */
+  pauseMenuOpen: boolean = false;
+  /** 当前高亮的菜单项索引 */
+  pauseMenuIndex: number = 0;
+  /** 暂停菜单条目（label + action token，由 input.ts 解释执行） */
+  readonly pauseMenuItems: { label: string; action: 'resume' | 'restart' | 'levels' | 'title' }[] = [
+    { label: '继续', action: 'resume' },
+    { label: '重开本关', action: 'restart' },
+    { label: '返回选卡', action: 'levels' },
+    { label: '返回标题', action: 'title' },
+  ];
+  /** 暂停菜单条目命中区（屏幕坐标），由 drawPauseMenu 填充，onMouseDown 命中检测 */
+  pauseMenuAreas: { idx: number; x: number; y: number; w: number; h: number }[] = [];
+
   // ── 微动效状态 ──
   /** HUD 首次进入战斗时的淡入起点（ms） */
   private hudFadeStart: number = performance.now();
@@ -103,8 +118,13 @@ export class UI {
       this.drawTutorial(state);
     }
 
-    if (state.paused && !this.techState?.showPanel && !isTutorialActive()) {
+    if (state.paused && !this.techState?.showPanel && !isTutorialActive() && !this.pauseMenuOpen) {
       this.drawPaused(state);
+    }
+
+    // V1.1.0 暂停菜单
+    if (this.pauseMenuOpen) {
+      this.drawPauseMenu(state);
     }
 
     // 节点环形菜单（绘制在暂停遮罩之上）
@@ -986,6 +1006,73 @@ export class UI {
     ctx.fillStyle = COLORS.text.muted;
     ctx.font = '21px monospace';
     ctx.fillText('[P] 继续', state.canvasWidth / 2, state.canvasHeight / 2 + 40);
+
+    ctx.restore();
+  }
+
+  /** V1.1.0 暂停菜单：ESC 唤起的居中弹层 */
+  private drawPauseMenu(state: GameState): void {
+    const ctx = this.ctx;
+    ctx.save();
+
+    // 半透明遮罩
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
+
+    const cx = state.canvasWidth / 2;
+    const cy = state.canvasHeight / 2;
+    const itemW = 320;
+    const itemH = 56;
+    const gap = 12;
+    const titleH = 80;
+    const totalH = titleH + this.pauseMenuItems.length * (itemH + gap) - gap + 60;
+    const top = cy - totalH / 2;
+
+    // 标题
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = COLORS.accent.cyan;
+    ctx.fillStyle = COLORS.accent.cyan;
+    ctx.font = 'bold 42px monospace';
+    ctx.fillText('⏸ 暂停', cx, top + 30);
+    ctx.shadowBlur = 0;
+
+    // 菜单项
+    this.pauseMenuAreas = [];
+    const startY = top + titleH;
+    for (let i = 0; i < this.pauseMenuItems.length; i++) {
+      const item = this.pauseMenuItems[i];
+      const y = startY + i * (itemH + gap);
+      const x = cx - itemW / 2;
+      const isHover = this.pauseMenuIndex === i;
+
+      // 卡片背景
+      ctx.fillStyle = isHover ? 'rgba(0,200,220,0.18)' : 'rgba(20,30,40,0.85)';
+      ctx.strokeStyle = isHover ? COLORS.accent.cyan : COLORS.border.cyanFaint;
+      ctx.lineWidth = isHover ? 2 : 1;
+      ctx.fillRect(x, y, itemW, itemH);
+      ctx.strokeRect(x, y, itemW, itemH);
+
+      // 文字
+      ctx.fillStyle = isHover ? COLORS.accent.cyan : COLORS.text.muted;
+      ctx.font = isHover ? 'bold 22px monospace' : '20px monospace';
+      ctx.fillText(item.label, cx, y + itemH / 2);
+
+      // 数字快捷键
+      ctx.fillStyle = COLORS.text.faint;
+      ctx.font = '14px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(`[${i + 1}]`, x + itemW - 12, y + 14);
+      ctx.textAlign = 'center';
+
+      this.pauseMenuAreas.push({ idx: i, x, y, w: itemW, h: itemH });
+    }
+
+    // 提示
+    ctx.fillStyle = COLORS.text.faint;
+    ctx.font = '14px monospace';
+    ctx.fillText('↑↓ 切换  ·  Enter 确认  ·  鼠标点击  ·  数字键 1-4  ·  Esc 继续', cx, startY + this.pauseMenuItems.length * (itemH + gap) + 16);
 
     ctx.restore();
   }
