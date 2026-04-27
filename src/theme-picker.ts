@@ -9,6 +9,8 @@ let panel: HTMLDivElement | null = null;
 let disposeModal: (() => void) | null = null;
 let themeChangeHandler: (() => void) | null = null;
 let highlightIdx = 0;
+/** V1.2.5：缓存 item 元素，避免 mouseenter → renderList 整体重建导致无限循环 */
+let itemEls: HTMLDivElement[] = [];
 
 function buildOverlay(): void {
   overlay = document.createElement('div');
@@ -38,7 +40,7 @@ function buildOverlay(): void {
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
-  renderList();
+  buildList();
 
   requestAnimationFrame(() => {
     if (overlay) overlay.style.opacity = '1';
@@ -46,13 +48,15 @@ function buildOverlay(): void {
   });
 }
 
-function renderList(): void {
+/** 一次性构建所有 item，仅在打开/主题色变化时重建 */
+function buildList(): void {
   if (!panel) return;
   const themes = listThemes();
   const current = getThemeName();
   highlightIdx = Math.max(0, themes.findIndex((t) => t.name === current));
 
   panel.innerHTML = '';
+  itemEls = [];
 
   const title = document.createElement('div');
   title.textContent = '选择主题';
@@ -65,28 +69,26 @@ function renderList(): void {
 
   themes.forEach((t, i) => {
     const item = document.createElement('div');
-    const active = t.name === current;
-    const focused = i === highlightIdx;
     item.dataset.idx = String(i);
     item.dataset.name = t.name;
-    item.textContent = (active ? '● ' : '○ ') + t.label;
     item.style.cssText = `
       padding: 8px 12px; margin: 2px 0; border-radius: 4px; cursor: pointer;
       font-size: ${FONT.md};
-      color: ${active ? COLORS.accent.cyan : COLORS.text.body};
-      background: ${focused ? withAlpha(COLORS.accent.cyan, 0.12) : 'transparent'};
-      border: 1px solid ${focused ? COLORS.border.cyanFaint : 'transparent'};
-      transition: background 120ms, border-color 120ms;
+      transition: background 120ms, border-color 120ms, color 120ms;
     `;
+    // hover 只更新高亮索引和样式，不重建 DOM（修复 V1.2.4 无限重渲染 bug）
     item.addEventListener('mouseenter', () => {
-      highlightIdx = i;
-      renderList();
+      if (highlightIdx !== i) {
+        highlightIdx = i;
+        updateItemStyles();
+      }
     });
     item.addEventListener('click', () => {
       applyTheme(t.name);
       closeThemePicker();
     });
     panel!.appendChild(item);
+    itemEls.push(item);
   });
 
   const hint = document.createElement('div');
@@ -98,6 +100,24 @@ function renderList(): void {
     text-align: center; letter-spacing: 0.5px;
   `;
   panel.appendChild(hint);
+
+  updateItemStyles();
+}
+
+/** 仅更新现有 item 的活跃 / 高亮样式 */
+function updateItemStyles(): void {
+  const themes = listThemes();
+  const current = getThemeName();
+  itemEls.forEach((el, i) => {
+    const t = themes[i];
+    if (!t) return;
+    const active = t.name === current;
+    const focused = i === highlightIdx;
+    el.textContent = (active ? '● ' : '○ ') + t.label;
+    el.style.color = active ? COLORS.accent.cyan : COLORS.text.body;
+    el.style.background = focused ? withAlpha(COLORS.accent.cyan, 0.12) : 'transparent';
+    el.style.borderTop = el.style.borderBottom = el.style.borderLeft = el.style.borderRight = `1px solid ${focused ? COLORS.border.cyanFaint : 'transparent'}`;
+  });
 }
 
 export function openThemePicker(): void {
@@ -112,12 +132,12 @@ export function openThemePicker(): void {
       e.preventDefault();
       const len = listThemes().length;
       highlightIdx = (highlightIdx + 1) % len;
-      renderList();
+      updateItemStyles();
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       const len = listThemes().length;
       highlightIdx = (highlightIdx - 1 + len) % len;
-      renderList();
+      updateItemStyles();
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const t = listThemes()[highlightIdx];
@@ -140,7 +160,7 @@ export function openThemePicker(): void {
     panel.style.background = COLORS.bg.panel;
     panel.style.borderColor = COLORS.border.cyanFaint;
     panel.style.boxShadow = `0 8px 32px ${withAlpha(COLORS.accent.cyan, 0.25)}`;
-    renderList();
+    buildList();
   };
   themeBus.addEventListener('change', themeChangeHandler);
 }

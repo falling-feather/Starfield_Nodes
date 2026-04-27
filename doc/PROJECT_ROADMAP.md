@@ -2517,3 +2517,49 @@ if (this.techState.showPanel && this.ui) {
 
 - 可选优化：成就面板 / 联动图鉴 / 暂停菜单也可统一接入 `scrollPanel(delta)` 抽象（目前内容未溢出，先不做）
 - 长远：键盘 PageUp/PageDown 翻页（一次跳一屏）
+
+
+## §V1.2.5 修复·主题切换面板键鼠选中失效（2026-04-27 增补 · Phase β-14）
+
+### Bug
+
+V1.2.4 实测时发现：Shift+T 唤出主题选择面板后，**鼠标点击或方向键 + Enter 都无法应用主题**。
+
+### 根因
+
+`theme-picker.ts` 的 `renderList()` 在 mouseenter / 方向键 / themeBus.change 时调用 `panel.innerHTML = ''` 全量重建子节点。鼠标移入 item 0 触发 mouseenter → renderList 重建 DOM → 浏览器把鼠标位置归位到刚出现的新 item 0 → 又触发 mouseenter → 又重建 → **无限循环**。
+
+后果：
+- click 目标在 dispatch 前就被 remove，事件被吞
+- 渲染线程被 mouseenter 风暴占用，键盘 Enter 即便能执行 applyTheme 也很容易被覆盖
+
+### 修复
+
+`theme-picker.ts` 把 `renderList()` 拆成两个职责：
+
+1. **`buildList()`** — 仅在 open / 主题色变化时调用。一次性创建 item DOM 并缓存到 `itemEls: HTMLDivElement[]`
+2. **`updateItemStyles()`** — mouseenter / ArrowUp/Down 时调用。遍历 `itemEls` 仅更新 `textContent / color / background / border`，不增删 DOM
+
+调用点替换：
+- `mouseenter` → `updateItemStyles()`（且加 `if (highlightIdx !== i)` 早返）
+- `ArrowUp/Down` → `updateItemStyles()`
+- `themeBus.change` → `buildList()`（颜色 token 变更，整体重建无副作用）
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK |
+| `npm run build` | OK 111ms，bundle 188.44 KB（V1.2.4 +0.19 KB） |
+| Shift+T 唤出面板 | OK |
+| 鼠标 hover 切换高亮 | OK 不再 mouseenter 风暴 |
+| 鼠标点击 → 应用主题 + 关闭 | OK |
+| ArrowUp/Down + Enter → 应用主题 | OK |
+| Esc / 点击遮罩关闭 | OK |
+| 主题应用后面板配色实时刷新 | OK（buildList 重建走完整路径） |
+
+### 取舍
+
+- 不引入 throttle / requestAnimationFrame 节流：根因是 DOM 自销毁，节流只能掩盖；保留 DOM + 局部更新是正解
+- 早返 `if (highlightIdx !== i)`：即便没有 mouseenter 风暴，重复 highlight 同一项也无意义
+- `buildList()` 仍保留全量重建以便 themeBus.change 时同步标题色和提示色——这条路径每次手动切主题只触发一次，无风险
