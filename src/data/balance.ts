@@ -239,6 +239,10 @@ export const COMBAT = {
     damage: 8,
     hitRange: 25,
     chainRatio: 0.5,
+    /** 联动：当 tesla 直连 player owned relay 时，电弧借道 relay 的其它边再延伸一跳 */
+    synergyRelayHop: true,
+    /** 二级电弧伤害衰减系数（基于 tesla 自身基础伤害） */
+    synergyRelayDamageRatio: 0.6,
   },
 
   /** 陷阱：伤害 × level × damageMult */

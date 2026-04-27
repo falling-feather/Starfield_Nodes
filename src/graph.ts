@@ -1081,6 +1081,10 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
   let hitAny = false;
   const hitEnemies = new Set<string>();
 
+  // 收集"二级电弧"段（tesla → relay → relay 的另一邻居）
+  type ArcSeg = { a: GameNode; b: GameNode; dmg: number };
+  const secondHopSegs: ArcSeg[] = [];
+
   for (const edge of teslaEdges) {
     const other = nodeMap.get(edge.sourceId === tesla.id ? edge.targetId : edge.sourceId);
     if (!other || other.status === 'destroyed') continue;
@@ -1104,6 +1108,38 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
             size: 2 + rand() * 2,
           });
         }
+      }
+    }
+
+    // 联动：other 是同方 relay → 借道二级延伸
+    if (
+      COMBAT.tesla.synergyRelayHop
+      && other.type === 'relay'
+      && other.owner === tesla.owner
+    ) {
+      const secondDmg = damage * COMBAT.tesla.synergyRelayDamageRatio;
+      for (const e2 of state.edges) {
+        if (e2.id === edge.id) continue;
+        if (e2.sourceId !== other.id && e2.targetId !== other.id) continue;
+        const tip = nodeMap.get(e2.sourceId === other.id ? e2.targetId : e2.sourceId);
+        if (!tip || tip.id === tesla.id || tip.status === 'destroyed') continue;
+        secondHopSegs.push({ a: other, b: tip, dmg: secondDmg });
+      }
+    }
+  }
+
+  // 处理二级段（去重：同段只算一次）
+  const seenSegKeys = new Set<string>();
+  for (const seg of secondHopSegs) {
+    const k = seg.a.id < seg.b.id ? `${seg.a.id}|${seg.b.id}` : `${seg.b.id}|${seg.a.id}`;
+    if (seenSegKeys.has(k)) continue;
+    seenSegKeys.add(k);
+    for (const enemy of state.enemies) {
+      const d = pointToSegmentDist(enemy, seg.a, seg.b);
+      if (d <= hitRange) {
+        enemy.hp -= seg.dmg;
+        enemy.hitFlash = 1;
+        hitAny = true;
       }
     }
   }

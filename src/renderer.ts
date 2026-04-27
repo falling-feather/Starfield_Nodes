@@ -487,6 +487,26 @@ export class Renderer {
         ctx.restore();
       }
 
+      // === 联动高亮：tesla ↔ relay 同方直连（电网中转） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'tesla' && target.type === 'relay')
+          || (source.type === 'relay' && target.type === 'tesla'))) {
+        ctx.save();
+        const pulse = 0.40 + Math.sin(this.time * 8 + 2) * 0.20;
+        ctx.strokeStyle = `rgba(120, 220, 255, ${pulse})`;
+        ctx.lineWidth = lw + 2;
+        ctx.setLineDash([2, 4]);
+        ctx.lineDashOffset = -this.time * 90;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
       if (edge.type === 'amplify' && active) {
         // 增幅线：双线 + 金色脉冲
         const nx = -dy / len * 3; // 法线偏移

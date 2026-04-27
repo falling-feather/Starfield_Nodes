@@ -1824,3 +1824,59 @@ V1.1.2 完成了「经济流派」首个联动（buffer-collector），本次延
 - 待玩家解锁第 3 关后一次性回归 V1.1.2 + V1.1.3 视觉与平衡
 - Phase β 下一对候选：**relay × tesla**（"链式电网"）或 **shield × repair**（"再生护甲"）
 - 若 portal 加 interceptor 后过强，可改成「仅在 portal 超载时触发联动」
+
+
+## §V1.1.4 节点机制纵深(3)：tesla × relay 链式电网（2026-04-27 增补 · Phase β-3）
+
+### 背景
+
+V1.1.2 / V1.1.3 完成「经济（buffer-collector）」「防御控场（portal-interceptor）」两对联动。本次选 tesla × relay 是因为：
+
+- **第 2 关「关键防线」就有 relay + tesla**，是首个**新手期就能体验联动**的组合（V1.1.2/V1.1.3 都要解锁第 3 关才能用）
+- relay 之前只是"能量管道"，机制感弱；tesla 已经依赖 edge → 二者天然适合做"电网"语义
+- 给 relay 加一个"非经济"用途，避免它一直只是被动管道
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+`COMBAT.tesla` 新增：
+
+- `synergyRelayHop: true` —— 总开关
+- `synergyRelayDamageRatio: 0.6` —— 二级电弧伤害衰减系数（基于 tesla 自身基础伤害）
+
+#### 逻辑层 src/graph.ts teslaDamageEnemies
+
+- 原本 tesla 只对自身相邻 edge 段（tesla→邻居）做伤害判定
+- 新增第二跳：当邻居是同 owner 的 relay，则把 relay 的其它边（除回 tesla 那条）也加入 "二级段" 集合
+- 二级段做同样的 `pointToSegmentDist <= hitRange` 判定，伤害 × `synergyRelayDamageRatio`
+- 二级段使用 `Set<string>` 去重（防止 A-B 段被两个 relay 都识别后重复打伤害）
+- 二级段不再继续扩散（最多 1 跳，防止全图电网无限蔓延）
+
+#### 渲染层 src/renderer.ts drawEdges
+
+- 同 owner tesla↔relay 的活跃边追加青蓝色高频虚线流动描边（rgba(120,220,255, 0.20~0.60) 正弦呼吸，2/4 dash 滚动 90px/s）
+- 与 buffer-collector 金色实线、portal-interceptor 粉紫慢虚线在视觉上明显区分
+
+### 设计取舍
+
+- **相比 V1.1.2/V1.1.3**：本组联动让 tesla 的电弧物理性地"扩展"到二级段，玩家会主动为 tesla 修建 relay 网络；前两组是"加成式"联动（数值/事件触发），这组是"扩展式"联动（覆盖范围变化）
+- **二级段去重**：同段被两个 relay 都视作二级会造成翻倍伤害，违反预期；用排序后的 id 拼接 key 去重
+- **不允许三级及以上**：避免遥远 relay 网络让 tesla 全图打击，破坏放置策略
+- **二级段不计入 evolved 链伤的 hitEnemies**：进化形态的 60px 范围连锁伤害仍只来自 tesla 主弧，避免放大过强
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 112ms，bundle 175.42 KB（V1.1.3 +0.91 KB） |
+| `npm run preview` 启动 | OK |
+| 联动判定逻辑 | OK 二级段去重 + 同 owner 限制 + 单跳限制（4 行新增 + Set） |
+| 游戏内手动实测 | TODO 与 V1.1.2 / V1.1.3 一并在玩家进入第 2/3 关时验证 |
+
+### 后续
+
+- **下一对候选**：shield × repair 「再生护甲」、energy × buffer 「能量塔共振」
+- 待玩家进入第 2 关后回归 tesla-relay 视觉与平衡（重点关注：tesla 网络是否会一击全屏？是否需要把 ratio 从 0.6 降到 0.4？）
+- 考虑给玩家加一个「联动图鉴」面板（按 Tab/合适快捷键打开，列出已发现的联动对 + 描述）
