@@ -103,6 +103,17 @@ export class InputManager {
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
 
+    // V1.0.6：科技树打开时拦截左键点击 → 点中可研究卡片则研究，未命中也不透过到画布
+    if (e.button === 0 && this.techState.showPanel && this.ui) {
+      const hit = this.ui.techCardAreas.find(
+        a => sx >= a.x && sx <= a.x + a.w && sy >= a.y && sy <= a.y + a.h,
+      );
+      if (hit && hit.available) {
+        researchTech(hit.techId, this.techState, this.state);
+      }
+      return;
+    }
+
     // Ctrl + 左键 拖拽平移摄像机
     if (e.button === 0 && e.ctrlKey) {
       this.isPanning = true;
@@ -384,11 +395,12 @@ export class InputManager {
       return;
     }
 
-    // 科技树面板内的数字键 → 研究科技
+    // 科技树面板内的数字键 → 研究科技（V1.0.6：键 0 映射第10个科技）
     if (this.techState.showPanel) {
-      const num = parseInt(key);
-      if (num >= 1 && num <= this.techState.tree.length) {
-        const techIdx = num - 1;
+      let techIdx = -1;
+      if (key >= '1' && key <= '9') techIdx = parseInt(key) - 1;
+      else if (key === '0') techIdx = 9;
+      if (techIdx >= 0 && techIdx < this.techState.tree.length) {
         researchTech(this.techState.tree[techIdx].id, this.techState, this.state);
       }
       if (key === 'escape') {

@@ -42,6 +42,8 @@ export class UI {
   selectedEdgeType: EdgeType = 'standard';
   /** 节点面板按钮命中区域（屏幕坐标） */
   nodeButtons: { action: string; x: number; y: number; w: number; h: number; enabled: boolean }[] = [];
+  /** 科技树卡片点击区（V1.0.6）：drawTechPanel 负责填充，input.ts 负责命中检测 */
+  techCardAreas: { idx: number; techId: string; x: number; y: number; w: number; h: number; available: boolean; unlocked: boolean }[] = [];
 
   // ── 微动效状态 ──
   /** HUD 首次进入战斗时的淡入起点（ms） */
@@ -773,7 +775,10 @@ export class UI {
 
     ctx.font = FONT.base;
     ctx.fillStyle = COLORS.text.faint;
-    ctx.fillText(`◆ ${Math.floor(state.resources)} 可用资源  |  [T] 关闭  |  点击数字键研究`, cx, py + 46);
+    ctx.fillText(`◆ ${Math.floor(state.resources)} 可用资源  ·  鼠标点击 / 数字键研究 (1-9, 0)  ·  [Esc] 关闭`, cx, py + 46);
+
+    // 重置点击区【V1.0.6】
+    this.techCardAreas = [];
 
     // 绘制各科技节点
     const tree = this.techState.tree;
@@ -822,6 +827,15 @@ export class UI {
         ctx.fillRect(cardX, ty, cardW, cardH);
         ctx.strokeRect(cardX, ty, cardW, cardH);
 
+        // 记录点击区（V1.0.6：全部记录，点击时依赖 available 判断是否生效）
+        const techIdx = tree.indexOf(tech);
+        this.techCardAreas.push({
+          idx: techIdx,
+          techId: tech.id,
+          x: cardX, y: ty, w: cardW, h: cardH,
+          available, unlocked: tech.unlocked,
+        });
+
         // 图标
         ctx.font = FONT.xxl;
         ctx.fillStyle = tech.unlocked ? tech.color : available ? tech.color : COLORS.text.disabled;
@@ -858,13 +872,14 @@ export class UI {
           }
         }
 
-        // 快捷键提示（可研究的科技）
+        // 快捷键提示（V1.0.6：第10个科技用键 0，仅可研究状态显示）
         if (available) {
           const keyIdx = tree.indexOf(tech);
+          const slotKey = keyIdx < 9 ? String(keyIdx + 1) : '0';
           ctx.fillStyle = COLORS.accent.purple;
           ctx.font = 'bold 18px monospace';
           ctx.textAlign = 'right';
-          ctx.fillText(`[${keyIdx + 1}]`, cardX + cardW - 8, ty + 18);
+          ctx.fillText(`[${slotKey}]`, cardX + cardW - 8, ty + 18);
           ctx.textAlign = 'left';
         }
       }
