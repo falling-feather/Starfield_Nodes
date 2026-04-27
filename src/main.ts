@@ -101,13 +101,12 @@ function showNodeSelect(profile: SaveProfile, level: LevelConfig): void {
 
 /** 4) 开始游戏 */
 function startGame(profile: SaveProfile, level: LevelConfig, selectedNodes: NodeType[]): void {
-  currentGame = new Game(canvas, profile, level, selectedNodes, (won: boolean) => {
-    void won;
+  /** 退到选卡：复用关卡结束流程的清理 + 淡出 */
+  const exitToLevelSelect = (): void => {
     void transitionTo(
       () => {
         currentGame?.stop();
         currentGame = null;
-        // 重新加载最新的存档（游戏内已 saveProfile）
         const freshProfiles = loadProfiles();
         const freshProfile = freshProfiles.find(p => p.name === profile.name) ?? profile;
         patchProfile(freshProfile);
@@ -115,7 +114,30 @@ function startGame(profile: SaveProfile, level: LevelConfig, selectedNodes: Node
       },
       { fadeOutMs: ANIM.exitGameOut, fadeInMs: ANIM.exitGameIn },
     );
-  });
+  };
+  /** 退到标题：清理当前游戏 + 重新登录页 */
+  const exitToTitle = (): void => {
+    void transitionTo(
+      () => {
+        currentGame?.stop();
+        currentGame = null;
+        new LoginScreen(canvas, onLoggedIn);
+      },
+      { fadeOutMs: ANIM.exitGameOut, fadeInMs: ANIM.exitGameIn },
+    );
+  };
+  currentGame = new Game(
+    canvas,
+    profile,
+    level,
+    selectedNodes,
+    (won: boolean) => {
+      void won;
+      exitToLevelSelect();
+    },
+    exitToLevelSelect,
+    exitToTitle,
+  );
   currentGame.start();
 }
 
