@@ -858,7 +858,34 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
   candidates.sort((a, b) => dist(portal, a) - dist(portal, b));
 
   const targets = candidates.slice(0, maxTargets);
+
+  // 联动：收集直连的 player owned interceptor（在传送前定位即可，传送后只需打投射物）
+  const synergyInterceptors: GameNode[] = [];
+  if (COMBAT.portal.synergyInterceptorShot) {
+    for (const edge of state.edges) {
+      let otherId: string | null = null;
+      if (edge.sourceId === portal.id) otherId = edge.targetId;
+      else if (edge.targetId === portal.id) otherId = edge.sourceId;
+      if (!otherId) continue;
+      const other = state.nodes.find(n => n.id === otherId);
+      if (!other || other.status === 'destroyed') continue;
+      if (other.type !== 'interceptor') continue;
+      if (other.owner !== portal.owner) continue;
+      synergyInterceptors.push(other);
+    }
+  }
+
   for (const enemy of targets) {
+    // 联动射击：在敌人被传送前发射，目标锁定该敌人 id（传送后投射物会追到新位置）
+    for (const inter of synergyInterceptors) {
+      const dmg = COMBAT.interceptor.damage * inter.level * COMBAT.portal.synergyInterceptorDamageMult;
+      state.projectiles.push({
+        x: inter.x, y: inter.y,
+        targetId: enemy.id, speed: 12,
+        damage: dmg, color: '#ffaaff',
+      });
+    }
+
     // Boss 只被推一半距离
     const actualPush = enemy.type === 'boss' ? pushDist * COMBAT.portal.bossPushRatio : pushDist;
     // 传送到离portal actualPush远的随机方向

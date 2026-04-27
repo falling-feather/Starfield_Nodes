@@ -282,6 +282,10 @@ export const COMBAT = {
     maxTargets: { n: 1, e: 2, oc: 999 },
     bossPushRatio: 0.5,
     teleportCooldown: { n: 4, e: 3 },
+    /** 联动：每个直连的 player owned interceptor 对被传送敌人额外射击一次 */
+    synergyInterceptorShot: true,
+    /** 联动射击伤害倍率（基于 interceptor 自身基础伤害） */
+    synergyInterceptorDamageMult: 1.0,
   },
 
   /** 信标：仅消耗能量做视野（无攻击数值）。能耗见 ENERGY_COSTS.beacon */
