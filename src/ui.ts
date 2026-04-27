@@ -34,6 +34,8 @@ export class UI {
   showAchievementPanel: boolean = false;
   /** 显示快捷键设置面板 */
   showKeybindPanel: boolean = false;
+  /** 显示联动图鉴面板（V1.1.6） */
+  showSynergyPanel: boolean = false;
   /** 正在编辑的快捷键操作（等待按键输入） */
   editingAction: KeyAction | null = null;
   /** 存档已解锁成就列表（由外部设置） */
@@ -71,6 +73,7 @@ export class UI {
   private techFade = 0;
   private achievementFade = 0;
   private keybindFade = 0;
+  private synergyFade = 0;
   /** 上次 render 时间（用于面板 fade dt） */
   private lastFadeTick = performance.now();
 
@@ -95,6 +98,7 @@ export class UI {
     this.techFade = step(this.techFade, this.techState?.showPanel ? 1 : 0);
     this.achievementFade = step(this.achievementFade, this.showAchievementPanel ? 1 : 0);
     this.keybindFade = step(this.keybindFade, this.showKeybindPanel ? 1 : 0);
+    this.synergyFade = step(this.synergyFade, this.showSynergyPanel ? 1 : 0);
 
     this.drawHUD(state);
 
@@ -155,6 +159,15 @@ export class UI {
       ctx.save();
       ctx.globalAlpha *= this.easeFade(this.keybindFade);
       this.drawKeybindPanel(state);
+      ctx.restore();
+    }
+
+    // 联动图鉴面板（V1.1.6，带淡入淡出）
+    if (this.synergyFade > 0.01) {
+      const ctx = this.ctx;
+      ctx.save();
+      ctx.globalAlpha *= this.easeFade(this.synergyFade);
+      this.drawSynergyPanel(state);
       ctx.restore();
     }
 
@@ -686,7 +699,7 @@ export class UI {
     ctx.textAlign = 'right';
     ctx.fillStyle = COLORS.text.disabled;
     ctx.font = FONT.md;
-    ctx.fillText(`[${getKey('upgrade').toUpperCase()}]升级 | [${getKey('sell').toUpperCase()}]出售 | [${getKey('pause').toUpperCase()}]暂停 | [${getKey('achievements').toUpperCase()}]成就 | [K]按键 | [${getKey('mute').toUpperCase()}]${isMuted() ? '🔇' : '🔊'}`, state.canvasWidth - 10, panelY + 20);
+    ctx.fillText(`[${getKey('upgrade').toUpperCase()}]升级 | [${getKey('sell').toUpperCase()}]出售 | [${getKey('pause').toUpperCase()}]暂停 | [${getKey('achievements').toUpperCase()}]成就 | [${getKey('synergy').toUpperCase()}]图鉴 | [K]按键 | [${getKey('mute').toUpperCase()}]${isMuted() ? '🔇' : '🔊'}`, state.canvasWidth - 10, panelY + 20);
 
     // 连线类型选择器
     const ecfg = EDGE_CONFIGS[this.selectedEdgeType];
@@ -1231,7 +1244,119 @@ export class UI {
     ctx.restore();
   }
 
-  // ───── 快捷键设置面板 ─────
+  // ───── 联动图鉴面板（V1.1.6） ─────
+
+  /** 静态联动配置（与 graph.ts / entities.ts / renderer.ts 中实现保持一致） */
+  private readonly SYNERGIES: { pair: string; name: string; mode: string; effect: string; unlock: string; color: string }[] = [
+    {
+      pair: 'tesla × relay',
+      name: '链式电网',
+      mode: '扩展',
+      effect: 'Tesla 借道相连 Relay 的其它边再延伸一跳，伤害 ×0.6',
+      unlock: '第 2 关「关键防线」',
+      color: 'rgba(120, 220, 255, 0.85)',
+    },
+    {
+      pair: 'buffer × collector',
+      name: '经济共振',
+      mode: '加成',
+      effect: 'Collector 直连任一同方 Buffer：产出 ×1.25；进化形态晶体阈值-1 / Buffer',
+      unlock: '第 3 关「迷雾深处」',
+      color: 'rgba(255, 215, 96, 0.85)',
+    },
+    {
+      pair: 'portal × interceptor',
+      name: '出门一炮',
+      mode: '事件',
+      effect: 'Portal 传送敌人时，每个相连同方 Interceptor 立即对该敌人发射一次追踪射击',
+      unlock: '第 3 关「迷雾深处」',
+      color: 'rgba(255, 170, 255, 0.85)',
+    },
+    {
+      pair: 'shield × repair',
+      name: '再生护甲',
+      mode: '减免',
+      effect: 'Shield 直连同方 Repair 时，自身受到的伤害 ×0.8',
+      unlock: '第 3 关「迷雾深处」',
+      color: 'rgba(140, 255, 180, 0.85)',
+    },
+  ];
+
+  private drawSynergyPanel(state: GameState): void {
+    const ctx = this.ctx;
+    ctx.save();
+
+    const cx = state.canvasWidth / 2;
+    const cy = state.canvasHeight / 2;
+    const panelW = 600;
+    const panelH = 440;
+    const px = cx - panelW / 2;
+    const py = cy - panelH / 2;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
+
+    ctx.fillStyle = 'rgba(10,10,30,0.95)';
+    ctx.strokeStyle = COLORS.accent.cyan;
+    ctx.lineWidth = 2;
+    ctx.fillRect(px, py, panelW, panelH);
+    ctx.strokeRect(px, py, panelW, panelH);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 27px monospace';
+    ctx.fillStyle = COLORS.accent.cyan;
+    ctx.fillText('⟨ 联 动 图 鉴 ⟩', cx, py + 26);
+
+    ctx.font = FONT.base;
+    ctx.fillStyle = COLORS.text.muted;
+    const closeKey = (getKey('synergy') || 'y').toUpperCase();
+    ctx.fillText(`节点之间的隐藏组合  |  [${closeKey}] 关闭`, cx, py + 50);
+
+    const startY = py + 78;
+    const rowH = 80;
+    const innerW = panelW - 28;
+
+    ctx.textAlign = 'left';
+    for (let i = 0; i < this.SYNERGIES.length; i++) {
+      const s = this.SYNERGIES[i];
+      const ax = px + 14;
+      const ay = startY + i * rowH;
+
+      // 卡片背景
+      ctx.fillStyle = 'rgba(30,30,50,0.6)';
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(ax, ay, innerW, rowH - 10);
+      ctx.strokeRect(ax, ay, innerW, rowH - 10);
+
+      // 左侧颜色色块（identity bar）
+      ctx.fillStyle = s.color;
+      ctx.fillRect(ax, ay, 4, rowH - 10);
+
+      // 标题：name + mode + pair
+      ctx.font = 'bold 18px monospace';
+      ctx.fillStyle = s.color;
+      ctx.fillText(s.name, ax + 14, ay + 18);
+
+      ctx.font = FONT.md;
+      ctx.fillStyle = COLORS.text.muted;
+      ctx.fillText(`【${s.mode}】 ${s.pair}`, ax + 14 + ctx.measureText(s.name).width + 12, ay + 19);
+
+      // 描述
+      ctx.font = FONT.md;
+      ctx.fillStyle = COLORS.text.body;
+      ctx.fillText(s.effect, ax + 14, ay + 42);
+
+      // 解锁
+      ctx.font = FONT.sm;
+      ctx.fillStyle = COLORS.text.faint;
+      ctx.fillText(`解锁：${s.unlock}`, ax + 14, ay + 60);
+    }
+
+    ctx.restore();
+  }
+
 
   private drawKeybindPanel(state: GameState): void {
     const ctx = this.ctx;
