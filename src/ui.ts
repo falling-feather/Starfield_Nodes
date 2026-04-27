@@ -590,7 +590,8 @@ export class UI {
     ctx.lineTo(state.canvasWidth, panelY);
     ctx.stroke();
 
-    const allBuildTypes: { key: string; type: NodeType; label: string }[] = [
+    // 静态表：仅作为未限制节点选择场景下的退回（如 bench / 调试）
+    const fallbackBuildTypes: { key: string; type: NodeType; label: string }[] = [
       { key: '1', type: 'energy', label: '能量站' },
       { key: '2', type: 'turret', label: '炮塔' },
       { key: '3', type: 'mine', label: '矿机' },
@@ -616,10 +617,22 @@ export class UI {
       { key: 'E', type: 'kamikaze', label: '自爆' },
     ];
 
-    // 按允许列表过滤
-    const buildTypes = this.allowedNodeTypes
-      ? allBuildTypes.filter(bt => this.allowedNodeTypes!.includes(bt.type))
-      : allBuildTypes;
+    // V1.0.5：有 allowedNodeTypes 时按玩家选择顺序绑定数字键 1..9,0
+    const NUM_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+    const NODE_LABELS: Partial<Record<NodeType, string>> = Object.fromEntries(
+      fallbackBuildTypes.map(bt => [bt.type, bt.label]),
+    ) as Partial<Record<NodeType, string>>;
+
+    let buildTypes: { key: string; type: NodeType; label: string }[];
+    if (this.allowedNodeTypes && this.allowedNodeTypes.length > 0) {
+      buildTypes = this.allowedNodeTypes.slice(0, NUM_KEYS.length).map((type, i) => ({
+        key: NUM_KEYS[i],
+        type,
+        label: NODE_LABELS[type] ?? type,
+      }));
+    } else {
+      buildTypes = fallbackBuildTypes;
+    }
 
     const startX = 10;
     ctx.font = FONT.md;

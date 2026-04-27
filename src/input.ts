@@ -426,32 +426,25 @@ export class InputManager {
       return;
     }
 
-    // 建造快捷键
-    const buildMap: Record<string, NodeType> = {
-      '1': 'energy',
-      '2': 'turret',
-      '3': 'mine',
-      '4': 'shield',
-      '5': 'relay',
-      '6': 'tesla',
-      '7': 'core',
-      '8': 'beacon',
-      '9': 'factory',
-      '0': 'magnet',
-      '-': 'trap',
-      '=': 'repair',
-      '\\': 'sniper',
-      ']': 'buffer',
-      '[': 'collector',
-      "'": 'interceptor',
-      ';': 'radar',
-      '`': 'portal',
-      '.': 'blackhole',
-      '/': 'echo',
-      ',': 'toxin',
-      'q': 'arc',
-      'e': 'kamikaze',
-    };
+    // 建造快捷键：优先使用 allowedNodeTypes 选择顺序动态绑定数字键 1..9,0（V1.0.5）
+    // 未提供 allowedNodeTypes 时退回到原有24 键静态表（充当高阶、调试、 bench 场景默认）
+    const numKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+    const buildMap: Record<string, NodeType> = {};
+    if (this.allowedNodeTypes && this.allowedNodeTypes.length > 0) {
+      // 动态按选择顺序绑定
+      for (let i = 0; i < Math.min(numKeys.length, this.allowedNodeTypes.length); i++) {
+        buildMap[numKeys[i]] = this.allowedNodeTypes[i];
+      }
+    } else {
+      // 退回静态表
+      Object.assign(buildMap, {
+        '1': 'energy', '2': 'turret', '3': 'mine', '4': 'shield', '5': 'relay',
+        '6': 'tesla', '7': 'core', '8': 'beacon', '9': 'factory', '0': 'magnet',
+        '-': 'trap', '=': 'repair', '\\': 'sniper', ']': 'buffer', '[': 'collector',
+        "'": 'interceptor', ';': 'radar', '`': 'portal', '.': 'blackhole', '/': 'echo',
+        ',': 'toxin', 'q': 'arc', 'e': 'kamikaze',
+      } as Record<string, NodeType>);
+    }
 
     if (buildMap[key]) {
       const nodeType = buildMap[key];
