@@ -185,6 +185,7 @@ function makeAnonymousProfile(): SaveProfile {
     currentLevel: 1,
     clearedLevels: [],
     unlockedAchievements: [],
+    discoveredSynergies: [],
   };
 }
 

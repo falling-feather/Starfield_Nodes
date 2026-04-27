@@ -159,6 +159,23 @@ export function dist(a: { x: number; y: number }, b: { x: number; y: number }): 
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 }
 
+// ===== 联动：shield 是否直连同方 repair（用于伤害减免） =====
+export function hasShieldRepairLink(state: GameState, node: GameNode): boolean {
+  if (node.type !== 'shield') return false;
+  for (const edge of state.edges) {
+    let otherId: string | null = null;
+    if (edge.sourceId === node.id) otherId = edge.targetId;
+    else if (edge.targetId === node.id) otherId = edge.sourceId;
+    if (!otherId) continue;
+    const other = state.nodes.find(n => n.id === otherId);
+    if (!other || other.status === 'destroyed') continue;
+    if (other.type !== 'repair') continue;
+    if (other.owner !== node.owner) continue;
+    return true;
+  }
+  return false;
+}
+
 // ===== 连线校验 =====
 export function canConnect(state: GameState, sourceId: string, targetId: string): boolean {
   if (sourceId === targetId) return false;
@@ -441,6 +458,8 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + (ev ? ENERGY_GAINS.energy.e : ENERGY_GAINS.energy.n));
         if (ev) evolvedEnergyAssist(state, node);
         if (oc) overchargeEnergyBroadcast(state, node);
+        // V1.1.9 联动：relay 网络充能（结构型）
+        energyRelayNetwork(state, node);
         break;
       case 'shield':
         // 护盾 — 进化(堡垒): 给范围内节点伤害减免标记 | 超载: 脉冲
@@ -858,7 +877,35 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
   candidates.sort((a, b) => dist(portal, a) - dist(portal, b));
 
   const targets = candidates.slice(0, maxTargets);
+
+  // 联动：收集直连的 player owned interceptor（在传送前定位即可，传送后只需打投射物）
+  const synergyInterceptors: GameNode[] = [];
+  if (COMBAT.portal.synergyInterceptorShot) {
+    for (const edge of state.edges) {
+      let otherId: string | null = null;
+      if (edge.sourceId === portal.id) otherId = edge.targetId;
+      else if (edge.targetId === portal.id) otherId = edge.sourceId;
+      if (!otherId) continue;
+      const other = state.nodes.find(n => n.id === otherId);
+      if (!other || other.status === 'destroyed') continue;
+      if (other.type !== 'interceptor') continue;
+      if (other.owner !== portal.owner) continue;
+      synergyInterceptors.push(other);
+    }
+  }
+
   for (const enemy of targets) {
+    // 联动射击：在敌人被传送前发射，目标锁定该敌人 id（传送后投射物会追到新位置）
+    if (synergyInterceptors.length > 0) state.discoveredSynergies.add('portal-interceptor');
+    for (const inter of synergyInterceptors) {
+      const dmg = COMBAT.interceptor.damage * inter.level * COMBAT.portal.synergyInterceptorDamageMult;
+      state.projectiles.push({
+        x: inter.x, y: inter.y,
+        targetId: enemy.id, speed: 12,
+        damage: dmg, color: '#ffaaff',
+      });
+    }
+
     // Boss 只被推一半距离
     const actualPush = enemy.type === 'boss' ? pushDist * COMBAT.portal.bossPushRatio : pushDist;
     // 传送到离portal actualPush远的随机方向
@@ -928,20 +975,59 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
   }
   if (nearbyCount === 0) return;
 
+  // 联动：直连 player owned buffer 数量（用于产能加成 + 晶体阈值减免）
+  let bufferLinkCount = 0;
+  for (const edge of state.edges) {
+    let otherId: string | null = null;
+    if (edge.sourceId === collector.id) otherId = edge.targetId;
+    else if (edge.targetId === collector.id) otherId = edge.sourceId;
+    if (!otherId) continue;
+    const other = state.nodes.find(n => n.id === otherId);
+    if (!other || other.status === 'destroyed') continue;
+    if (other.type !== 'buffer') continue;
+    if (other.owner !== collector.owner) continue;
+    bufferLinkCount++;
+  }
+  const synergyMult = bufferLinkCount > 0 ? (1 + COMBAT.collector.synergyBufferBonus) : 1;
+  if (bufferLinkCount > 0) state.discoveredSynergies.add('buffer-collector');
+
   const cap = overcharged ? nearbyCount : Math.min(nearbyCount, COMBAT.collector.maxNearbyCap);
-  const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1);
+  const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1) * synergyMult;
   state.resources += Math.floor(output);
 
   // 进化(量子拾荒): crystalThreshold+敌人在范围内时每tick产1晶体
-  if (evolved && nearbyCount >= COMBAT.collector.crystalThreshold) {
-    state.crystals += 1;
+  // 联动：每接 1 个 buffer，threshold -1（最低 1）
+  if (evolved) {
+    const reduce = bufferLinkCount * COMBAT.collector.synergyCrystalThresholdReduce;
+    const effectiveThreshold = Math.max(1, COMBAT.collector.crystalThreshold - reduce);
+    if (nearbyCount >= effectiveThreshold) {
+      state.crystals += 1;
+    }
   }
 }
 
 // ===== 缓冲器能量增幅 =====
 function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean): void {
   const range = evolved ? COMBAT.buffer.range.e : COMBAT.buffer.range.n;
-  const boost = (evolved ? COMBAT.buffer.boostPerLevel.e : COMBAT.buffer.boostPerLevel.n) * buffer.level;
+  let boost = (evolved ? COMBAT.buffer.boostPerLevel.e : COMBAT.buffer.boostPerLevel.n) * buffer.level;
+  // V1.1.8 联动：buffer 直连任一同方 energy 时，boost × synergyEnergyBoostMult
+  let energyLinked = false;
+  for (const edge of state.edges) {
+    let otherId: string | null = null;
+    if (edge.sourceId === buffer.id) otherId = edge.targetId;
+    else if (edge.targetId === buffer.id) otherId = edge.sourceId;
+    if (!otherId) continue;
+    const other = state.nodes.find(n => n.id === otherId);
+    if (!other || other.status === 'destroyed') continue;
+    if (other.type !== 'energy') continue;
+    if (other.owner !== buffer.owner) continue;
+    energyLinked = true;
+    break;
+  }
+  if (energyLinked) {
+    boost *= COMBAT.buffer.synergyEnergyBoostMult;
+    state.discoveredSynergies.add('energy-buffer');
+  }
   for (const node of state.nodes) {
     if (node.id === buffer.id || node.status === 'destroyed') continue;
     if (node.owner === 'neutral') continue;
@@ -1034,6 +1120,10 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
   let hitAny = false;
   const hitEnemies = new Set<string>();
 
+  // 收集"二级电弧"段（tesla → relay → relay 的另一邻居）
+  type ArcSeg = { a: GameNode; b: GameNode; dmg: number };
+  const secondHopSegs: ArcSeg[] = [];
+
   for (const edge of teslaEdges) {
     const other = nodeMap.get(edge.sourceId === tesla.id ? edge.targetId : edge.sourceId);
     if (!other || other.status === 'destroyed') continue;
@@ -1057,6 +1147,39 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
             size: 2 + rand() * 2,
           });
         }
+      }
+    }
+
+    // 联动：other 是同方 relay → 借道二级延伸
+    if (
+      COMBAT.tesla.synergyRelayHop
+      && other.type === 'relay'
+      && other.owner === tesla.owner
+    ) {
+      const secondDmg = damage * COMBAT.tesla.synergyRelayDamageRatio;
+      for (const e2 of state.edges) {
+        if (e2.id === edge.id) continue;
+        if (e2.sourceId !== other.id && e2.targetId !== other.id) continue;
+        const tip = nodeMap.get(e2.sourceId === other.id ? e2.targetId : e2.sourceId);
+        if (!tip || tip.id === tesla.id || tip.status === 'destroyed') continue;
+        secondHopSegs.push({ a: other, b: tip, dmg: secondDmg });
+        state.discoveredSynergies.add('tesla-relay');
+      }
+    }
+  }
+
+  // 处理二级段（去重：同段只算一次）
+  const seenSegKeys = new Set<string>();
+  for (const seg of secondHopSegs) {
+    const k = seg.a.id < seg.b.id ? `${seg.a.id}|${seg.b.id}` : `${seg.b.id}|${seg.a.id}`;
+    if (seenSegKeys.has(k)) continue;
+    seenSegKeys.add(k);
+    for (const enemy of state.enemies) {
+      const d = pointToSegmentDist(enemy, seg.a, seg.b);
+      if (d <= hitRange) {
+        enemy.hp -= seg.dmg;
+        enemy.hitFlash = 1;
+        hitAny = true;
       }
     }
   }
@@ -1152,6 +1275,39 @@ function magnetSlowEnemies(state: GameState, magnet: GameNode, rangeMult: number
       enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * slowFactor);
     }
   }
+}
+
+/** V1.1.9 联动：energy 直连 relay 时，沿 relay 链路给二跳同方节点少量充能（结构型） */
+function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
+  const boost = COMBAT.energy.synergyRelayNetworkBoost;
+  let triggered = false;
+  for (const edge of state.edges) {
+    if (edge.disruptedTimer > 0) continue;
+    let relayId: string | null = null;
+    if (edge.sourceId === energyNode.id) relayId = edge.targetId;
+    else if (edge.targetId === energyNode.id) relayId = edge.sourceId;
+    if (!relayId) continue;
+    const relay = state.nodes.find(n => n.id === relayId);
+    if (!relay || relay.status === 'destroyed') continue;
+    if (relay.type !== 'relay') continue;
+    if (relay.owner !== energyNode.owner) continue;
+
+    // 沿 relay 找二跳邻居（≠ energyNode 自己），给同方节点充能
+    for (const e2 of state.edges) {
+      if (e2.id === edge.id) continue;
+      if (e2.disruptedTimer > 0) continue;
+      let tipId: string | null = null;
+      if (e2.sourceId === relay.id) tipId = e2.targetId;
+      else if (e2.targetId === relay.id) tipId = e2.sourceId;
+      if (!tipId || tipId === energyNode.id) continue;
+      const tip = state.nodes.find(n => n.id === tipId);
+      if (!tip || tip.status === 'destroyed') continue;
+      if (tip.owner !== energyNode.owner) continue;
+      tip.currentEnergy = Math.min(tip.maxEnergy, tip.currentEnergy + boost);
+      triggered = true;
+    }
+  }
+  if (triggered) state.discoveredSynergies.add('relay-energy');
 }
 
 // ===== 超载专属效果 =====

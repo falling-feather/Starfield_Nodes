@@ -20,6 +20,8 @@ export interface SaveProfile {
   clearedLevels: number[];
   /** 已解锁的成就ID列表 */
   unlockedAchievements: string[];
+  /** V1.1.7：已发现的联动 id 列表（跨局永久） */
+  discoveredSynergies?: string[];
   /** Phase E: 二级签名（仅在序列化后出现，运行期不使用） */
   __sig?: string;
 }
@@ -143,6 +145,7 @@ export function createProfile(name: string): SaveProfile {
     currentLevel: 1,
     clearedLevels: [],
     unlockedAchievements: [],
+    discoveredSynergies: [],
   };
   return profile;
 }

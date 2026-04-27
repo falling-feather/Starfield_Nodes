@@ -69,6 +69,7 @@ export class Game {
     this.ui = new UI(this.canvas.getContext('2d')!);
     this.ui.techState = this.techState;
     this.ui.unlockedAchievements = this.profile.unlockedAchievements ?? [];
+    this.ui.discoveredSynergies = new Set(this.profile.discoveredSynergies ?? []);
     this.input = new InputManager(
       this.canvas,
       this.state,
@@ -153,6 +154,7 @@ export class Game {
       enemiesKilled: 0,
       nodesBuilt: 0,
       resourcesSpent: 0,
+      discoveredSynergies: new Set<string>(this.profile.discoveredSynergies ?? []),
     };
   }
 
@@ -275,6 +277,15 @@ export class Game {
       if (!this.profile.unlockedAchievements) this.profile.unlockedAchievements = [];
       checkAchievements(achCtx, this.profile.unlockedAchievements);
       this.ui.unlockedAchievements = this.profile.unlockedAchievements;
+
+      // V1.1.7：将本局发现的联动合并回存档
+      if (!this.profile.discoveredSynergies) this.profile.discoveredSynergies = [];
+      for (const id of this.state.discoveredSynergies) {
+        if (!this.profile.discoveredSynergies.includes(id)) {
+          this.profile.discoveredSynergies.push(id);
+        }
+      }
+      this.ui.discoveredSynergies = new Set(this.profile.discoveredSynergies);
 
       saveProfile(this.profile);
       if (this.onLevelEnd) {

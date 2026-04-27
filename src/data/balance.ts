@@ -152,6 +152,8 @@ export const COMBAT = {
     evolvedArmorRange: 200,
     /** §24 调优 ③：装甲每 tick 修复 3 -> 4，对应 §22 建议的 armorBoost +1 */
     evolvedArmorHealPerTick: 4,
+    /** 联动：shield 直连 player owned repair 时，受到的伤害 ×(1 - reduce) */
+    synergyRepairDamageReduce: 0.20,
   },
 
   /** 维修站：每 tick 修复 = healAmount × level */
@@ -239,6 +241,10 @@ export const COMBAT = {
     damage: 8,
     hitRange: 25,
     chainRatio: 0.5,
+    /** 联动：当 tesla 直连 player owned relay 时，电弧借道 relay 的其它边再延伸一跳 */
+    synergyRelayHop: true,
+    /** 二级电弧伤害衰减系数（基于 tesla 自身基础伤害） */
+    synergyRelayDamageRatio: 0.6,
   },
 
   /** 陷阱：伤害 × level × damageMult */
@@ -282,6 +288,10 @@ export const COMBAT = {
     maxTargets: { n: 1, e: 2, oc: 999 },
     bossPushRatio: 0.5,
     teleportCooldown: { n: 4, e: 3 },
+    /** 联动：每个直连的 player owned interceptor 对被传送敌人额外射击一次 */
+    synergyInterceptorShot: true,
+    /** 联动射击伤害倍率（基于 interceptor 自身基础伤害） */
+    synergyInterceptorDamageMult: 1.0,
   },
 
   /** 信标：仅消耗能量做视野（无攻击数值）。能耗见 ENERGY_COSTS.beacon */
@@ -295,12 +305,16 @@ export const COMBAT = {
     /** 进化(核聚变)：能量比 < threshold 的邻居会获得 boost 充能 */
     evolvedAssistThreshold: 0.8,
     evolvedAssistBoost: 8,
+    /** V1.1.9 联动：energy 直连 relay 时，每 tick 给 relay 另一端的同方二跳节点充能 boost（结构型，第 6 对联动） */
+    synergyRelayNetworkBoost: 1.5,
   },
 
   /** 缓冲器：boost = boostPerLevel × level，叠到邻居 currentEnergy（上限 maxEnergy） */
   buffer: {
     range: { n: 160, e: 200 },
     boostPerLevel: { n: 2, e: 4 },
+    /** V1.1.8 联动：buffer 直连任一同方 energy 时，boost ×1.30（加成型，第 5 对联动） */
+    synergyEnergyBoostMult: 1.30,
   },
 
   /** 缓冲器超载脉冲：可超充至 maxEnergy × overchargeCapRatio */
@@ -311,7 +325,7 @@ export const COMBAT = {
     overchargeCapRatio: 1.2,
   },
 
-  /** 采集器：output = cap × level × (evolved ? evolvedOutputMult : 1) */
+  /** 采集器：output = cap × level × (evolved ? evolvedOutputMult : 1) × (1 + synergy) */
   collector: {
     range: { n: 180, e: 240, oc: 300 },
     /** 普通形态最多统计 cap 个敌人，超载无上限 */
@@ -320,6 +334,10 @@ export const COMBAT = {
     evolvedOutputMult: 1.5,
     /** 进化形态：附近敌人 ≥ crystalThreshold 时每 tick 产 1 晶体 */
     crystalThreshold: 3,
+    /** 联动：直连任一 player owned buffer 时产出 +bonus（不叠加多个） */
+    synergyBufferBonus: 0.25,
+    /** 联动：晶体阈值的 buffer 减免（每接一个 buffer 减 1，最低 1） */
+    synergyCrystalThresholdReduce: 1,
   },
 
   /** 回声塔：复制邻居能力时的代理节点 level 缩放 + 超载额外伤害乘数 */

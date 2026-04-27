@@ -1,171 +1,148 @@
 # 项目规划与长期优化路线（PROJECT ROADMAP）
 
-> 更新时间：2026-04-24  
-> 目标：从“可玩”走向“可持续迭代、可维护、可平衡、可扩展”
+> 更新时间：2026-04-27（V1.1.1 重写）  
+> 主线：以**产品本体玩法体验**为核心，把基础设施类工作降级为支撑项；防作弊/防篡改等只在收益明显时按需推进。
 
 ---
 
 ## 1. 现状审视
 
-### 1.1 当前优势
+### 1.1 已具备的能力
 
-- 核心玩法闭环完整：建造 → 连线 → 防守 → 波次推进
-- 内容体量充足：多节点、多敌人、多关卡、科技树、成就、教程
-- 纯前端部署轻量：Vite + Canvas，GitHub Pages 自动部署
-- 代码模块拆分较清晰：输入、渲染、图算法、实体逻辑、UI 分层
+- **核心循环完整**：登录 → 选关 → 过场 → 节点选 → 战斗 → 失败/胜利反馈 已贯通
+- **内容体量初步**：8 个关卡、20+ 节点类型、可研究科技树、成就系统、主题切换
+- **产品化体验已补齐（V1.0.4-V1.1.0）**：
+  - 暂停菜单（继续/重开/选卡/标题）
+  - 失败重开直接回选卡
+  - 节点按选择顺序绑定数字键 1-N
+  - 科技树 + 主题面板支持鼠标交互
+  - 模态焦点栈（上下键不再被画布抢占）
+- **基础设施已就位**：
+  - 节点/敌人/关卡/平衡参数集中到 `src/data/`（Phase B-1）
+  - benchmark 框架 + seed 复现 + Node 端批量跑（Phase B-2）
+  - 存档签名校验（Phase B-3，已上线但**不再投入更多精力**）
+  - GitHub Pages 自动部署
+- **历史调优记录可追溯**：§19–§36 多轮 bench A/B、§V0.x–§V1.1 提交档案保留在文档末尾
 
-### 1.2 主要问题
+### 1.2 当前主要痛点（按玩家可感知排序）
 
-- **UI 响应式欠一致**：部分页面在高内容密度下会出现拥挤、遮挡、可读性下降
-- **系统耦合仍偏高**：`GameState` 单体状态较大，部分逻辑跨文件依赖较紧
-- **平衡数据分散**：数值主要写在代码常量中，缺少统一调参通道
-- **性能监控不足**：缺少帧时、实体数量、粒子负载的可视化诊断面板
-- **自动化测试薄弱**：核心算法/规则缺少回归测试，改动后易引入隐性行为回退
-- **内容生产效率可提升**：新增关卡/节点时需多处手工同步
+1. **关卡内容偏少**：8 关在熟练玩家手中 30-60 分钟即通关，缺少长尾留存
+2. **敌人多样性不足**：现有敌人主要是"血量×速度"组合，缺少机制性强的特殊单位
+3. **节点之间的协同纵深较浅**：不少节点是单点产出/单点输出，缺少"组合解锁能力"的关系
+4. **新手引导仅覆盖第 1 关**：第 2 关后没有结构化引导，进阶机制（领地折扣、超频、进化、连线类型）靠玩家自行摸索
+5. **响应式与移动端**：只在 1280×720+ 桌面分辨率下完整可用，未做小屏适配
+6. **声音与反馈层次薄**：胜负、研究、击杀的音效层次不分明，缺乏节奏感
 
----
+### 1.3 已被降级或暂不展开的方向
 
-## 2. 北极星目标（6-12个月）
-
-- **稳定性**：关键回归问题显著减少，版本更新可预测
-- **可维护性**：模块边界清晰，新增内容不需要大范围改代码
-- **可扩展性**：节点/敌人/关卡接近“配置驱动”扩展
-- **体验一致性**：UI 在不同分辨率与内容规模下保持可读与可操作
-- **性能可观测**：出现卡顿时可快速定位瓶颈
-
----
-
-## 3. 分阶段路线图
-
-## Phase A（1-2周）：体验与可用性收敛
-
-### 目标
-- 优先修复玩家可感知问题，确保主要流程稳定。
-
-### 任务
-- 全面梳理关键页面响应式：登录、选关、选卡、HUD、科技树、成就面板
-- 统一交互提示文案和键位描述（避免教程与实际行为偏差）
-- 补充“小屏模式”布局策略（最小宽高断点）
-- 建立基础 UI 设计 token（字号、间距、面板宽度、颜色层级）
-
-### 验收标准
-- 在 1366x768 / 1920x1080 / 2560x1440 三档下核心页面无截断、无重叠
-- 关键流程（登录→选关→选卡→游戏）连续体验无阻断
+- **存档反作弊**：当前 HMAC 签名足以挡住非主动改档玩家；进一步的服务器校验、混淆、反 devtools 收益小，**搁置**
+- **观察性/调试 HUD**：已有 bench 工具足以诊断平衡问题，FPS 面板等工程向特性**仅在出现卡顿投诉时才做**
+- **大规模重构**：`GameState` 单体偶有耦合，但当前迭代速度可接受，**暂不动**
 
 ---
 
-## Phase B（2-4周）：数据与平衡体系化
+## 2. 北极星目标（重排 · 6 个月视角）
 
-### 目标
-- 降低调平衡成本，让“改数值”无需改多处逻辑。
+按权重从高到低：
 
-### 任务
-- 将节点/敌人关键数值抽离为统一配置层（含注释与默认值）
-- 建立“平衡参数表”与版本记录（用于对比改动前后效果）
-- 增加波次曲线工具：生成每波敌人强度估算值
-- 设立基准对局（benchmark seeds）用于平衡回归
-
-### 验收标准
-- 一次平衡改动可在单处配置完成
-- 至少 3 套 benchmark 对局可重复复现
+1. **玩法体验深化**：让"再玩一关"成为玩家自发选择，而非通关后流失
+2. **新手到精通路径**：让玩家自然认知到核心机制（连线/超频/进化/科技），减少"我不知道还能干什么"
+3. **内容产能**：单关从设计到上线的耗时缩短，让新关卡 / 新节点 / 新敌人迭代更快
+4. **跨设备可玩**：至少桌面端 1024×600 起 + 移动端横屏可基础游玩
+5. **可观测的稳定性**：版本回归 bug 不超过 1 个/版本，平台部署可靠
 
 ---
 
-## Phase C（3-6周）：性能与可观测性
+## 3. 分阶段路线图（V1.1.1 重排）
 
-### 目标
-- 让性能问题可测、可视、可定位。
+> 每个阶段都遵守元规则：**改完必须 build → preview → 浏览器 MCP 实测 → 文档同步**。
 
-### 任务
-- 增加开发调试 HUD（FPS、tick时长、敌人数、粒子数、投射物数）
-- 渲染分层采样：识别最重的绘制路径
-- 粒子与特效预算机制（超过阈值自动退化）
-- 研究对象池策略（particles/projectiles）以降低 GC 抖动
+### Phase α（已完成）：产品化体验收敛
 
-### 验收标准
-- 高压场景下平均帧时明显下降
-- 可在调试面板中定位主要性能瓶颈
+V1.0.4 / V1.0.5 / V1.0.6 / V1.1.0 已上线：暂停菜单、失败重开直进选卡、节点按序绑定、科技树鼠标 + 键 0、主题鼠标 + 焦点栈。详见文档末尾 §V1.0.4–§V1.1.0。
 
----
+### Phase β（next，1-2 周）：玩法深化首批
 
-## Phase D（4-8周）：工程质量与自动化
+#### 目标
 
-### 目标
-- 通过自动化减少回归风险，提高迭代速度。
+让现有 8 关变得"耐玩"，给玩家提供至少一个"我下一局想试试这个流派"的钩子。
 
-### 任务
-- 为核心纯逻辑模块补充单元测试（graph/levels/tech）
-- 增加关键流程的端到端冒烟测试（可先从最小脚本开始）
-- 建立 PR 检查：lint/build/test 通过后再合并
-- 增加“发布检查清单”文档化流程
+#### 任务
 
-### 验收标准
-- 核心逻辑模块具备基础测试覆盖
-- 每次发布前可以自动执行最小回归集合
+- **节点机制纵深**：选 3-4 个节点类型（候选：buffer / collector / interceptor / portal）写一组**联动机制**；例如 portal 解锁后两个 core 之间可建低成本远距连线
+- **敌人机制分层**：新增 2-3 类机制型敌人：路径干扰（消除连线一段）、能量侵蚀（被攻击时偷资源）、反制流派（针对 turret 的护盾敌人）
+- **关卡变体器**：从「生存/Boss/限时」三类目标扩展到「保护特定节点」「累计击杀」「资源限额」
+- **关卡解锁可视化**：选关页显示每关的解锁条件 + 推荐流派
+- **新手引导扩展**：第 2 关引导「连线类型选择」，第 3 关引导「超频」，第 4 关引导「进化」，第 5 关引导「科技树」
 
----
+#### 验收
 
-## Phase E（持续）：内容扩展与玩法深挖
+- 至少 1 关能通过 2 种以上流派通关（不是只有一条最优解）
+- benchmark 在新机制下不出现 winrate < 30% 或 > 90% 的极端关卡
 
-### 目标
-- 在稳定底座上持续做新内容，保证“新鲜感 + 可控复杂度”。
+### Phase γ（2-4 周）：响应式与小屏可玩
 
-### 方向
-- 新节点玩法分层：经济、控制、防御、风险收益
-- 新敌人机制分层：路径干扰、能量侵蚀、反制特定流派
-- 关卡叙事化：地图主题 + 专属机制 + 目标变化
-- 周挑战/每日变体：固定规则修改器（如“低能量模式”）
+#### 目标
+
+把可用最小分辨率从 1280×720 降到 1024×600，并支持横屏移动端。
+
+#### 任务
+
+- HUD / 节点面板 / 科技树 / 暂停菜单走同一套断点（small / medium / large）
+- 触屏手势：单指拖拽视野、双指缩放、长按节点 = 右键、菜单按钮放大命中区
+- 文字缩放：根据 viewport 自动调字号档位
+- 移动端 fallback：检测到 hover 不可用时把所有 hover 提示改为长按
+
+### Phase δ（3-6 周）：内容生产工具链
+
+#### 目标
+
+降低单关 / 单节点 / 单敌人的上线成本。
+
+#### 任务
+
+- 关卡定义 hot reload：开发模式下修改 `src/data/levels.ts` 不刷新即生效
+- 节点 / 敌人配置可视化校验脚本（npm run check-content）：自动跑一遍 spawn 是否平衡、节点造价是否在合理区间
+- 自动生成 bench 矩阵：新关上线时跑一遍 8 套 seed，输出 winrate 报告
+
+### Phase ε（持续）：稳定性 + 性能
+
+仅在出现实际问题时才推进：
+- 玩家投诉卡顿 → 先做调试 HUD 定位
+- 出现一次大 bug → 才考虑写对应单测
+- 不主动追加全量回归测试套件
 
 ---
 
 ## 4. 风险与应对
 
-- **风险：功能持续堆叠导致维护成本上升**
-  - 应对：优先做配置化、抽象化，再扩内容
-- **风险：平衡调优周期长**
-  - 应对：建立 benchmark 与回放种子
-- **风险：低端设备性能不稳**
-  - 应对：引入质量分级（特效档位）
-- **风险：文档滞后**
-  - 应对：每次版本提交同步更新 changelog + roadmap 进度
+| 风险 | 应对 |
+|---|---|
+| 内容堆叠把核心循环搞复杂，新玩家流失 | 每加一个机制都要在第 1-3 关有"教学版"展示 |
+| 移动端工作量超预期 | Phase γ 先做"可玩"，把"好看/好用"留给后续 |
+| benchmark 在新机制下失效 | 每次新机制上线，必须同步更新对应 bench 场景 |
+| 文档与代码失同步 | 沿用元规则 8：改动 PR 必须更新 ROADMAP 末尾 §V 章节 |
 
 ---
 
-## 5. 量化指标（建议）
+## 5. 跟进机制
 
-- 构建稳定性：主分支连续构建通过率
-- 体验质量：关键流程阻断 bug 数量
-- 性能：高压场景平均帧时 / 99th 帧时
-- 平衡：关卡通关率分布（按关卡/版本）
-- 工程效率：新增节点从设计到上线的平均耗时
+- **每个 V 版本提交**：在文档末尾追加 §V{n} 章节，记录 背景 / 实现 / Web 验证表
+- **每个 Phase 完成**：在第 1.1 节"已具备的能力"中刷新条目
+- **优先级回顾**：当连续两个 V 版本都没推进 Phase β/γ 而在做 ε 类工作时，停下来重排
 
 ---
 
-## 6. 跟进机制
+## 6. 已完成里程碑索引
 
-- 每周：更新一次本路线图状态（进行中 / 已完成 / 延后）
-- 每版本：在 `CHANGELOG.md` 追加“本版本对路线图的推进项”
-- 每月：回顾一次路线是否需要重排优先级
+历史实验性记录（保留作为档案，详细见对应章节）：
 
----
-
-## 7. 当前迭代（本次）已落地事项
-
-- 选卡页布局改为自适应网格，支持多行内容与光标行可见性
-- 选关页列表按屏幕高度自适应，减少新增关卡后挤压
-- 关卡扩展至 8 关（新增第 7 / 8 关）
-- **过渡平滑性专项**（Phase A）：
-  - 新增全局屏幕过渡模块 `src/transition.ts`，所有屏幕切换（登录 → 选关 → 过场 → 选卡 → 游戏 → 回到选关）统一走淡入淡出，长度按上下文调整（进入战斗略长、回退略短）
-  - 首屏启动加入初始黑幕，避免白闪
-  - 摄像机插值拆成位移 / 缩放两条曲线，缩放采用更慢的指数收敛，避免滚轮缩放突兀
-  - 补齐第 7 / 8 关过场剧情，并将第 6 关由"终章"语义化为承上启下的"第六章 · 虫巢终焉"
-  - HUD 进入战斗时 easeOutCubic 淡入；径向菜单切换节点时 easeOutBack 缩放+透明度展开（动画前段禁用点击防误触）
-  - 科技 / 成就 / 快捷键 三个浮层面板加入 180ms easeOutCubic 淡入淡出
-- **UI 设计 Token 起步**（Phase A）：
-  - 新增 `src/ui-tokens.ts`，集中收口颜色（accent / text / bg / border）、字号、间距、圆角、动画时长，并提供 `withAlpha` 工具
-  - HUD 顶栏完成第一轮迁移作为示范，后续按文件渐进式替换以降低回归风险
-
-后续建议优先推进：把 `level-select` / `node-select` / `login` / `cutscene` / `ui` 其余区段按 token 渐进式迁移，并补充一份"主题切换"骨架以便后续支持暗/亮或可定制配色。
+- §V0.1.0 / §V0.2.0 / §V0.6.0 / §V1.0.0：早期玩法成形与首个公开版本
+- §V1.0.1 / §V1.0.2：工作区清理与文档归档
+- §V1.0.3：线上关卡卡死修复（LEVELS 重导出陷阱）
+- §V1.0.4 / §V1.0.5 / §V1.0.6 / §V1.1.0：8 项产品化优化
+- §19–§36：Phase B-2 多轮 bench 调优（autoUpgrade / evolve / mineOutput / 养精兵）
+- 早期 §1–§18：Phase A 收口、配置层抽离、bench seed 体系、存档签名等基础设施
 
 ---
 
@@ -1687,3 +1664,528 @@ V1.0.5 之前科技树面板仅支持数字键 1-9 研究，第 10 个科技无�
 
 - Item 2「失败重开直进选卡」走 `onExitToLevelSelect`，与暂停菜单的「返回选卡」共享同一回调路径。
 - 中版本递增按全局规则使用 `feature/v1.1` 分支开发，验证通过后合并回 main。
+## §V1.1.2 节点机制纵深首批：buffer ↔ collector 经济共振（2026-04-27 增补 · Phase β-1）
+
+### 背景
+
+V1.1.1 重排路线图后，Phase β「玩法体验深化」首要任务是给现有节点池增加**机制性联动**，让玩家从"单点 spam"走向"组合布置"。本次选取 buffer × collector 作为首对联动：
+
+- buffer：给邻居充能（无方向性）
+- collector：附近敌人越多产出越高（独立产能）
+- 二者原本各打各的，但都属于「经济流派」核心节点 → 天然适合做共振
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+COMBAT.collector 新增两个字段：
+
+- synergyBufferBonus: 0.25 —— 直连任意 player owned buffer 时，单 tick 资源产出 ×1.25（多个 buffer 不叠加，避免刷分）
+- synergyCrystalThresholdReduce: 1 —— 进化形态下，每接 1 个 buffer，晶体阈值 crystalThreshold 减 1（最低 1）。鼓励"多 buffer 包围 + 进化 collector"流派
+
+#### 逻辑层 src/graph.ts collectorHarvest
+
+- 遍历 state.edges，统计直连 collector 的 player owned 且未销毁的 buffer 数 ufferLinkCount
+- synergyMult = bufferLinkCount > 0 ? 1.25 : 1，应用到 output
+- 进化形态下，有效阈值 max(1, crystalThreshold - bufferLinkCount × 1)
+
+#### 渲染层 src/renderer.ts drawEdges
+
+- 当一条活跃边的两端是同 owner（非中立）的 buffer + collector 时，叠加金色脉冲描边（rgba(255,215,96, 0.30~0.60) 正弦呼吸）
+- 玩家可一眼看出"哪条线在生效"
+
+### 设计取舍
+
+- **不叠加产能**：避免一个 collector 接 N 个 buffer 把经济推爆
+- **晶体阈值减免可叠加**：晶体本身产量低（每 tick 至多 1），叠加后峰值可控，且鼓励玩家做"多 buffer 网络"
+- **范围式 vs 连线式**：故意采用「edge 直连」而非「距离判定」，因为后者会让玩家被动获益、缺乏决策；前者要求玩家主动布置，符合「机制纵深」的目标
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | ✅ 0 错误 |
+| 
+pm run build | ✅ 109ms，bundle 173.64 KB（+约 0.4 KB） |
+| 
+pm run preview 启动 | ✅ http://localhost:4173/Starfield_Nodes/ |
+| 联动判定逻辑 | ✅ 同 owner + type 配对 + edge 端点 4 行确定性代码 |
+| 游戏内手动实测 | ⏳ buffer + collector 在第 3 关「迷雾深处」起才解锁，留作下个 V 版本随其他改动一起验证 |
+
+### 后续
+
+- Phase β 下一对候选：**portal × interceptor**（"出门一炮"陷阱组合）
+- 待玩家自然解锁第 3 关后，回归一次 buffer-collector 视觉效果与平衡表现
+- 若 +25% 产能在 bench 中导致 winrate > 90%，回调到 +15%
+
+
+## §V1.1.2 节点机制纵深首批：buffer ↔ collector 经济共振（2026-04-27 增补 · Phase β-1）
+
+### 背景
+
+V1.1.1 重排路线图后，Phase β「玩法体验深化」首要任务是给现有节点池增加**机制性联动**，让玩家从"单点 spam"走向"组合布置"。本次选取 buffer × collector 作为首对联动：
+
+- buffer：给邻居充能（无方向性）
+- collector：附近敌人越多产出越高（独立产能）
+- 二者原本各打各的，但都属于「经济流派」核心节点 → 天然适合做共振
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+`COMBAT.collector` 新增两个字段：
+
+- `synergyBufferBonus: 0.25` —— 直连任意 player owned buffer 时，单 tick 资源产出 ×1.25（多个 buffer 不叠加，避免刷分）
+- `synergyCrystalThresholdReduce: 1` —— 进化形态下，每接 1 个 buffer，晶体阈值 `crystalThreshold` 减 1（最低 1）。鼓励"多 buffer 包围 + 进化 collector"流派
+
+#### 逻辑层 src/graph.ts collectorHarvest
+
+- 遍历 `state.edges`，统计直连 collector 的 player owned 且未销毁的 buffer 数 `bufferLinkCount`
+- `synergyMult = bufferLinkCount > 0 ? 1.25 : 1`，应用到 output
+- 进化形态下，有效阈值 `max(1, crystalThreshold - bufferLinkCount * 1)`
+
+#### 渲染层 src/renderer.ts drawEdges
+
+- 当一条活跃边的两端是同 owner（非中立）的 buffer + collector 时，叠加金色脉冲描边（rgba(255,215,96, 0.30~0.60) 正弦呼吸）
+- 玩家可一眼看出"哪条线在生效"
+
+### 设计取舍
+
+- **不叠加产能**：避免一个 collector 接 N 个 buffer 把经济推爆
+- **晶体阈值减免可叠加**：晶体本身产量低（每 tick 至多 1），叠加后峰值可控，且鼓励玩家做"多 buffer 网络"
+- **范围式 vs 连线式**：故意采用「edge 直连」而非「距离判定」，因为后者会让玩家被动获益、缺乏决策；前者要求玩家主动布置，符合「机制纵深」的目标
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 109ms，bundle 173.64 KB（+约 0.4 KB） |
+| `npm run preview` 启动 | OK http://localhost:4173/Starfield_Nodes/ |
+| 联动判定逻辑 | OK 同 owner + type 配对 + edge 端点 4 行确定性代码 |
+| 游戏内手动实测 | TODO buffer + collector 在第 3 关「迷雾深处」起才解锁，留作下个 V 版本随其他改动一起验证 |
+
+### 后续
+
+- Phase β 下一对候选：**portal × interceptor**（"出门一炮"陷阱组合）
+- 待玩家自然解锁第 3 关后，回归一次 buffer-collector 视觉效果与平衡表现
+- 若 +25% 产能在 bench 中导致 winrate > 90%，回调到 +15%
+
+
+## §V1.1.3 节点机制纵深(2)：portal × interceptor「出门一炮」联动（2026-04-27 增补 · Phase β-2）
+
+### 背景
+
+V1.1.2 完成了「经济流派」首个联动（buffer-collector），本次延续 Phase β-1 思路，在「防御流派」上做对应文章：
+
+- portal：把敌人推到远处（控场，但单看就是个「驱赶器」）
+- interceptor：快速点防（高频但伤害不高）
+- 两者结合的剧本是——「在敌人被传送的瞬间，相连 interceptor 来一炮做临别赠言」，让 portal 不再是纯防御工具，而带上「踢飞 + 补刀」的攻防一体性
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+`COMBAT.portal` 新增：
+
+- `synergyInterceptorShot: true` —— 总开关
+- `synergyInterceptorDamageMult: 1.0` —— 联动射击伤害倍率（基于 interceptor 自身 `damage × level`）
+
+#### 逻辑层 src/graph.ts portalTeleport
+
+- 在传送循环开始前，遍历 `state.edges` 收集所有直连 portal 的 player owned interceptor
+- 对每个被传送的敌人：
+  - 先让每个相连的 interceptor 推一颗投射物到该敌人 `id`（速度 12，颜色 `#ffaaff` 粉紫）
+  - 再执行原传送逻辑（投射物自动追踪到敌人新位置）
+- 联动射击**不消耗 interceptor 自身能量**，作为 portal 触发的副产物（避免双方互相阻断）
+
+#### 渲染层 src/renderer.ts drawEdges
+
+- 同 owner portal↔interceptor 的活跃边叠加粉紫色虚线流动描边（rgba(255,170,255, 0.27~0.63) 正弦呼吸 + 4/3 dash 滚动）
+- 与 buffer-collector 的金色实线区分开，玩家可同屏识别两类联动
+
+### 设计取舍
+
+- **不限连接数**：每多接一个 interceptor 就多一发子弹，鼓励"环形 interceptor 阵列围绕 portal"
+- **不消耗 interceptor 能量**：否则 interceptor 还要算自己的射击节奏，机制变复杂；现有实现是「portal 触发 → 友军开火」的事件驱动模型，简单可读
+- **目标 = 被传送敌人本人**：投射物在敌人传送后追踪过去，视觉上"子弹追到天涯海角"特别有戏剧性；相比"敌人传走前命中"，这样减少帧序耦合
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 109ms，bundle 174.51 KB（V1.1.2 +0.87 KB） |
+| 联动逻辑确定性 | OK edge 端点 + type 配对纯函数 |
+| 游戏内手动实测 | TODO portal + interceptor 在第 3 关「迷雾深处」起才解锁，与 V1.1.2 合并实测 |
+
+### 后续
+
+- 待玩家解锁第 3 关后一次性回归 V1.1.2 + V1.1.3 视觉与平衡
+- Phase β 下一对候选：**relay × tesla**（"链式电网"）或 **shield × repair**（"再生护甲"）
+- 若 portal 加 interceptor 后过强，可改成「仅在 portal 超载时触发联动」
+
+
+## §V1.1.4 节点机制纵深(3)：tesla × relay 链式电网（2026-04-27 增补 · Phase β-3）
+
+### 背景
+
+V1.1.2 / V1.1.3 完成「经济（buffer-collector）」「防御控场（portal-interceptor）」两对联动。本次选 tesla × relay 是因为：
+
+- **第 2 关「关键防线」就有 relay + tesla**，是首个**新手期就能体验联动**的组合（V1.1.2/V1.1.3 都要解锁第 3 关才能用）
+- relay 之前只是"能量管道"，机制感弱；tesla 已经依赖 edge → 二者天然适合做"电网"语义
+- 给 relay 加一个"非经济"用途，避免它一直只是被动管道
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+`COMBAT.tesla` 新增：
+
+- `synergyRelayHop: true` —— 总开关
+- `synergyRelayDamageRatio: 0.6` —— 二级电弧伤害衰减系数（基于 tesla 自身基础伤害）
+
+#### 逻辑层 src/graph.ts teslaDamageEnemies
+
+- 原本 tesla 只对自身相邻 edge 段（tesla→邻居）做伤害判定
+- 新增第二跳：当邻居是同 owner 的 relay，则把 relay 的其它边（除回 tesla 那条）也加入 "二级段" 集合
+- 二级段做同样的 `pointToSegmentDist <= hitRange` 判定，伤害 × `synergyRelayDamageRatio`
+- 二级段使用 `Set<string>` 去重（防止 A-B 段被两个 relay 都识别后重复打伤害）
+- 二级段不再继续扩散（最多 1 跳，防止全图电网无限蔓延）
+
+#### 渲染层 src/renderer.ts drawEdges
+
+- 同 owner tesla↔relay 的活跃边追加青蓝色高频虚线流动描边（rgba(120,220,255, 0.20~0.60) 正弦呼吸，2/4 dash 滚动 90px/s）
+- 与 buffer-collector 金色实线、portal-interceptor 粉紫慢虚线在视觉上明显区分
+
+### 设计取舍
+
+- **相比 V1.1.2/V1.1.3**：本组联动让 tesla 的电弧物理性地"扩展"到二级段，玩家会主动为 tesla 修建 relay 网络；前两组是"加成式"联动（数值/事件触发），这组是"扩展式"联动（覆盖范围变化）
+- **二级段去重**：同段被两个 relay 都视作二级会造成翻倍伤害，违反预期；用排序后的 id 拼接 key 去重
+- **不允许三级及以上**：避免遥远 relay 网络让 tesla 全图打击，破坏放置策略
+- **二级段不计入 evolved 链伤的 hitEnemies**：进化形态的 60px 范围连锁伤害仍只来自 tesla 主弧，避免放大过强
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 112ms，bundle 175.42 KB（V1.1.3 +0.91 KB） |
+| `npm run preview` 启动 | OK |
+| 联动判定逻辑 | OK 二级段去重 + 同 owner 限制 + 单跳限制（4 行新增 + Set） |
+| 游戏内手动实测 | TODO 与 V1.1.2 / V1.1.3 一并在玩家进入第 2/3 关时验证 |
+
+### 后续
+
+- **下一对候选**：shield × repair 「再生护甲」、energy × buffer 「能量塔共振」
+- 待玩家进入第 2 关后回归 tesla-relay 视觉与平衡（重点关注：tesla 网络是否会一击全屏？是否需要把 ratio 从 0.6 降到 0.4？）
+- 考虑给玩家加一个「联动图鉴」面板（按 Tab/合适快捷键打开，列出已发现的联动对 + 描述）
+
+
+## §V1.1.5 节点机制纵深(4)：shield × repair 再生护甲（2026-04-27 增补 · Phase β-4）
+
+### 背景
+
+V1.1.2-V1.1.4 完成了三种联动模式：加成型（buffer-collector）、事件型（portal-interceptor）、扩展型（tesla-relay）。本次 shield × repair 引入第四种：**减免型**。
+
+shield 与 repair 都属于「保命流派」节点，但在原版机制下二者各做各的：shield 给邻居小幅修复 + 装甲，repair 给邻居更强修复。玩家很难感受到"为 shield 配 repair"的策略价值。
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+`COMBAT.shield` 新增：
+
+- `synergyRepairDamageReduce: 0.20` —— shield 直连 player owned repair 时，shield 自身受到的伤害 × 0.8
+
+#### 逻辑层 src/graph.ts
+
+- 新增导出 `hasShieldRepairLink(state, node) -> boolean`：检查给定 shield 节点是否有同方 repair 邻居（O(edges)）
+
+#### 物理层 src/entities.ts
+
+- 在敌人接触 shield 节点的伤害结算前判定联动并衰减伤害
+- `proj.damage` 那条针对的是友方投射物打敌人，不涉及节点防御，无需改动
+
+#### 渲染层 src/renderer.ts drawEdges
+
+- shield ↔ repair 同方边以双层柔光绘制：外层 rgba(140,255,180, 0.22~0.58) 实线 + 内层 rgba(220,255,230, ~0.29) 细线
+- 颜色与之前三对联动（金/粉紫/青蓝）形成"医疗白绿"识别度
+
+### 设计取舍
+
+- **不直接给 shield 治疗加成**（如 +25% healAmount）：会与 V1.1.2/V1.1.4 同质化；改用「受伤减免」让玩家感受到的是「shield 变得更耐打」而不是「shield 变得更会治人」
+- **只对 shield 自身有效**：repair 节点本身不获得联动减伤，避免 shield-repair 互相成为不死阵
+- **不与 evolved/overcharged 叠加效应**：减免与现有 hp 修复并存即可，避免堆叠到接近无敌
+- **每次接触都计算 hasShieldRepairLink**：当前节点/边数量级（< 100）下开销可忽略，不做缓存
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 126ms，bundle 176.24 KB（V1.1.4 +0.82 KB） |
+| 联动判定逻辑 | OK 单边 owner+type 配对 + 单层伤害减免 |
+| 游戏内手动实测 | TODO 与 V1.1.2-V1.1.4 一并在玩家进入第 3 关时验证（shield 在第 2 关已可用，但 repair 从第 3 关起才解锁） |
+
+### 联动总览（4 对已上线）
+
+| 联动对 | 模式 | 解锁关 | edge 高亮色 |
+|---|---|---|---|
+| tesla × relay | 扩展（覆盖范围+） | L2 | 青蓝快闪虚线 |
+| buffer × collector | 加成（产出+25%） | L3 | 金色实线 |
+| portal × interceptor | 事件（额外射击） | L3 | 粉紫慢虚线 |
+| shield × repair | 减免（受伤-20%） | L3 | 医疗白绿双层 |
+
+### 后续
+
+- **联动图鉴**面板（按 K 或 Tab 打开）：让玩家看到自己已经触发过哪些联动 + 描述
+- **新手提示**：第 2 关结束时提示玩家"试试把 tesla 接到 relay 上"
+- 待玩家进入 L2/L3 后做一次 4 对联动的总回归
+
+
+## §V1.1.6 联动图鉴面板（2026-04-28 增补 · Phase β-5）
+
+### 背景
+
+V1.1.2-V1.1.5 上线了 4 对节点联动（buffer×collector / portal×interceptor / tesla×relay / shield×repair），覆盖加成 / 事件 / 扩展 / 减免四种机制模式。但这些联动是「隐藏机制」：玩家只能从 edge 高亮色 + 战斗结果反推规律，不一定能感知到。本次 V1.1.6 把它们做成显式图鉴。
+
+### 实现
+
+#### 快捷键 src/keybinds.ts
+
+- 新增 `KeyAction = 'synergy'`，默认按键 `y`，标签 `联动图鉴`
+- 与现有 `a/t/k/p/m/r/g/u/x` 不冲突，可在按键设置面板自定义
+
+#### UI 层 src/ui.ts
+
+- 新字段 `showSynergyPanel: boolean` + `synergyFade` 进度，仿 `showAchievementPanel` 三件套
+- 新方法 `drawSynergyPanel(state)`：600×440 浮层 + 4 张联动卡片
+- 静态数据 `SYNERGIES[]`：每条包含 `pair / name / mode / effect / unlock / color`，颜色与 renderer.ts 的 edge 高亮色一一对应（金 / 粉紫 / 青蓝 / 医疗白绿）
+- 卡片左侧 4px identity bar 用联动专属色，玩家在战斗里看到边的颜色就能直接对应到图鉴
+
+#### 输入层 src/input.ts
+
+- `action === 'synergy'` 切换 `showSynergyPanel`
+- HUD 顶栏右侧操作提示行新增 `[Y]图鉴`
+
+### 设计取舍
+
+- **静态展示而非「已发现/未发现」机制**：4 对联动数量少、解锁关明确，不做发现追踪可避免增加 `state.discoveredSynergies` 存档字段；后续若联动数 ≥ 8 再考虑
+- **不挂在暂停菜单里**：图鉴是查询性质，玩家可能在战斗中临时想确认机制，做成独立面板（不暂停游戏）更好用
+- **颜色编码强一致**：图鉴卡片色 = renderer.ts edge 高亮色 = 玩家在场上看到的颜色，三层一致是可读性的关键
+- **mode 标签四类「加成/事件/扩展/减免」直接显示**：让玩家意识到这是一组系统化机制而不是零散彩蛋，为未来扩展第 5/6 对联动留好脚手架
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 121ms，bundle 178.75 KB（V1.1.5 +2.51 KB） |
+| Tab/Y 键切换面板 | OK action handler 命中 |
+| 4 张卡片渲染 | TODO 浏览器实测（与 V1.1.2-V1.1.5 一并在 L3 时回归） |
+
+### 后续
+
+- 玩家进入 L2/L3 后回归：图鉴可读性 + 4 对联动视觉的整体观感
+- 第 5/6 对联动候选：energy × buffer 共振（能量塔放电时回血邻居 buffer）、relay × energy 网络化（relay 串联 energy 触发广域 buff）
+- 当联动数 ≥ 6 时考虑加「已发现」标记 + 解锁动画
+
+
+## §V1.1.7 联动发现追踪 + 图鉴遮罩（2026-04-29 增补 · Phase β-6）
+
+### 背景
+
+V1.1.6 把 4 对联动做成了图鉴面板，但所有联动一开始就完全可见，玩家失去了「在战斗中第一次发现机制」的惊喜感。本次 V1.1.7 引入发现追踪：未触发过的联动在图鉴中以 🔒 + ??? 形式显示，玩家在战斗中第一次让某对联动生效后，存档永久解锁该条目。
+
+### 实现
+
+#### 数据层
+
+- `src/types.ts` `GameState` 新增 `discoveredSynergies: Set<string>` （运行期 Set，跨关共享）
+- `src/save.ts` `SaveProfile` 新增 `discoveredSynergies?: string[]`（持久化为数组），`createProfile` 默认 `[]`
+- `src/main.ts` `patchProfile` 老存档兼容补丁：`profile.discoveredSynergies ??= []`
+- `src/benchmark.ts` 匿名 profile 同步补字段，避免 benchmark 路径崩溃
+
+#### 触发点（4 处）
+
+| 联动 ID | 触发位置 | 条件 |
+|---|---|---|
+| `buffer-collector` | graph.ts `collectorHarvest` | bufferLinkCount > 0 时 |
+| `portal-interceptor` | graph.ts `portalTeleport` | 同方 interceptor 至少 1 个相连且至少 1 个传送目标时 |
+| `tesla-relay` | graph.ts `processTesla` 二段段 push 时 | 至少 1 条 secondHopSeg 形成时 |
+| `shield-repair` | entities.ts 敌人接触 shield 减伤前 | `hasShieldRepairLink === true` 时 |
+
+写法都是单行 `state.discoveredSynergies.add('xxx')`，对热路径无 measurable 开销（Set.add 在已存在时是 O(1) noop）。
+
+#### 同步与持久化（src/game.ts）
+
+- 初始化 `createInitialState` 中 `discoveredSynergies: new Set(profile.discoveredSynergies ?? [])`，自动从存档恢复
+- 关卡结束（gameOver / levelWon）时合并去重写回 `profile.discoveredSynergies`，再走 `saveProfile` 走签名通道
+- `restart()` 不清空 `state.discoveredSynergies`：本局已发现的联动不会因重开关卡而丢失
+
+#### UI 层（src/ui.ts）
+
+- `UI.discoveredSynergies: Set<string>` 字段（外部由 game.ts 同步）
+- `SYNERGIES[]` 加 `id` 字段，与 4 个触发点一一对应
+- `drawSynergyPanel`：合并「存档已发现 + 本局新发现」到 `discovered` Set，按 `found ? : :` 分支渲染
+  - 已发现：原 V1.1.6 完整卡片
+  - 未发现：🔒 ??? + 灰色 + 「在战斗中触发后揭示完整机制」+ 解锁关（保留作为提示）
+- 标题下方加进度条文本 `已发现 X / 4`
+
+### 设计取舍
+
+- **保留「解锁关」可见**：未发现卡片仍显示解锁关，避免新玩家在 L1 一直点开图鉴看到全是 🔒 而困惑——他们至少知道"哦这个要到 L3"
+- **合并本局 + 存档两个集合渲染**：本局触发立即在图鉴显示已发现状态（不必等关卡结束保存），切回主菜单后再读档也仍然保留
+- **不弹 toast 通知**：暂不复用 achievement toast 通道，避免战斗中信息过载；后续若有玩家反馈"没注意到解锁了"再加
+- **不做发现动画**：第一次开图鉴会看到从 🔒 变完整描述就是发现的反馈，足够简洁
+- **存档字段 optional**：老存档没有该字段，patchProfile 一次性补 `[]`；玩家不会因升级版本丢失任何数据
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误（types/save/main/benchmark/graph/entities/game/ui 全过） |
+| `npm run build` | OK 119ms，bundle 180.27 KB（V1.1.6 +1.52 KB） |
+| 触发点静态审查 | OK 4 处条件与 V1.1.2-V1.1.5 联动逻辑一致 |
+| 老存档兼容 | OK patchProfile 已补 `discoveredSynergies = []` |
+| 游戏内手动实测 | TODO 与 V1.1.2-V1.1.5 一并在 L2/L3 回归 |
+
+### 后续
+
+- 若后续联动数 ≥ 6，加 toast 通知 + 闪光动画
+- 考虑在第 1 关结束时给一句话提示「按 [Y] 查看联动图鉴」，避免入口被忽略
+- 第 5/6 对联动候选（energy×buffer 共振 / relay×energy 网络化）
+
+
+## §V1.1.8 节点机制纵深(5)：energy × buffer 能量共振（2026-04-30 增补 · Phase β-7）
+
+### 背景
+
+V1.1.2-V1.1.5 上线了 4 对联动并在 V1.1.6/V1.1.7 完成图鉴 + 发现追踪。Phase β 仍有继续扩展的空间，第 5 对联动 `energy × buffer` 引入「双供能加成」：buffer 本身是「范围充能」节点，把它放在 energy 旁边时充能效率显著提升。这扩展了玩家在 L2 阶段的布局策略——不再是把 buffer 随便放在炮塔群中间，而是会主动让 buffer 黏着 energy。
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+`COMBAT.buffer` 新增 `synergyEnergyBoostMult: 1.30` —— buffer 直连任一同方 energy 时，每 tick boost × 1.30。
+
+#### 逻辑层 src/graph.ts
+
+`bufferBoostNearby()` 起始遍历 edges 寻找 `type === 'energy' && owner === buffer.owner` 的邻居，命中即 boost ×= 1.30 并 `state.discoveredSynergies.add('energy-buffer')`。常规 ≤ 100 节点 / 200 edges 数量级下开销可忽略。
+
+注意：`overchargeBufferPulse` 暂不应用此联动（避免与超载机制叠加得过强），保留为后续可调点。
+
+#### 渲染层 src/renderer.ts drawEdges
+
+新增 energy ↔ buffer 同方边高亮：电紫 `rgba(200, 130, 255, ~)` 短虚线 dash `[3, 3]`，dashOffset 速度 120/秒。与已有四对（金 / 粉紫 / 青蓝 / 医疗白绿）拉开对比。
+
+#### UI 层 src/ui.ts
+
+`SYNERGIES[]` 加第 5 条 `energy-buffer`，颜色与 renderer 一致；面板高度 440 → 510 容纳第 5 张卡片；进度文本变为 `已发现 X / 5`。
+
+### 设计取舍
+
+- **只加成 buffer 端**：不双向给 energy 也加充能，避免「能量塔旁堆 buffer 永远满电」的退化解
+- **直连一个 energy 即触发**（不叠加）：避免「贴满 4 个 energy = 1.3⁴」的失控乘算；保持机制可读（玩家只需要"接一个就行"）
+- **解锁关定为 L2**：energy + buffer 都在 L2 解锁，与 tesla×relay 同级，比 L3 三对联动更早可触发
+- **颜色避开金色**：buffer×collector 已是金色（也涉及 buffer），避免视觉冲突；改用电紫，和粉紫（portal×interceptor）通过 R 通道值（200 vs 255）区分
+- **不弹 toast**：与 V1.1.7 保持一致，玩家通过图鉴新增标记发现
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 117ms，bundle 181.21 KB（V1.1.7 +0.94 KB） |
+| 触发条件 | OK edge 同方直连 + 至少 1 个 energy 邻居 |
+| edge 高亮 | OK 仅在 active && 同方 && 类型对配时绘制 |
+| 老存档兼容 | OK discoveredSynergies 走 V1.1.7 已有通道 |
+| 游戏内手动实测 | TODO 与 V1.1.2-V1.1.7 一并在 L2/L3 回归 |
+
+### 联动总览（5 对已上线）
+
+| 联动对 | 模式 | 解锁关 | edge 高亮色 |
+|---|---|---|---|
+| tesla × relay | 扩展（覆盖范围+） | L2 | 青蓝快闪虚线 |
+| energy × buffer | 加成（充能 +30%） | L2 | 电紫快闪虚线 |
+| buffer × collector | 加成（产出 +25%） | L3 | 金色实线 |
+| portal × interceptor | 事件（额外射击） | L3 | 粉紫慢虚线 |
+| shield × repair | 减免（受伤 -20%） | L3 | 医疗白绿双层 |
+
+### 后续
+
+- 第 6 对联动候选：relay × energy 网络化（结构型）—— relay 串联 energy 时，energy 的能量广播范围沿 relay 链路扩散
+- 玩家在 L2/L3 回归一次 5 对联动 + 图鉴可读性
+- 若 5 对全做完后玩家仍想要更多机制纵深，可考虑「联动等级」：触发 N 次后强化效果（roguelike 化）
+
+
+## §V1.1.9 节点机制纵深(6)：energy × relay 能量网络（2026-05-01 增补 · Phase β-8）
+
+### 背景
+
+V1.1.8 上线第 5 对联动后，Phase β 缺一种「结构型」机制——前 5 对都是邻居范围内的属性加成 / 事件 / 减免，唯独没有「拓扑结构本身改变作用范围」的联动。本次 V1.1.9 用 `energy × relay` 补上这一类：energy 通过 relay 把每 tick 充能扩散到二跳邻居，让 relay 从「仅延长边距离」升级为「能量网络的中继点」。
+
+### 实现
+
+#### 数据层 src/data/balance.ts
+
+`COMBAT.energy` 新增 `synergyRelayNetworkBoost: 1.5` —— energy 经由 relay 给二跳同方邻居每 tick +1.5 能量。
+
+#### 逻辑层 src/graph.ts
+
+新函数 `energyRelayNetwork(state, energyNode)`，在 `case 'energy'` 处理末尾常驻调用（不依赖超载/进化）：
+
+1. 遍历 edges 找 energy 直连的同方 relay
+2. 对每个 relay 再遍历 edges 找它的另一端（≠ energy 自己）
+3. 对所有同方二跳邻居 `tip.currentEnergy += 1.5`（受 maxEnergy 上限约束）
+4. 命中至少 1 个二跳节点时 `state.discoveredSynergies.add('relay-energy')`
+
+复杂度 O(E²)，但 E < 200，开销 < 0.1ms/tick。被 `disruptedTimer > 0` 的边自动跳过（与现有 `overchargeEnergyBroadcast` 行为一致），保留 EMP/disrupt 的反制空间。
+
+#### 渲染层 src/renderer.ts drawEdges
+
+新增 energy ↔ relay 同方边高亮：蓝白电流 `rgba(120, 200, 255, ~)` dash `[6, 2]`，dashOffset 速度 150/秒，外层粗 + 内层亮白细线（双层结构与 shield×repair 类似但配色完全不同）。
+
+#### UI 层 src/ui.ts
+
+`SYNERGIES[]` 加第 6 条 `relay-energy`，`mode = '结构'`（前所未有的新模式标签）；面板高度 510 → 590；进度 X / 6。
+
+### 设计取舍
+
+- **常驻效果，不依赖超载/进化**：保证玩家在 L1 拿到 relay 后立刻能感受到联动；如果挂在超载/进化上，新手玩家几乎接触不到结构型机制
+- **二跳邻居必须同方**：避免给敌方 relay 造成意外充能
+- **充能量小（1.5/tick）**：避免取代 buffer 的角色——buffer 是「范围内多目标 +大量」，relay 网络是「沿 edge 链路 +小量」，二者职能不冲突；玩家可同时叠加 V1.1.8 buffer×energy + V1.1.9 relay×energy，得到「中心 buffer 群覆盖 + relay 链路扩散」的双层供电网络
+- **不递归到三跳**：保持 O(E²) 而非更高阶；玩家如需远距离覆盖应自己造多个 energy
+- **mode = 结构**：标签明确告诉玩家这是改变拓扑作用范围，不是数值加成，与已有 4 个模式（加成/事件/扩展/减免）形成完整的 5 模式分类
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 116ms，bundle 182.64 KB（V1.1.8 +1.43 KB） |
+| 触发条件 | OK energy 直连同方 relay 且 relay 至少有 1 个其它同方邻居 |
+| 与 disrupt 兼容 | OK 跳过 disruptedTimer > 0 的边 |
+| 与 5 模式分类一致 | OK 加成 / 事件 / 扩展 / 减免 / 结构 全部齐 |
+| 游戏内手动实测 | TODO 与 V1.1.2-V1.1.8 一并在 L2/L3 回归 |
+
+### 联动总览（6 对已上线 · 5 模式齐）
+
+| 联动对 | 模式 | 解锁关 | edge 高亮色 |
+|---|---|---|---|
+| tesla × relay | 扩展（覆盖范围+） | L2 | 青蓝快闪虚线 |
+| energy × buffer | 加成（充能 +30%） | L2 | 电紫快闪虚线 |
+| energy × relay | 结构（二跳网络化） | L2 | 蓝白双层电流 |
+| buffer × collector | 加成（产出 +25%） | L3 | 金色实线 |
+| portal × interceptor | 事件（额外射击） | L3 | 粉紫慢虚线 |
+| shield × repair | 减免（受伤 -20%） | L3 | 医疗白绿双层 |
+
+### 后续
+
+- 5 个机制模式齐了，Phase β 的「联动机制」一阶段算完成
+- 待玩家进入 L2/L3 后做一次 6 对联动 + 图鉴 + 5 模式标签的整体回归
+- 进一步方向（按收益排序）：
+  1. 关卡结算面板加「本局新发现 N 对联动」提示，把 V1.1.7 的发现追踪闭环
+  2. 联动触发时的世界内反馈（节点闪光 / toast），降低错过感
+  3. 第 7 对候选：mine × tesla（电场矿区）、turret × portal（炮口陷阱）等——但需要更明确的设计目的

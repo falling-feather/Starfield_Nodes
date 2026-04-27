@@ -461,6 +461,11 @@ export class InputManager {
       return;
     }
 
+    if (action === 'synergy' && this.ui) {
+      this.ui.showSynergyPanel = !this.ui.showSynergyPanel;
+      return;
+    }
+
     if (action === 'timeScale') {
       // 循环 1 → 2 → 3 → 1
       this.state.timeScale = this.state.timeScale >= 3 ? 1 : this.state.timeScale + 1;

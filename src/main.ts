@@ -63,6 +63,7 @@ function showTamperToast(reason: 'invalid_sig' | 'parse_error'): void {
 function patchProfile(profile: SaveProfile): void {
   if (!profile.clearedLevels) profile.clearedLevels = [];
   if (!profile.unlockedAchievements) profile.unlockedAchievements = [];
+  if (!profile.discoveredSynergies) profile.discoveredSynergies = [];
 }
 
 /** 1) 登录后 → 进入关卡选择 */

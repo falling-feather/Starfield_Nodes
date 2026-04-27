@@ -9,7 +9,8 @@ export type KeyAction =
   | 'upgrade'
   | 'sell'
   | 'restart'
-  | 'timeScale';
+  | 'timeScale'
+  | 'synergy';
 
 export interface KeybindEntry {
   action: KeyAction;
@@ -27,6 +28,7 @@ const DEFAULTS: Record<KeyAction, string> = {
   sell: 'x',
   restart: 'r',
   timeScale: 'g',
+  synergy: 'y',
 };
 
 /** 操作显示名称 */
@@ -39,6 +41,7 @@ const LABELS: Record<KeyAction, string> = {
   sell: '出售',
   restart: '重新开始',
   timeScale: '加速',
+  synergy: '联动图鉴',
 };
 
 const STORAGE_KEY = 'starfield_nodes_keybinds';

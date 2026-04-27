@@ -449,6 +449,138 @@ export class Renderer {
         ctx.restore();
       }
 
+      // === 联动高亮：buffer ↔ collector 同方直连 ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'buffer' && target.type === 'collector')
+          || (source.type === 'collector' && target.type === 'buffer'))) {
+        ctx.save();
+        const pulse = 0.45 + Math.sin(this.time * 4) * 0.15;
+        ctx.strokeStyle = `rgba(255, 215, 96, ${pulse})`;
+        ctx.lineWidth = lw + 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // === 联动高亮：portal ↔ interceptor 同方直连 ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'portal' && target.type === 'interceptor')
+          || (source.type === 'interceptor' && target.type === 'portal'))) {
+        ctx.save();
+        const pulse = 0.45 + Math.sin(this.time * 5 + 1) * 0.18;
+        ctx.strokeStyle = `rgba(255, 170, 255, ${pulse})`;
+        ctx.lineWidth = lw + 2;
+        ctx.setLineDash([4, 3]);
+        ctx.lineDashOffset = -this.time * 60;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
+      // === 联动高亮：tesla ↔ relay 同方直连（电网中转） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'tesla' && target.type === 'relay')
+          || (source.type === 'relay' && target.type === 'tesla'))) {
+        ctx.save();
+        const pulse = 0.40 + Math.sin(this.time * 8 + 2) * 0.20;
+        ctx.strokeStyle = `rgba(120, 220, 255, ${pulse})`;
+        ctx.lineWidth = lw + 2;
+        ctx.setLineDash([2, 4]);
+        ctx.lineDashOffset = -this.time * 90;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
+      // === 联动高亮：shield ↔ repair 同方直连（再生护甲） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'shield' && target.type === 'repair')
+          || (source.type === 'repair' && target.type === 'shield'))) {
+        ctx.save();
+        const pulse = 0.40 + Math.sin(this.time * 3) * 0.18;
+        ctx.strokeStyle = `rgba(140, 255, 180, ${pulse})`;
+        ctx.lineWidth = lw + 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        // 内层细高光
+        ctx.strokeStyle = `rgba(220, 255, 230, ${pulse * 0.5})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // === 联动高亮：energy ↔ buffer 同方直连（V1.1.8 能量共振） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'energy' && target.type === 'buffer')
+          || (source.type === 'buffer' && target.type === 'energy'))) {
+        ctx.save();
+        // 电紫快速短虚线，flow 方向跟随时间
+        const pulse = 0.55 + Math.sin(this.time * 4) * 0.22;
+        ctx.strokeStyle = `rgba(200, 130, 255, ${pulse})`;
+        ctx.lineWidth = lw + 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.lineDashOffset = -this.time * 120;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
+      // === 联动高亮：energy ↔ relay 同方直连（V1.1.9 能量网络） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'energy' && target.type === 'relay')
+          || (source.type === 'relay' && target.type === 'energy'))) {
+        ctx.save();
+        // 蓝白电流向 relay 流动
+        const pulse = 0.50 + Math.sin(this.time * 5) * 0.20;
+        ctx.strokeStyle = `rgba(120, 200, 255, ${pulse})`;
+        ctx.lineWidth = lw + 1.5;
+        ctx.setLineDash([6, 2]);
+        ctx.lineDashOffset = -this.time * 150;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        // 内层亮白细线
+        ctx.strokeStyle = `rgba(220, 240, 255, ${pulse * 0.6})`;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       if (edge.type === 'amplify' && active) {
         // 增幅线：双线 + 金色脉冲
         const nx = -dy / len * 3; // 法线偏移
