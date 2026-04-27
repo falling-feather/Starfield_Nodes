@@ -40,6 +40,8 @@ export class UI {
   editingAction: KeyAction | null = null;
   /** 存档已解锁成就列表（由外部设置） */
   unlockedAchievements: string[] = [];
+  /** V1.1.7：存档已发现的联动 id（由外部设置） */
+  discoveredSynergies: Set<string> = new Set();
   /** 当前选中的连线类型（由InputManager同步） */
   selectedEdgeType: EdgeType = 'standard';
   /** 节点面板按钮命中区域（屏幕坐标） */
@@ -1247,8 +1249,9 @@ export class UI {
   // ───── 联动图鉴面板（V1.1.6） ─────
 
   /** 静态联动配置（与 graph.ts / entities.ts / renderer.ts 中实现保持一致） */
-  private readonly SYNERGIES: { pair: string; name: string; mode: string; effect: string; unlock: string; color: string }[] = [
+  private readonly SYNERGIES: { id: string; pair: string; name: string; mode: string; effect: string; unlock: string; color: string }[] = [
     {
+      id: 'tesla-relay',
       pair: 'tesla × relay',
       name: '链式电网',
       mode: '扩展',
@@ -1257,6 +1260,7 @@ export class UI {
       color: 'rgba(120, 220, 255, 0.85)',
     },
     {
+      id: 'buffer-collector',
       pair: 'buffer × collector',
       name: '经济共振',
       mode: '加成',
@@ -1265,6 +1269,7 @@ export class UI {
       color: 'rgba(255, 215, 96, 0.85)',
     },
     {
+      id: 'portal-interceptor',
       pair: 'portal × interceptor',
       name: '出门一炮',
       mode: '事件',
@@ -1273,6 +1278,7 @@ export class UI {
       color: 'rgba(255, 170, 255, 0.85)',
     },
     {
+      id: 'shield-repair',
       pair: 'shield × repair',
       name: '再生护甲',
       mode: '减免',
@@ -1317,41 +1323,72 @@ export class UI {
     const rowH = 80;
     const innerW = panelW - 28;
 
+    // 合并：本局发现 + 存档已发现
+    const discovered = new Set<string>(this.discoveredSynergies);
+    for (const id of state.discoveredSynergies) discovered.add(id);
+
+    // 进度副标题
+    ctx.font = FONT.sm;
+    ctx.fillStyle = COLORS.text.faint;
+    let foundCount = 0;
+    for (const s of this.SYNERGIES) if (discovered.has(s.id)) foundCount++;
+    ctx.fillText(`已发现 ${foundCount} / ${this.SYNERGIES.length}`, cx, py + 66);
+
     ctx.textAlign = 'left';
     for (let i = 0; i < this.SYNERGIES.length; i++) {
       const s = this.SYNERGIES[i];
       const ax = px + 14;
       const ay = startY + i * rowH;
+      const found = discovered.has(s.id);
 
       // 卡片背景
-      ctx.fillStyle = 'rgba(30,30,50,0.6)';
-      ctx.strokeStyle = s.color;
+      ctx.fillStyle = found ? 'rgba(30,30,50,0.6)' : 'rgba(20,20,30,0.6)';
+      ctx.strokeStyle = found ? s.color : 'rgba(80,80,90,0.4)';
       ctx.lineWidth = 1.5;
       ctx.fillRect(ax, ay, innerW, rowH - 10);
       ctx.strokeRect(ax, ay, innerW, rowH - 10);
 
       // 左侧颜色色块（identity bar）
-      ctx.fillStyle = s.color;
+      ctx.fillStyle = found ? s.color : 'rgba(80,80,90,0.5)';
       ctx.fillRect(ax, ay, 4, rowH - 10);
 
-      // 标题：name + mode + pair
-      ctx.font = 'bold 18px monospace';
-      ctx.fillStyle = s.color;
-      ctx.fillText(s.name, ax + 14, ay + 18);
+      if (found) {
+        // 标题：name + mode + pair
+        ctx.font = 'bold 18px monospace';
+        ctx.fillStyle = s.color;
+        ctx.fillText(s.name, ax + 14, ay + 18);
 
-      ctx.font = FONT.md;
-      ctx.fillStyle = COLORS.text.muted;
-      ctx.fillText(`【${s.mode}】 ${s.pair}`, ax + 14 + ctx.measureText(s.name).width + 12, ay + 19);
+        ctx.font = FONT.md;
+        ctx.fillStyle = COLORS.text.muted;
+        ctx.fillText(`【${s.mode}】 ${s.pair}`, ax + 14 + ctx.measureText(s.name).width + 12, ay + 19);
 
-      // 描述
-      ctx.font = FONT.md;
-      ctx.fillStyle = COLORS.text.body;
-      ctx.fillText(s.effect, ax + 14, ay + 42);
+        // 描述
+        ctx.font = FONT.md;
+        ctx.fillStyle = COLORS.text.body;
+        ctx.fillText(s.effect, ax + 14, ay + 42);
 
-      // 解锁
-      ctx.font = FONT.sm;
-      ctx.fillStyle = COLORS.text.faint;
-      ctx.fillText(`解锁：${s.unlock}`, ax + 14, ay + 60);
+        // 解锁
+        ctx.font = FONT.sm;
+        ctx.fillStyle = COLORS.text.faint;
+        ctx.fillText(`解锁：${s.unlock}`, ax + 14, ay + 60);
+      } else {
+        // 未发现：仅显示锁 + 模式 + 解锁关
+        ctx.font = 'bold 18px monospace';
+        ctx.fillStyle = COLORS.text.disabled;
+        ctx.fillText('🔒 ???', ax + 14, ay + 18);
+
+        ctx.font = FONT.md;
+        ctx.fillStyle = COLORS.text.disabled;
+        ctx.fillText(`【${s.mode}】  ?? × ??`, ax + 14 + ctx.measureText('🔒 ???').width + 12, ay + 19);
+
+        ctx.font = FONT.md;
+        ctx.fillStyle = COLORS.text.disabled;
+        ctx.fillText('在战斗中触发后揭示完整机制', ax + 14, ay + 42);
+
+        ctx.font = FONT.sm;
+        ctx.fillStyle = COLORS.text.faint;
+        ctx.fillText(`解锁：${s.unlock}`, ax + 14, ay + 60);
+      }
     }
 
     ctx.restore();

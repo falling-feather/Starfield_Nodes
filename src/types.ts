@@ -170,6 +170,8 @@ export interface GameState {
   nodesBuilt: number;
   /** 局内累计资源花费（建造扣费总和） */
   resourcesSpent: number;
+  /** V1.1.7：已发现的联动 id 集合（跨局永久） */
+  discoveredSynergies: Set<string>;
 }
 
 /** 漂浮星云 — 暂时遮挡视野 */

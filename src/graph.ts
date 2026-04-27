@@ -894,6 +894,7 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
 
   for (const enemy of targets) {
     // 联动射击：在敌人被传送前发射，目标锁定该敌人 id（传送后投射物会追到新位置）
+    if (synergyInterceptors.length > 0) state.discoveredSynergies.add('portal-interceptor');
     for (const inter of synergyInterceptors) {
       const dmg = COMBAT.interceptor.damage * inter.level * COMBAT.portal.synergyInterceptorDamageMult;
       state.projectiles.push({
@@ -986,6 +987,7 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
     bufferLinkCount++;
   }
   const synergyMult = bufferLinkCount > 0 ? (1 + COMBAT.collector.synergyBufferBonus) : 1;
+  if (bufferLinkCount > 0) state.discoveredSynergies.add('buffer-collector');
 
   const cap = overcharged ? nearbyCount : Math.min(nearbyCount, COMBAT.collector.maxNearbyCap);
   const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1) * synergyMult;
@@ -1141,6 +1143,7 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
         const tip = nodeMap.get(e2.sourceId === other.id ? e2.targetId : e2.sourceId);
         if (!tip || tip.id === tesla.id || tip.status === 'destroyed') continue;
         secondHopSegs.push({ a: other, b: tip, dmg: secondDmg });
+        state.discoveredSynergies.add('tesla-relay');
       }
     }
   }

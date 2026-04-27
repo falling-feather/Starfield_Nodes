@@ -1990,3 +1990,69 @@ V1.1.2-V1.1.5 上线了 4 对节点联动（buffer×collector / portal×intercep
 - 玩家进入 L2/L3 后回归：图鉴可读性 + 4 对联动视觉的整体观感
 - 第 5/6 对联动候选：energy × buffer 共振（能量塔放电时回血邻居 buffer）、relay × energy 网络化（relay 串联 energy 触发广域 buff）
 - 当联动数 ≥ 6 时考虑加「已发现」标记 + 解锁动画
+
+
+## §V1.1.7 联动发现追踪 + 图鉴遮罩（2026-04-29 增补 · Phase β-6）
+
+### 背景
+
+V1.1.6 把 4 对联动做成了图鉴面板，但所有联动一开始就完全可见，玩家失去了「在战斗中第一次发现机制」的惊喜感。本次 V1.1.7 引入发现追踪：未触发过的联动在图鉴中以 🔒 + ??? 形式显示，玩家在战斗中第一次让某对联动生效后，存档永久解锁该条目。
+
+### 实现
+
+#### 数据层
+
+- `src/types.ts` `GameState` 新增 `discoveredSynergies: Set<string>` （运行期 Set，跨关共享）
+- `src/save.ts` `SaveProfile` 新增 `discoveredSynergies?: string[]`（持久化为数组），`createProfile` 默认 `[]`
+- `src/main.ts` `patchProfile` 老存档兼容补丁：`profile.discoveredSynergies ??= []`
+- `src/benchmark.ts` 匿名 profile 同步补字段，避免 benchmark 路径崩溃
+
+#### 触发点（4 处）
+
+| 联动 ID | 触发位置 | 条件 |
+|---|---|---|
+| `buffer-collector` | graph.ts `collectorHarvest` | bufferLinkCount > 0 时 |
+| `portal-interceptor` | graph.ts `portalTeleport` | 同方 interceptor 至少 1 个相连且至少 1 个传送目标时 |
+| `tesla-relay` | graph.ts `processTesla` 二段段 push 时 | 至少 1 条 secondHopSeg 形成时 |
+| `shield-repair` | entities.ts 敌人接触 shield 减伤前 | `hasShieldRepairLink === true` 时 |
+
+写法都是单行 `state.discoveredSynergies.add('xxx')`，对热路径无 measurable 开销（Set.add 在已存在时是 O(1) noop）。
+
+#### 同步与持久化（src/game.ts）
+
+- 初始化 `createInitialState` 中 `discoveredSynergies: new Set(profile.discoveredSynergies ?? [])`，自动从存档恢复
+- 关卡结束（gameOver / levelWon）时合并去重写回 `profile.discoveredSynergies`，再走 `saveProfile` 走签名通道
+- `restart()` 不清空 `state.discoveredSynergies`：本局已发现的联动不会因重开关卡而丢失
+
+#### UI 层（src/ui.ts）
+
+- `UI.discoveredSynergies: Set<string>` 字段（外部由 game.ts 同步）
+- `SYNERGIES[]` 加 `id` 字段，与 4 个触发点一一对应
+- `drawSynergyPanel`：合并「存档已发现 + 本局新发现」到 `discovered` Set，按 `found ? : :` 分支渲染
+  - 已发现：原 V1.1.6 完整卡片
+  - 未发现：🔒 ??? + 灰色 + 「在战斗中触发后揭示完整机制」+ 解锁关（保留作为提示）
+- 标题下方加进度条文本 `已发现 X / 4`
+
+### 设计取舍
+
+- **保留「解锁关」可见**：未发现卡片仍显示解锁关，避免新玩家在 L1 一直点开图鉴看到全是 🔒 而困惑——他们至少知道"哦这个要到 L3"
+- **合并本局 + 存档两个集合渲染**：本局触发立即在图鉴显示已发现状态（不必等关卡结束保存），切回主菜单后再读档也仍然保留
+- **不弹 toast 通知**：暂不复用 achievement toast 通道，避免战斗中信息过载；后续若有玩家反馈"没注意到解锁了"再加
+- **不做发现动画**：第一次开图鉴会看到从 🔒 变完整描述就是发现的反馈，足够简洁
+- **存档字段 optional**：老存档没有该字段，patchProfile 一次性补 `[]`；玩家不会因升级版本丢失任何数据
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误（types/save/main/benchmark/graph/entities/game/ui 全过） |
+| `npm run build` | OK 119ms，bundle 180.27 KB（V1.1.6 +1.52 KB） |
+| 触发点静态审查 | OK 4 处条件与 V1.1.2-V1.1.5 联动逻辑一致 |
+| 老存档兼容 | OK patchProfile 已补 `discoveredSynergies = []` |
+| 游戏内手动实测 | TODO 与 V1.1.2-V1.1.5 一并在 L2/L3 回归 |
+
+### 后续
+
+- 若后续联动数 ≥ 6，加 toast 通知 + 闪光动画
+- 考虑在第 1 关结束时给一句话提示「按 [Y] 查看联动图鉴」，避免入口被忽略
+- 第 5/6 对联动候选（energy×buffer 共振 / relay×energy 网络化）

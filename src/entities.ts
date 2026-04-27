@@ -173,6 +173,7 @@ export function updateEnemies(state: GameState, dt: number): void {
         // 联动：shield 直连同方 repair 时受伤减免
         if (targetNode.type === 'shield' && hasShieldRepairLink(state, targetNode)) {
           dmg *= (1 - COMBAT.shield.synergyRepairDamageReduce);
+          state.discoveredSynergies.add('shield-repair');
         }
         targetNode.hp -= dmg;
         targetNode.hitFlash = 1;
