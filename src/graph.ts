@@ -1007,7 +1007,25 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
 // ===== 缓冲器能量增幅 =====
 function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean): void {
   const range = evolved ? COMBAT.buffer.range.e : COMBAT.buffer.range.n;
-  const boost = (evolved ? COMBAT.buffer.boostPerLevel.e : COMBAT.buffer.boostPerLevel.n) * buffer.level;
+  let boost = (evolved ? COMBAT.buffer.boostPerLevel.e : COMBAT.buffer.boostPerLevel.n) * buffer.level;
+  // V1.1.8 联动：buffer 直连任一同方 energy 时，boost × synergyEnergyBoostMult
+  let energyLinked = false;
+  for (const edge of state.edges) {
+    let otherId: string | null = null;
+    if (edge.sourceId === buffer.id) otherId = edge.targetId;
+    else if (edge.targetId === buffer.id) otherId = edge.sourceId;
+    if (!otherId) continue;
+    const other = state.nodes.find(n => n.id === otherId);
+    if (!other || other.status === 'destroyed') continue;
+    if (other.type !== 'energy') continue;
+    if (other.owner !== buffer.owner) continue;
+    energyLinked = true;
+    break;
+  }
+  if (energyLinked) {
+    boost *= COMBAT.buffer.synergyEnergyBoostMult;
+    state.discoveredSynergies.add('energy-buffer');
+  }
   for (const node of state.nodes) {
     if (node.id === buffer.id || node.status === 'destroyed') continue;
     if (node.owner === 'neutral') continue;

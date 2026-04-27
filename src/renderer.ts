@@ -532,6 +532,27 @@ export class Renderer {
         ctx.restore();
       }
 
+      // === 联动高亮：energy ↔ buffer 同方直连（V1.1.8 能量共振） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'energy' && target.type === 'buffer')
+          || (source.type === 'buffer' && target.type === 'energy'))) {
+        ctx.save();
+        // 电紫快速短虚线，flow 方向跟随时间
+        const pulse = 0.55 + Math.sin(this.time * 4) * 0.22;
+        ctx.strokeStyle = `rgba(200, 130, 255, ${pulse})`;
+        ctx.lineWidth = lw + 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.lineDashOffset = -this.time * 120;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
       if (edge.type === 'amplify' && active) {
         // 增幅线：双线 + 金色脉冲
         const nx = -dy / len * 3; // 法线偏移

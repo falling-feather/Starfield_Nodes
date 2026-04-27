@@ -1286,6 +1286,15 @@ export class UI {
       unlock: '第 3 关「迷雾深处」',
       color: 'rgba(140, 255, 180, 0.85)',
     },
+    {
+      id: 'energy-buffer',
+      pair: 'energy × buffer',
+      name: '能量共振',
+      mode: '加成',
+      effect: 'Buffer 直连任一同方 Energy 时，每 tick 范围内充能 ×1.30',
+      unlock: '第 2 关「关键防线」',
+      color: 'rgba(200, 130, 255, 0.85)',
+    },
   ];
 
   private drawSynergyPanel(state: GameState): void {
@@ -1295,7 +1304,7 @@ export class UI {
     const cx = state.canvasWidth / 2;
     const cy = state.canvasHeight / 2;
     const panelW = 600;
-    const panelH = 440;
+    const panelH = 510;
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
 

@@ -311,6 +311,8 @@ export const COMBAT = {
   buffer: {
     range: { n: 160, e: 200 },
     boostPerLevel: { n: 2, e: 4 },
+    /** V1.1.8 联动：buffer 直连任一同方 energy 时，boost ×1.30（加成型，第 5 对联动） */
+    synergyEnergyBoostMult: 1.30,
   },
 
   /** 缓冲器超载脉冲：可超充至 maxEnergy × overchargeCapRatio */
