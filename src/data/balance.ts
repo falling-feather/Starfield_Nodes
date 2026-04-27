@@ -171,6 +171,8 @@ export const COMBAT = {
   radar: {
     range: { n: 200, e: 280, oc: 350 },
     damage: { n: 3, e: 5, oc: 8 },
+    /** V1.2.3 联动：radar 直连同方 magnet 时，检测范围 ×（1 + synergyMagnetRangeBoost） */
+    synergyMagnetRangeBoost: 0.30,
   },
 
   /** 地雷：伤害 = damage × level × damageMult；blastRadius 内有 1→0.5 的距离衰减 */

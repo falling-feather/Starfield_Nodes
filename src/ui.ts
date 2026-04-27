@@ -1413,6 +1413,15 @@ export class UI {
       unlock: '第 2 关「关键防线」',
       color: 'rgba(120, 200, 255, 0.85)',
     },
+    {
+      id: 'magnet-radar',
+      pair: 'magnet × radar',
+      name: '重力扫描',
+      mode: '扩展',
+      effect: 'Radar 直连同方 Magnet 时，检测范围 +30%',
+      unlock: '第 3 关「迷雾深处」',
+      color: 'rgba(208, 156, 255, 0.85)',
+    },
   ];
 
   private drawSynergyPanel(state: GameState): void {
@@ -1422,7 +1431,7 @@ export class UI {
     const cx = state.canvasWidth / 2;
     const cy = state.canvasHeight / 2;
     const panelW = 600;
-    const panelH = 590;
+    const panelH = 670;
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
 

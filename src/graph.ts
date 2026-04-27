@@ -48,6 +48,7 @@ const SYNERGY_FLASH_COLORS: Record<string, string> = {
   'shield-repair': '#8cffb4',
   'energy-buffer': '#c882ff',
   'relay-energy': '#78c8ff',
+  'magnet-radar': '#d09cff',
 };
 
 export function createNode(x: number, y: number, type: NodeType): GameNode {
@@ -688,8 +689,27 @@ function overchargeRepairPulse(state: GameState, repair: GameNode, evolved: bool
 
 // ===== 雷达锁定伤害 =====
 function radarLockDamage(state: GameState, radar: GameNode, damageMult: number, evolved: boolean, overcharged: boolean): void {
-  const range = overcharged ? COMBAT.radar.range.oc : (evolved ? COMBAT.radar.range.e : COMBAT.radar.range.n);
+  let range = overcharged ? COMBAT.radar.range.oc : (evolved ? COMBAT.radar.range.e : COMBAT.radar.range.n);
   const baseDmg = (overcharged ? 8 : (evolved ? 5 : 3)) * radar.level * damageMult;
+
+  // V1.2.3 联动 magnet × radar：直连同方 magnet 时检测范围 +30%
+  let magnetLink: GameNode | undefined;
+  for (const edge of state.edges) {
+    let otherId: string | null = null;
+    if (edge.sourceId === radar.id) otherId = edge.targetId;
+    else if (edge.targetId === radar.id) otherId = edge.sourceId;
+    if (!otherId) continue;
+    const other = state.nodes.find(n => n.id === otherId);
+    if (!other || other.status === 'destroyed') continue;
+    if (other.type !== 'magnet') continue;
+    if (other.owner !== radar.owner) continue;
+    magnetLink = other;
+    break;
+  }
+  if (magnetLink) {
+    range *= 1 + COMBAT.radar.synergyMagnetRangeBoost;
+    markSynergy(state, 'magnet-radar', [radar, magnetLink]);
+  }
 
   for (const enemy of state.enemies) {
     if (dist(radar, enemy) > range) continue;

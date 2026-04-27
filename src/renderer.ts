@@ -581,6 +581,27 @@ export class Renderer {
         ctx.restore();
       }
 
+      // === 联动高亮：magnet ↔ radar 同方直连（V1.2.3 重力扫描） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'magnet' && target.type === 'radar')
+          || (source.type === 'radar' && target.type === 'magnet'))) {
+        ctx.save();
+        // 紫粉色慢呼吸 + 内层 sweep
+        const pulse = 0.45 + Math.sin(this.time * 2.5) * 0.20;
+        ctx.strokeStyle = `rgba(208, 156, 255, ${pulse})`;
+        ctx.lineWidth = lw + 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.lineDashOffset = -this.time * 60;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
       if (edge.type === 'amplify' && active) {
         // 增幅线：双线 + 金色脉冲
         const nx = -dy / len * 3; // 法线偏移
