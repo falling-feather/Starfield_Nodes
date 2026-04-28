@@ -120,6 +120,15 @@ export class InputManager {
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
 
+    // V1.6.1：点击子面板外部空白区域 → 关闭顶部子面板（左键）
+    if (e.button === 0 && this.ui?.hasOpenSubPanel() && !this.ui.isPointInOpenPanel(sx, sy) && !this.ui.pauseMenuOpen) {
+      const wasTechOpen = !!this.techState.showPanel;
+      if (this.ui.closeTopSubPanel()) {
+        if (wasTechOpen && !this.techState.showPanel) this.state.paused = false;
+        return;
+      }
+    }
+
     // V1.1.0：暂停菜单打开时独占左键点击
     if (e.button === 0 && this.ui?.pauseMenuOpen) {
       const hit = this.ui.pauseMenuAreas.find(
@@ -480,6 +489,15 @@ export class InputManager {
     // 快捷键设置面板优先消费输入
     if (this.ui?.handleKeybindInput(key)) return;
 
+    // V1.6.1：ESC 关闭任意已打开子面板（最先打开的优先级最高，保证唯一可关）
+    if (key === 'escape' && this.ui?.hasOpenSubPanel()) {
+      const wasTechOpen = !!this.techState.showPanel;
+      if (this.ui.closeTopSubPanel()) {
+        if (wasTechOpen && !this.techState.showPanel) this.state.paused = false;
+        return;
+      }
+    }
+
     // 教程进行中：空格推进，Escape跳过
     if (isTutorialActive()) {
       if (key === ' ') {
@@ -785,6 +803,11 @@ export class InputManager {
     // V1.5.11：知识库面板打开时滚轮翻页
     if (this.ui && this.ui.showKnowledgePanel) {
       this.ui.scrollKnowledgePanel(e.deltaY);
+      return;
+    }
+    // V1.6.1：成就面板打开时滚轮翻页
+    if (this.ui && this.ui.showAchievementPanel) {
+      this.ui.scrollAchievementPanel(e.deltaY);
       return;
     }
     const cam = this.state.camera;

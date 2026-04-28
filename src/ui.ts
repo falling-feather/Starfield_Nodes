@@ -40,6 +40,8 @@ export class UI {
   showKnowledgePanel: boolean = false;
   /** 显示联动图鉴面板（V1.1.6） */
   showSynergyPanel: boolean = false;
+  /** V1.6.1：当前帧已打开的子面板矩形（draw 阶段填充，input click-outside 读取） */
+  openPanelRects: { id: 'tech' | 'knowledge' | 'achievement' | 'synergy' | 'keybind'; x: number; y: number; w: number; h: number }[] = [];
   /** 正在编辑的快捷键操作（等待按键输入） */
   editingAction: KeyAction | null = null;
   /** 存档已解锁成就列表（由外部设置） */
@@ -62,6 +64,10 @@ export class UI {
   private knowledgeScrollOffset = 0;
   /** V1.5.11：知识库面板最大可滚动距离（drawKnowledgePanel 内更新） */
   private knowledgeMaxScroll = 0;
+  /** V1.6.1：成就面板滚动偏移（像素） */
+  private achievementScrollOffset = 0;
+  /** V1.6.1：成就面板最大可滚动距离（drawAchievementPanel 内更新） */
+  private achievementMaxScroll = 0;
 
   // ── V1.1.0 暂停菜单 ──
   /** 暂停菜单是否打开（独立于 state.paused：菜单打开 → state.paused = true，但 P 键暂停不会打开菜单） */
@@ -99,6 +105,7 @@ export class UI {
 
   render(state: GameState): void {
     this.nodeButtons = [];
+    this.openPanelRects = []; // V1.6.1：每帧重置
 
     // 更新各面板 fade 进度（180ms 全程）
     const now = performance.now();
@@ -882,6 +889,7 @@ export class UI {
 
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
+    this.openPanelRects.push({ id: 'tech', x: px, y: py, w: panelW, h: panelH });
 
     // 半透明遮罩
     ctx.fillStyle = 'rgba(0,0,0,0.75)';
@@ -1072,6 +1080,41 @@ export class UI {
   scrollKnowledgePanel(delta: number): void {
     if (!this.showKnowledgePanel) return;
     this.knowledgeScrollOffset = Math.max(0, Math.min(this.knowledgeMaxScroll, this.knowledgeScrollOffset + delta));
+  }
+
+  /** V1.6.1：滚动成就面板 */
+  scrollAchievementPanel(delta: number): void {
+    if (!this.showAchievementPanel) return;
+    this.achievementScrollOffset = Math.max(0, Math.min(this.achievementMaxScroll, this.achievementScrollOffset + delta));
+  }
+
+  /** V1.6.1：是否有任意子面板正在显示 */
+  hasOpenSubPanel(): boolean {
+    return !!(
+      this.showKeybindPanel ||
+      this.showKnowledgePanel ||
+      this.showAchievementPanel ||
+      this.showSynergyPanel ||
+      (this.techState && this.techState.showPanel)
+    );
+  }
+
+  /** V1.6.1：关闭最顶层（最近打开的）子面板，返回是否关闭了一个。tech 关闭时同时取消暂停。 */
+  closeTopSubPanel(): boolean {
+    if (this.showKeybindPanel) { this.showKeybindPanel = false; this.editingAction = null; return true; }
+    if (this.showKnowledgePanel) { this.showKnowledgePanel = false; return true; }
+    if (this.showAchievementPanel) { this.showAchievementPanel = false; return true; }
+    if (this.showSynergyPanel) { this.showSynergyPanel = false; return true; }
+    if (this.techState && this.techState.showPanel) { this.techState.showPanel = false; return true; }
+    return false;
+  }
+
+  /** V1.6.1：屏幕坐标 (sx,sy) 是否落在任意已打开子面板矩形内 */
+  isPointInOpenPanel(sx: number, sy: number): boolean {
+    for (const r of this.openPanelRects) {
+      if (sx >= r.x && sx <= r.x + r.w && sy >= r.y && sy <= r.y + r.h) return true;
+    }
+    return false;
   }
 
   private drawGameOver(state: GameState): void {
@@ -1513,6 +1556,16 @@ export class UI {
     const titleH = 32;
     const tipPad = 14;
     const tipGap = 12;
+    const sectionHeaderH = 22;
+    const sectionGap = 8;
+    // V1.5.6：分组——地形知识 / 任务进度
+    const knowledgeIds = tipIds.filter(id => id.startsWith('terrain_'));
+    const challengeIds = tipIds.filter(id => id.startsWith('challenge_'));
+    // V1.5.9：总进度计算——以 全部任务 done id 为分母
+    const allDoneIds = Object.keys(LORE_TIPS).filter(id => id.endsWith('_done') && id.startsWith('challenge_'));
+    const completedCount = allDoneIds.filter(id => isLoreSeen(id)).length;
+    const totalCount = allDoneIds.length;
+    const progressBarH = 24;
     let totalH = 60; // 头部
     totalH += progressBarH + 10; // V1.5.9 进度条
     for (const id of tipIds) {
@@ -1523,6 +1576,7 @@ export class UI {
     const panelH = Math.min(totalH, state.canvasHeight - 60);
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
+    this.openPanelRects.push({ id: 'knowledge', x: px, y: py, w: panelW, h: panelH });
 
     // 遮罩
     ctx.fillStyle = 'rgba(0,0,0,0.78)';
@@ -1703,6 +1757,7 @@ export class UI {
     const panelH = 400;
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
+    this.openPanelRects.push({ id: 'achievement', x: px, y: py, w: panelW, h: panelH });
 
     // 遮罩
     ctx.fillStyle = 'rgba(0,0,0,0.75)';
@@ -1729,18 +1784,32 @@ export class UI {
     ctx.fillStyle = COLORS.text.muted;
     ctx.fillText(`${count}/${total} 已解锁  |  [A] 关闭`, cx, py + 46);
 
-    // 成就列表
+    // 成就列表（V1.6.1：可滚动）
     const startY = py + 65;
     const rowH = 56;
     const cols = 2;
     const colW = (panelW - 20) / cols;
+    const viewportTop = startY;
+    const viewportBottom = py + panelH - 10;
+    const viewportH = viewportBottom - viewportTop;
+    const totalRows = Math.ceil(ACHIEVEMENTS.length / cols);
+    const contentH = totalRows * rowH;
+    this.achievementMaxScroll = Math.max(0, contentH - viewportH);
+    if (this.achievementScrollOffset > this.achievementMaxScroll) {
+      this.achievementScrollOffset = this.achievementMaxScroll;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(px + 8, viewportTop, panelW - 16, viewportH);
+    ctx.clip();
 
     for (let i = 0; i < ACHIEVEMENTS.length; i++) {
       const ach = ACHIEVEMENTS[i];
       const col = i % cols;
       const row = Math.floor(i / cols);
       const ax = px + 10 + col * colW;
-      const ay = startY + row * rowH;
+      const ay = startY + row * rowH - this.achievementScrollOffset;
 
       const isUnlocked = unlocked.includes(ach.id);
 
@@ -1767,6 +1836,21 @@ export class UI {
       ctx.font = FONT.md;
       ctx.fillStyle = isUnlocked ? COLORS.text.body : COLORS.text.disabled;
       ctx.fillText(ach.description, ax + 34, ay + 34);
+    }
+
+    ctx.restore(); // 结束滚动裁剪
+
+    // V1.6.1：滚动条
+    if (this.achievementMaxScroll > 0) {
+      const sbX = px + panelW - 8;
+      const sbY = viewportTop;
+      const sbH = viewportH;
+      ctx.fillStyle = 'rgba(255,200,0,0.12)';
+      ctx.fillRect(sbX, sbY, 4, sbH);
+      const thumbH = Math.max(20, sbH * (viewportH / contentH));
+      const thumbY = sbY + (sbH - thumbH) * (this.achievementScrollOffset / this.achievementMaxScroll);
+      ctx.fillStyle = COLORS.accent.yellowHi;
+      ctx.fillRect(sbX, thumbY, 4, thumbH);
     }
 
     ctx.restore();
@@ -1860,6 +1944,7 @@ export class UI {
     const panelH = 670;
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
+    this.openPanelRects.push({ id: 'synergy', x: px, y: py, w: panelW, h: panelH });
 
     ctx.fillStyle = 'rgba(0,0,0,0.75)';
     ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
@@ -1969,6 +2054,7 @@ export class UI {
     const panelH = 80 + bindings.length * rowH + 40;
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
+    this.openPanelRects.push({ id: 'keybind', x: px, y: py, w: panelW, h: panelH });
 
     // 遮罩
     ctx.fillStyle = 'rgba(0,0,0,0.75)';

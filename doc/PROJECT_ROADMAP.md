@@ -3444,3 +3444,64 @@ V1.5.x 任务体系任意扩展时，面板可能超出屏幕高度（panelH 已
 ### 后续
 - V1.6.0：新关卡 / 新机制
 - 收工
+
+
+## V1.6.0 — 新关卡 9：深渊回响（超限 endgame+）
+
+### 背景
+1-8 关已成体系，关 6/8 各有一场 boss。需要更高一档的"超越终局"挑战，让通关老玩家有得打。沿用现有机制，无新系统。
+
+### 实现
+- `src/data/levels.ts`：append id=9
+  - 名 `深渊回响`
+  - 世界 4600x3200（比 8 大 ~10%）
+  - startResources 280 / startCrystals 10（比 8 略多以平衡纵深）
+  - 全节点可用 / maxSelectedNodes=9（比 8 +1）
+  - objective 'boss' / hasBoss / bossWave 32 / targetWaves 40
+  - difficultyMult 2.6（8 是 2.3）
+  - unlockRequires 8（必须先通 8）
+  - 地形：5 块星云（四角+中央偏上）/ 4 块碎片带 / 3 对虫洞（包含 e/f 边缘对，方便玩家拉远距离运营）
+  - 中心 boss 竞技场依旧开阔（中心 ±~1000 内无星云/碎片带）
+
+### 取舍
+- 不引入新机制（boss 类型、节点等）：稳定 V1.6.0 基线
+- 阶梯式数值递增：worldSize +10% / 资源 +10% / 难度 +13% / 节点选项 +1
+- 3 对虫洞鼓励"远征运营"：这是关 9 玩家应该探索的玩法
+- `clear_all` 成就阈值（=6）暂未跟进；存档语义已与现实脱节，等专门的成就重做版本统一改
+
+### 验证
+- `npm run build`：bundle **222.06 → 224.27 KB**（+2.21 KB / gzip +0.49 KB）
+- TS 严格 0 报错
+- 待人工：通过关卡 8 → 关卡选择应出现 9 → 加载关卡 9 应能进入并见 boss 波（32）
+
+### 后续
+- V1.6.1：可考虑新 boss 机制（分阶段 / 召唤 / 区域伤害）
+- V1.6.2：可考虑新关卡 10
+- V1.7：成就面板分类 / 阈值校正
+
+
+## V1.6.1 — 子面板交互修复 + 知识库崩溃修复
+
+### 背景
+玩家反馈三个问题：
+1. 同时打开多个子面板时按键交互混乱
+2. 成就面板没有滚动机制，条目变多后看不全
+3. 知识库面板（[H]）一启动就把整个游戏卡死
+
+### 实现
+- **Bug 3（知识库崩溃 · 关键）**：`src/ui.ts > drawKnowledgePanel` 中使用了 `progressBarH / knowledgeIds / challengeIds / allDoneIds / completedCount / totalCount / sectionHeaderH / sectionGap` 八个未声明的标识符。Vite/esbuild 不做类型检查所以 build 通过，但浏览器抛 `ReferenceError` 并把渲染循环打挂。补齐声明。
+- **Bug 1（ESC + 外部点击关闭子面板）**：
+  - `UI` 新增统一面板矩形登记表 `openPanelRects`（每帧重置，各 `draw*Panel` 在算出 px/py 后 push）
+  - 新增 `hasOpenSubPanel / closeTopSubPanel / isPointInOpenPanel`，关闭优先级 keybind → knowledge → achievement → synergy → tech
+  - `src/input.ts > onKeyDown`：ESC 在 tutorial 检查前先尝试关闭最上层子面板
+  - `src/input.ts > onMouseDown`：左键点击命中"任意子面板外部"且未在暂停菜单时关闭最上层子面板（关闭 tech 时同步取消 paused）
+- **Bug 2（成就面板滚轮）**：`UI` 新增 `achievementScrollOffset / achievementMaxScroll`，`drawAchievementPanel` 用 viewport clip + offset 渲染卡片并在右侧绘制 yellowHi 滚动条；`scrollAchievementPanel(dy)` + `onWheel` 分支接入滚轮。
+
+### 验证
+- `npm run build`：bundle **224.27 → 226.53 KB**（+2.26 KB / gzip +0.18 KB）
+- TS 严格无新增报错
+- 浏览器实测：进入第 1 关 → `[H]` 知识库面板正常打开，地形知识/任务进度分组渲染完整、进度条 0/5 显示正常，无 console 错误；ESC 可关闭
+
+### 后续
+- V1.6.2：可考虑新关卡 10 或 boss 进阶机制
+- V1.7：成就面板分类 / 阈值校正
