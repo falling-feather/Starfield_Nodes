@@ -6,12 +6,14 @@ import { NODE_CONFIGS } from './data/nodes';
 import { EDGE_CONFIGS } from './data/edges';
 import { ECONOMY } from './data/balance';
 import { canConnect, createEdge, createNode, dist, getTerritoryDiscount } from './graph';
+import { isPointInAsteroidPolygon } from './terrain-poly';
 import type { TechState } from './tech';
 import { researchTech } from './tech';
 import { sfxBuild, sfxSell, sfxConnect, initAudio, toggleMute } from './audio';
 import type { UI } from './ui';
 import { getActionForKey, getKey } from './keybinds';
 import { isTutorialActive, advanceTutorial, skipTutorial } from './tutorial';
+import { PolygonEditor } from './polygon-editor';
 
 export type BuildMode = NodeType | null;
 
@@ -26,6 +28,8 @@ export class InputManager {
   private onExitToTitle: (() => void) | null;
   techState: TechState;
   allowedNodeTypes: NodeType[] | null = null;
+  /** V1.3.2 dev-only 多边形地形编辑器 */
+  polygonEditor: PolygonEditor = new PolygonEditor();
   // 摄像机拖拽
   private isPanning: boolean = false;
   private panStartX: number = 0;
@@ -152,6 +156,12 @@ export class InputManager {
 
     // 右键 / 中键 also pans (fallback)
     if (e.button === 2 || e.button === 1) {
+      // V1.3.3 编辑器激活 + 右键命中顶点 → 删除（不进入平移）
+      if (e.button === 2 && this.polygonEditor.active) {
+        const w = this.screenToWorld(sx, sy);
+        const hitR = 14 / this.state.camera.zoom;
+        if (this.polygonEditor.deleteVertexAt(w.x, w.y, hitR)) return;
+      }
       this.isPanning = true;
       this.dragOrigin = null;
       this.panStartX = sx;
@@ -163,6 +173,19 @@ export class InputManager {
 
     if (e.button === 0) {
       const { x, y } = this.screenToWorld(sx, sy);
+
+      // V1.3.2 多边形编辑器：左键添加顶点（独占）
+      // V1.3.3：先尝试命中已有顶点 → 进入拖动；否则才追加新顶点
+      if (this.polygonEditor.active) {
+        const hitR = 12 / this.state.camera.zoom;
+        const target = this.polygonEditor.findVertexAt(x, y, hitR);
+        if (target) {
+          this.polygonEditor.startDrag(target);
+        } else {
+          this.polygonEditor.addVertex(x, y);
+        }
+        return;
+      }
 
       // 检查HUD按钮点击（时间加速 / 科技树 — V1.2.7）
       if (this.ui) {
@@ -272,6 +295,15 @@ export class InputManager {
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
 
+    // V1.3.3 编辑器顶点拖动（独占）
+    if (this.polygonEditor.active && this.polygonEditor.dragTarget) {
+      const w = this.screenToWorld(sx, sy);
+      this.polygonEditor.updateDrag(w.x, w.y);
+      this.state.mouseX = w.x;
+      this.state.mouseY = w.y;
+      return;
+    }
+
     // 摄像机拖拽中
     if (this.isPanning) {
       const dx = (sx - this.panStartX) / this.state.camera.zoom;
@@ -319,6 +351,12 @@ export class InputManager {
   }
 
   private onMouseUp(e: MouseEvent): void {
+    // V1.3.3 编辑器拖动结束（独占）
+    if (this.polygonEditor.active && this.polygonEditor.dragTarget) {
+      this.polygonEditor.endDrag();
+      return;
+    }
+
     // 结束平移（右键/中键/Ctrl+左键）
     if (this.isPanning) {
       this.isPanning = false;
@@ -393,6 +431,43 @@ export class InputManager {
     const key = e.key.toLowerCase();
     // 首次按键时初始化音频（需用户交互触发 AudioContext）
     initAudio();
+
+    // V1.3.2 多边形编辑器快捷键（dev-only，Ctrl+E 切换；激活后独占按键）
+    if (e.ctrlKey && key === 'e') {
+      e.preventDefault();
+      this.polygonEditor.toggle();
+      console.log('[PolygonEditor] active=' + this.polygonEditor.active);
+      return;
+    }
+    if (this.polygonEditor.active) {
+      if (e.ctrlKey && key === 's') {
+        e.preventDefault();
+        const json = this.polygonEditor.exportJSON();
+        console.log('[PolygonEditor] terrainPolygons JSON ↓');
+        console.log(json);
+        try { void navigator.clipboard?.writeText(json); } catch { /* ignore */ }
+        return;
+      }
+      if (e.ctrlKey && key === 'd') {
+        e.preventDefault();
+        this.polygonEditor.clearAll();
+        return;
+      }
+      if (e.ctrlKey && key === 'l') {
+        e.preventDefault();
+        this.polygonEditor.loadFromState(this.state);
+        console.log('[PolygonEditor] 已载入 state.terrainPolygons → drafts=' + this.polygonEditor.drafts.length);
+        return;
+      }
+      if (key === 'n') { this.polygonEditor.setType('nebula'); return; }
+      if (key === 'a') { this.polygonEditor.setType('asteroid'); return; }
+      if (key === 'w') { this.polygonEditor.setType('wormhole'); return; }
+      if (key === 'enter') { e.preventDefault(); this.polygonEditor.closeCurrent(); return; }
+      if (key === 'backspace') { e.preventDefault(); this.polygonEditor.undoVertex(); return; }
+      if (key === 'escape') { this.polygonEditor.cancelPending(); return; }
+      // 其余按键全部吞掉，避免误触建造/科技树
+      return;
+    }
 
     // 快捷键设置面板优先消费输入
     if (this.ui?.handleKeybindInput(key)) return;
@@ -643,6 +718,9 @@ export class InputManager {
     // 检查世界边界
     if (x < 20 || x > this.state.worldWidth - 20 || y < 20 || y > this.state.worldHeight - 20) return;
 
+    // V1.3.0：多边形小行星带禁建
+    if (isPointInAsteroidPolygon(this.state, x, y)) return;
+
     const node = createNode(x, y, this.buildMode);
     this.state.nodes.push(node);
     this.state.resources -= cost;
@@ -673,6 +751,11 @@ export class InputManager {
 
     if (x < 20 || x > this.state.worldWidth - 20 || y < 20 || y > this.state.worldHeight - 20) {
       return { valid: false, reason: '超出边界', cost, discount };
+    }
+
+    // V1.3.0：多边形小行星带禁建
+    if (isPointInAsteroidPolygon(this.state, x, y)) {
+      return { valid: false, reason: '小行星带禁建', cost, discount };
     }
 
     return { valid: true, reason: '', cost, discount };

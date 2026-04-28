@@ -60,6 +60,22 @@ export interface TerrainZone {
   linkedId?: string;
 }
 
+/** V1.3.0+ 多边形地形（关卡固定数据，与圆形 TerrainZone 并存） */
+export interface TerrainPolygon {
+  id: string;
+  type: TerrainType;
+  /** 顶点（世界坐标），按顺序闭合，至少 3 个 */
+  vertices: { x: number; y: number }[];
+  /** 预计算包围盒，加速点-多边形测试粗筛 */
+  bbox: { minX: number; minY: number; maxX: number; maxY: number };
+  /** 几何中心（用于标签 / 虫洞传送目标） */
+  centroid: { x: number; y: number };
+  /** 星云减速倍率 (0~1) */
+  slowFactor?: number;
+  /** 虫洞配对ID */
+  linkedId?: string;
+}
+
 export interface Edge {
   id: string;
   sourceId: string;
@@ -161,6 +177,8 @@ export interface GameState {
   worldHeight: number;
   camera: Camera;
   terrainZones: TerrainZone[];
+  /** V1.3.0+ 多边形地形（关卡固定） */
+  terrainPolygons: TerrainPolygon[];
   /** 时间加速倍率 (1 / 2 / 3) */
   timeScale: number;
   /** 动态天气云 */

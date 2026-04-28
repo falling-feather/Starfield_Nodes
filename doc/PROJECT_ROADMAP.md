@@ -2643,3 +2643,184 @@ V1.2.6 之前 HUD 各项硬编码 `x=12,170,300,420,540,680,820`，长字符串�
 ### 后续
 - V1.2.8（候选）：节点选择面板长列表性能 / 技能树面板视觉细节 / 更多 HUD 国际化。
 - V1.3.0：地形系统（手写多边形顶点 + 星云特效区域 + 关卡固定刷新 + 仅禁建）。
+
+## V1.3.0 — 多边形地形系统（手写顶点 + 关卡固定 + 仅禁建/减速）
+
+### 背景
+V1.2.x 之前地形（nebula/asteroid/wormhole）由 `generateTerrain` 在每次开局时随机散布圆形 `TerrainZone`，关卡间无法建立"地形记忆"。本版引入手写多边形地形：关卡数据中以顶点列表声明，开局时直接注入 `state.terrainPolygons`，与旧圆形并存。当前实现 A→D 四阶段：A 类型与渲染、B 仅禁建、C 星云减速、D 第 1 关样板数据。编辑器（E）暂未做。
+
+### 实现
+1. **A · 类型与渲染**
+   - `src/types.ts` 新增 `TerrainPolygon { id, type, vertices, bbox, centroid, slowFactor?, linkedId? }` 与 `GameState.terrainPolygons: TerrainPolygon[]`。
+   - `src/terrain-poly.ts` 新文件：`buildTerrainPolygon(input)`（接受 `[x,y]` 紧凑写法，自动算 bbox/centroid）+ `pointInPolygon(px,py,poly)`（射线法 + bbox 早退）+ `isPointInAsteroidPolygon(state,x,y)` + `getNebulaPolygonSlowFactor(...)`。
+   - `src/renderer.ts` `drawTerrain` 末尾追加多边形分支：`drawNebulaPolygon` / `drawAsteroidPolygon` / `drawWormholePolygon`，统一通过 `tracePolygon` + `ctx.clip` + `radialGradient`（以 centroid 为中心、bbox 半边长为半径）渲染填充，再描边并加中心标签。
+2. **B · 仅禁建**
+   - `src/input.ts` `placeNode` 与 `getBuildPlacementStatus` 在世界边界检查后追加 `isPointInAsteroidPolygon(state, x, y)`，命中则失败（reason: `小行星带禁建`）。ghost 预览自动复用已有红色/灰色提示。
+3. **C · 星云减速**
+   - `src/graph.ts` `getNebulaSlowFactor` 在原圆形循环之后追加多边形循环（射线法 inline，避免新模块循环依赖），保留圆形旧逻辑兼容。`entities.ts` 敌人移动调用方零改动。
+4. **D · 关卡固定数据**
+   - `src/levels.ts` `LevelConfig` 新增 `terrainPolygons?: Array<{ type, vertices: [number,number][], slowFactor?, linkedId?, id? }>`。
+   - `src/data/levels.ts` 第 1 关 "初始星域" 写入 1 个 6 顶点星云（slowFactor 0.55，左上区）+ 1 个 6 顶点小行星带（右下区）。
+   - `src/game.ts` 新方法 `applyLevelTerrainPolygons()`：在 `initializeMap` 之后调用，把 LevelConfig 多边形 `buildTerrainPolygon` 后写入 `state.terrainPolygons`，并 `filter` 掉随机生成时落在 asteroid 多边形里的随机节点（保留 core）。`createInitialState` 与 `restart` 两条路径都覆盖。
+
+### 取舍
+- **新老并存**：保留圆形 `TerrainZone` 的随机生成（关卡 `terrainConfig`），新关卡只用 `terrainPolygons`。getNebulaSlowFactor / 节点禁建均合并查询，零迁移成本。
+- **不做的**：
+  - asteroid 多边形阻挡**连线**（`canConnect` 仍只查圆形 `lineIntersectsCircle`）：线-多边形相交需要逐边线段相交测试，留 V1.3.1。
+  - wormhole 多边形传送（`entities.ts:220` 仍只跑圆形 zone）：当前 wormhole 多边形仅渲染。
+  - 编辑器（阶段 E）：手写顶点 + reload 验证已能撑住前 2-3 个关卡。
+- **几何中心**用顶点平均（足够），未做面积加权。
+- **空间索引**：每关多边形 < 10，线性遍历 + bbox 早退即可，不需 spatial-grid。
+
+### 验证
+- `tsc` 全绿；`vite build` 成功，bundle 190.54 KB → 194.84 KB（+4.30 KB，新文件 terrain-poly.ts + renderer 多边形分支 + game 注入逻辑）。
+- 第 1 关进入即可见左上紫色 6 边星云（中央"星云区"标签）+ 右下橙色虚线 6 边小行星带（"小行星带"标签）。在小行星带区域内尝试建造会被 ghost 红字 `小行星带禁建` 拒绝。敌人穿过星云会减速（slowFactor 0.55）。
+
+### 后续
+- V1.3.1：asteroid 多边形阻挡连线（线段-多边形相交）+ wormhole 多边形传送实装 + 第 2-6 关样板数据补齐。
+- V1.3.2（可选）：dev-only 多边形编辑器（Ctrl+E 进入，鼠标点击落点 / Enter 闭合 / Esc 取消，输出 JSON）。
+- V1.4.0：地形与节点协同（如：星云内能量节点产能 +N%，小行星带边缘炮塔射程 +N%）。
+
+## V1.3.1 — 多边形地形完整化（连线阻挡 + 虫洞传送 + 第 2-6 关样板）
+
+### 背景
+V1.3.0 引入多边形地形但只做了渲染/禁建/星云减速，asteroid 仍能被链路穿越、wormhole 多边形只是装饰、第 1 关之外没有手写数据。本版补齐这三件。
+
+### 实现
+1. **asteroid 多边形阻挡连线**
+   - `src/terrain-poly.ts` 新增 `segmentsIntersect(...)` + `lineIntersectsPolygon(ax,ay,bx,by, poly)`（bbox 早退 → 逐边线段相交 → 端点在内兜底）+ `lineBlockedByAsteroidPolygon(state, ax, ay, bx, by)`。
+   - `src/graph.ts` `canConnect` 在原圆形 `lineIntersectsCircle` 循环之后追加 `lineBlockedByAsteroidPolygon` 检查，命中则 return false。
+2. **wormhole 多边形传送**
+   - `src/entities.ts` 在原圆形虫洞循环之后追加多边形虫洞循环：`pointInPolygon(enemy.x, enemy.y, poly)` → 找 `linkedId` 多边形 → 传送到 linked 多边形 `centroid` 外侧（半径取 bbox 半边长 + 12）+ 2 秒 `teleportCooldown` 免疫。
+3. **第 2-6 关样板地形数据**（`src/data/levels.ts`）：
+   - **第 2 关 边境前哨**（2500×1800）：左上 + 右下两片小行星带夹道 + 右上 1 片星云（slowFactor 0.6）。
+   - **第 3 关 迷雾深处**（3000×2000）：左上 6 顶点大星云（0.5）+ 右下 7 顶点大星云（0.55）+ 中部 6 顶点小行星带，呼应"迷雾"主题。
+   - **第 4 关 闪电突袭**（1800×1200）：四角各一片小障碍 + 左下温和星云（0.7），保留中部空地利于限时速攻。
+   - **第 5 关 多核心战役**（3500×2500）：左上星云、右下大块小行星带 + **1 对多边形虫洞 `wh_l5_a` ↔ `wh_l5_b`**（左下 ↔ 右上对角传送）。
+   - **第 6 关 虫巢终焉**（3000×2000）：上下两片小行星带 + 左右两片星云形成"井"字结构 + **1 对多边形虫洞 `wh_l6_a` ↔ `wh_l6_b`**。
+
+### 取舍
+- 第 7-8 关沿用旧随机生成（待 V1.3.2 编辑器后再补）。
+- `lineIntersectsPolygon` 用最朴素 O(顶点数) 边遍历，每关多边形 ≤ 6 个 + 每个 ≤ 7 顶点，单次 canConnect 调用约 50 次 segmentsIntersect — 可忽略。
+- 虫洞传送目标用质心，不再像圆形版那样取边缘 + 随机角度落点；为避免立即回弹，落点距质心 = bbox 半边长 + 12 的随机角度。
+- 旧圆形 `TerrainZone` wormhole 与新多边形 wormhole 互相**不**配对（`linkedId` 各自查找各自数组），关卡设计时不要混用同一关。
+
+### 验证
+- `tsc` 全绿；`vite build` 成功，bundle 194.84 KB → 197.79 KB（+2.95 KB）。
+- 第 2 关进入即可见三片多边形地形。第 5 / 6 关左下/右上 (或两端) 虫洞配对，敌人穿越触发瞬移。canConnect 在 asteroid 多边形上拒绝拖拽连线。
+
+### 后续
+- V1.3.2（建议）：dev-only 多边形编辑器（Ctrl+E 入编辑模式 / 鼠标点击落点 / Enter 闭合 / Esc 取消 / 控制台输出 JSON），加速第 7-8 关与微调 1-6 关。
+- V1.4.0：地形与节点协同（星云内能量节点产能 +x%、小行星带边缘炮塔射程 +x%、虫洞两端建造电力枢纽实现"瞬移补给"）。
+
+
+## V1.3.2 — 多边形地形编辑器（dev-only）
+
+### 背景
+V1.3.1 完成了 1-6 关的样板多边形数据，但 7-8 关地图更大（3800×2600 / 4200×3000），人手算坐标低效；同时已有关卡也想根据测试反馈微调多边形形状。所以本版本提供一个轻量、隐藏式（dev-only）的画布内多边形绘制工具，绘完一键导出 JSON 直接粘到 `src/data/levels.ts`。
+
+### 实现
+- 新增 `src/polygon-editor.ts`：纯状态类 `PolygonEditor`
+  - `active` / `currentType`（nebula/asteroid/wormhole）
+  - `pendingVertices: [number,number][]` 当前在画的多边形
+  - `drafts: DraftPolygon[]` 已闭合的草稿
+  - 方法：`toggle / setType / addVertex / undoVertex / cancelPending / closeCurrent / clearAll / exportJSON`
+- `src/input.ts` 集成
+  - 实例化为 `polygonEditor: PolygonEditor`，公开给 renderer 使用
+  - `Ctrl+E` 切换编辑模式，并 `console.log` 当前状态
+  - 编辑器激活时 **独占按键**：`N/A/W` 切类型、`Enter` 闭合（顶点 ≥3 才生效）、`Backspace` 撤销、`Esc` 清空进行中、`Ctrl+S` 导出 JSON（同时尝试写剪贴板）、`Ctrl+D` 清空全部
+  - 编辑器激活时左键点击 → `addVertex(worldX, worldY)`，独占左键，避免误触建造/选中
+- `src/renderer.ts` 新增 `drawPolygonEditorOverlay(state, editor)`
+  - 已闭合草稿：实线 + 半透明填充（按类型上色）+ 顶点小圆 + 质心 `#编号 类型` 标签
+  - 进行中顶点：虚线连接 + 红色顶点（首点黄色）+ 序号
+  - 屏幕顶部 28px 黑底信息条：当前类型 / 顶点数 / 草稿数 + 操作提示
+  - 所有像素尺寸 `/ cam.zoom`，缩放后保持稳定线宽
+- `src/game.ts` `render()` 在 `renderer.render` 之后调用 `drawPolygonEditorOverlay`，叠在战争迷雾上方、UI 下方
+
+### 取舍
+- 工具状态完全独立于 `state.terrainPolygons`，不污染存档；用户自行复制 JSON 粘贴到 `src/data/levels.ts` 后重启游戏才会生效
+- 没做 dev 模式 flag 守卫——这是个隐藏快捷键，正式玩家不会按到 `Ctrl+E`；如果需要严格隔离可后续加 `import.meta.env.DEV` 守卫
+- 没做"编辑已有多边形"功能——只支持新画 → 导出 → 手动粘贴，避免和现有 `terrainPolygons` 写回逻辑耦合
+- 顶点用整数（`Math.round`），减少 JSON 噪声
+- `exportJSON` 用 `JSON.stringify(..., 2)` 易读；后续可扩展成压缩版
+
+### 验证
+- `npm run build` 成功，bundle **197.79 → 201.44 KB**（+3.65 KB / gzip +1.07 KB），与新增模块体积匹配
+- TypeScript 严格模式无报错
+- 待人工测试：Ctrl+E 进入 → 在画布上点 4-5 个点 → Enter 闭合 → Ctrl+S 看控制台 JSON / 剪贴板
+
+### 后续
+- V1.3.2.1（小迭代，可选）：拿编辑器手画 L7 / L8 的多边形数据，补全 8 关地形
+- V1.3.3（可选）：编辑器支持载入现有 `state.terrainPolygons` 并允许拖动顶点修改
+- V1.4.0：地形-节点协同（星云内能量节点产能加成 / 小行星带边缘炮塔射程加成 / 虫洞两端电力枢纽）
+
+
+## V1.3.2.1 — L7/L8 多边形地形数据补全
+
+### 背景
+V1.3.2 提供了多边形编辑器，趁热把第 7、8 关的多边形地形补上，至此 8 关全部具备固定多边形地形（与原随机 `terrainConfig` 圆形并存）。
+
+### 实现
+- `src/data/levels.ts` L7「裂隙风暴」(3800×2600)：
+  - 3 块星云（左上 0.55、右中 0.5、右下 0.6）
+  - 2 段中上部小行星屏障（中央留入口）
+  - 2 对虫洞：`wh_l7_a/b`（左下 ↔ 右上）、`wh_l7_c/d`（左中 ↔ 右中，贴边布置加强机动）
+- `src/data/levels.ts` L8「终局奇点」(4200×3000)：
+  - 4 象限星云（slowFactor 0.5-0.6），中央 Boss 竞技场保持开阔
+  - 3 段碎屑带（顶中、左中、右中），呼应"奇点碎片场"主题
+  - 1 对远角虫洞 `wh_l8_a/b`（左上 ↔ 右下，避开 boss 战场）
+
+### 取舍
+- 全部坐标用整数，便于后续编辑器导出格式对齐
+- 没碰 `terrainConfig`（仍有圆形地形随机生成），保持新老并存
+- L7/L8 的 wormhole 多边形跨度大（约 3000+ 像素直传），可能让玩家"超距"通过 boss 防线 — 等 V1.4.0 平衡时再调整位置或加冷却
+- Boss 关 (L8) 中央 ~1500×1000 区域纯净，避免 boss 路径被地形截断
+
+### 验证
+- `npm run build` 成功，bundle **201.44 → 203.32 KB**（+1.88 KB / gzip +0.52 KB），与新增数据体积匹配
+- TypeScript 严格模式无报错
+- 待人工测试：进入 L7/L8 检查地形位置、虫洞配对、连线被小行星阻挡
+
+### 后续
+- V1.3.3：编辑器载入现有 polygons + 拖动顶点修改（基于实际游玩反馈微调 8 关地形）
+- V1.4.0：地形-节点协同效果
+
+
+## V1.3.3 — 编辑器载入现有 polygons + 拖动顶点修改
+
+### 背景
+V1.3.2 编辑器只能新画 → 导出 → 手动粘贴；想微调已有的多边形（比如 L7 某个虫洞挪 100px）必须重画整块，效率低。本版本支持载入当前关地形为草稿，并直接在画布上拖动顶点。
+
+### 实现
+- `src/polygon-editor.ts`
+  - `dragTarget: { draftIdx, vertexIdx } | null`（`draftIdx === -1` 表示在 pendingVertices 中）
+  - `loadFromState(state)`：把 `state.terrainPolygons` 的 `vertices: {x,y}[]` 转回 `[number,number][]`，连同 type/slowFactor/linkedId/id 一并复制成 `drafts`
+  - `findVertexAt(wx,wy,hitR)`：欧氏距离平方查找最近顶点（pending 优先），返回 DragTarget
+  - `startDrag / updateDrag / endDrag`
+  - `deleteVertexAt(wx,wy,hitR)`：命中后从所属数组 splice；草稿顶点 ≤ 3 时整块删除（多边形必须 ≥3 顶点）
+- `src/input.ts`
+  - `Ctrl+L`：调用 `loadFromState`，控制台打印载入数
+  - 左键 mousedown：编辑器激活时先 `findVertexAt`（hitR = 12/zoom），命中则 startDrag，否则 addVertex
+  - 右键 mousedown：编辑器激活 + 命中顶点 → `deleteVertexAt`，不进入平移
+  - mousemove：拖动中独占，调 `updateDrag` + 同步 mouseX/Y
+  - mouseup：拖动中独占，调 `endDrag`
+- `src/renderer.ts` overlay
+  - 被拖动的顶点高亮成 `#00ff88` 绿色 + 半径 5/zoom（其它 3/zoom）
+  - 顶部状态栏更新提示：新增 `R-Click=删顶点  Ctrl+L=载入`
+
+### 取舍
+- hitR 用 `12/zoom`（左键）和 `14/zoom`（右键删除，更宽容）
+- 拖动期间独占 mouseup → 不会触发节点选中或框选
+- `loadFromState` 直接**替换** drafts（不合并），避免重复；用户若要保留旧画的多边形需先 Ctrl+S 导出
+- 顶点坐标全部 `Math.round`，避免 JSON 出现长小数
+- 没做 undo/redo 栈（拖错只能再拖回来）；编辑器是 dev 工具，不需要游戏级体验
+
+### 验证
+- `npm run build` 成功，bundle **203.32 → 205.56 KB**（+2.24 KB / gzip +0.63 KB）
+- TypeScript 严格模式无报错
+- 待人工测试：Ctrl+E → Ctrl+L 载入 L7 → 拖动某个虫洞顶点 → Ctrl+S 看 JSON 是否反映新坐标 → 右键顶点删除验证
+
+### 后续
+- V1.3.3.1（小迭代）：用编辑器实际微调 L1-L8 任何不舒服的多边形位置
+- V1.4.0：地形-节点协同（星云内能量节点产能加成 / 小行星带边缘炮塔射程加成 / 虫洞两端电力枢纽）
+- V1.3.4（可选）：编辑器支持设置 slowFactor / linkedId（通过弹出小输入框或快捷键 1-9）

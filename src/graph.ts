@@ -13,6 +13,7 @@ import { OVERCHARGE, COMBAT, ENERGY_COSTS, ENERGY_GAINS, ECONOMY } from './data/
 import { ENEMY_BASE_SPEED, DEFAULT_ENEMY_BASE_SPEED } from './data/enemies';
 import { sfxTesla, sfxFactory, sfxTrapExplode, sfxShoot, sfxOvercharge } from './audio';
 import { rand } from './rng';
+import { lineBlockedByAsteroidPolygon } from './terrain-poly';
 import { emitDestructionParticles } from './particles';
 import { EnemyGrid } from './spatial-grid';
 import type { Enemy } from './types';
@@ -253,6 +254,10 @@ export function canConnect(state: GameState, sourceId: string, targetId: string)
         return false;
       }
     }
+  }
+  // V1.3.1：多边形小行星带阻挡连线
+  if (lineBlockedByAsteroidPolygon(state, source.x, source.y, target.x, target.y)) {
+    return false;
   }
 
   return true;
@@ -1744,13 +1749,29 @@ export function generateTerrain(
   state.terrainZones = zones;
 }
 
-/** 返回 (x,y) 处的星云减速倍率 (1 = 无减速) */
+/** 返回 (x,y) 处的星云减速倍率 (1 = 无减速)。同时考虑圆形与多边形星云。 */
 export function getNebulaSlowFactor(x: number, y: number, state: GameState): number {
   let factor = 1;
   for (const zone of state.terrainZones) {
     if (zone.type === 'nebula' && dist({ x, y }, zone) <= zone.radius) {
       factor = Math.min(factor, zone.slowFactor ?? 0.5);
     }
+  }
+  // V1.3.0 多边形星云
+  for (const poly of state.terrainPolygons) {
+    if (poly.type !== 'nebula') continue;
+    const b = poly.bbox;
+    if (x < b.minX || x > b.maxX || y < b.minY || y > b.maxY) continue;
+    // ray casting inline（避免新模块循环依赖）
+    const v = poly.vertices;
+    let inside = false;
+    for (let i = 0, j = v.length - 1; i < v.length; j = i++) {
+      const xi = v[i].x, yi = v[i].y, xj = v[j].x, yj = v[j].y;
+      const intersect = ((yi > y) !== (yj > y))
+        && (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-9) + xi);
+      if (intersect) inside = !inside;
+    }
+    if (inside) factor = Math.min(factor, poly.slowFactor ?? 0.5);
   }
   return factor;
 }

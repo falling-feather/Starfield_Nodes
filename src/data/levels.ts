@@ -21,6 +21,32 @@ export const LEVELS: LevelConfig[] = [
     difficultyMult: 0.8,
     unlockRequires: 0,
     terrainConfig: { nebulaCount: 1, asteroidCount: 1, wormholePairs: 1 },
+    // V1.3.0 样板：固定多边形地形（避开中心核心 1000,750 半径 ~250）
+    terrainPolygons: [
+      {
+        type: 'nebula',
+        slowFactor: 0.55,
+        vertices: [
+          [320, 300],
+          [620, 240],
+          [780, 380],
+          [700, 560],
+          [480, 600],
+          [300, 480],
+        ],
+      },
+      {
+        type: 'asteroid',
+        vertices: [
+          [1380, 980],
+          [1620, 940],
+          [1760, 1100],
+          [1700, 1280],
+          [1480, 1300],
+          [1340, 1180],
+        ],
+      },
+    ],
   },
   {
     id: 2,
@@ -40,6 +66,41 @@ export const LEVELS: LevelConfig[] = [
     nodeCount: 35,
     difficultyMult: 1.0,
     unlockRequires: 1,
+    // V1.3.1 样板：两片小行星带夹道 + 1 片星云
+    terrainPolygons: [
+      {
+        type: 'asteroid',
+        vertices: [
+          [400, 250],
+          [780, 200],
+          [900, 380],
+          [720, 540],
+          [420, 480],
+        ],
+      },
+      {
+        type: 'asteroid',
+        vertices: [
+          [1700, 1200],
+          [2100, 1180],
+          [2280, 1380],
+          [2120, 1620],
+          [1780, 1580],
+          [1620, 1400],
+        ],
+      },
+      {
+        type: 'nebula',
+        slowFactor: 0.6,
+        vertices: [
+          [1900, 280],
+          [2280, 240],
+          [2400, 460],
+          [2200, 660],
+          [1880, 540],
+        ],
+      },
+    ],
   },
   {
     id: 3,
@@ -61,6 +122,45 @@ export const LEVELS: LevelConfig[] = [
     difficultyMult: 1.2,
     unlockRequires: 2,
     terrainConfig: { nebulaCount: 2, asteroidCount: 1, wormholePairs: 0 },
+    // V1.3.1 样板：迷雾主题 — 两片大面积星云 + 1 片炮塔依托点外的小行星带
+    terrainPolygons: [
+      {
+        type: 'nebula',
+        slowFactor: 0.5,
+        vertices: [
+          [200, 200],
+          [780, 160],
+          [980, 360],
+          [880, 600],
+          [520, 720],
+          [200, 540],
+        ],
+      },
+      {
+        type: 'nebula',
+        slowFactor: 0.55,
+        vertices: [
+          [2000, 1200],
+          [2480, 1180],
+          [2780, 1340],
+          [2700, 1620],
+          [2380, 1820],
+          [1980, 1620],
+          [1840, 1380],
+        ],
+      },
+      {
+        type: 'asteroid',
+        vertices: [
+          [1280, 400],
+          [1620, 360],
+          [1780, 520],
+          [1700, 680],
+          [1380, 700],
+          [1240, 560],
+        ],
+      },
+    ],
   },
   {
     id: 4,
@@ -81,6 +181,40 @@ export const LEVELS: LevelConfig[] = [
     difficultyMult: 1.5,
     unlockRequires: 2,
     terrainConfig: { nebulaCount: 1, asteroidCount: 2, wormholePairs: 0 },
+    // V1.3.1 样板：限时小场 — 四角各一片小行星身不让玩家在边缘走位
+    terrainPolygons: [
+      {
+        type: 'asteroid',
+        vertices: [
+          [120, 120],
+          [420, 80],
+          [520, 240],
+          [340, 380],
+          [120, 320],
+        ],
+      },
+      {
+        type: 'asteroid',
+        vertices: [
+          [1380, 880],
+          [1680, 840],
+          [1740, 1020],
+          [1580, 1140],
+          [1320, 1080],
+        ],
+      },
+      {
+        type: 'nebula',
+        slowFactor: 0.7,
+        vertices: [
+          [320, 820],
+          [620, 800],
+          [780, 980],
+          [560, 1140],
+          [280, 1040],
+        ],
+      },
+    ],
   },
   {
     id: 5,
@@ -101,6 +235,59 @@ export const LEVELS: LevelConfig[] = [
     difficultyMult: 1.3,
     unlockRequires: 3,
     terrainConfig: { nebulaCount: 2, asteroidCount: 1, wormholePairs: 1 },
+    // V1.3.1 样板：多核心大场 + 1 对多边形虫洞
+    terrainPolygons: [
+      {
+        type: 'nebula',
+        slowFactor: 0.6,
+        vertices: [
+          [200, 200],
+          [800, 160],
+          [1000, 380],
+          [820, 580],
+          [400, 620],
+          [200, 480],
+        ],
+      },
+      {
+        type: 'asteroid',
+        vertices: [
+          [2400, 1600],
+          [2900, 1560],
+          [3120, 1820],
+          [2960, 2120],
+          [2540, 2200],
+          [2300, 1960],
+          [2280, 1760],
+        ],
+      },
+      {
+        type: 'wormhole',
+        id: 'wh_l5_a',
+        linkedId: 'wh_l5_b',
+        vertices: [
+          [380, 1900],
+          [580, 1820],
+          [720, 1980],
+          [620, 2160],
+          [400, 2160],
+          [320, 2020],
+        ],
+      },
+      {
+        type: 'wormhole',
+        id: 'wh_l5_b',
+        linkedId: 'wh_l5_a',
+        vertices: [
+          [3000, 380],
+          [3200, 320],
+          [3340, 480],
+          [3260, 660],
+          [3060, 680],
+          [2940, 540],
+        ],
+      },
+    ],
   },
   {
     id: 6,
@@ -122,6 +309,79 @@ export const LEVELS: LevelConfig[] = [
     difficultyMult: 1.8,
     unlockRequires: 5,
     terrainConfig: { nebulaCount: 3, asteroidCount: 2, wormholePairs: 1 },
+    // V1.3.1 样板：终焦 — 十字型多区块 + 1 对虫洞
+    terrainPolygons: [
+      {
+        type: 'nebula',
+        slowFactor: 0.5,
+        vertices: [
+          [200, 800],
+          [600, 760],
+          [780, 900],
+          [700, 1100],
+          [400, 1180],
+          [200, 1040],
+        ],
+      },
+      {
+        type: 'nebula',
+        slowFactor: 0.55,
+        vertices: [
+          [2200, 800],
+          [2600, 760],
+          [2820, 920],
+          [2740, 1140],
+          [2440, 1200],
+          [2200, 1060],
+        ],
+      },
+      {
+        type: 'asteroid',
+        vertices: [
+          [1280, 200],
+          [1680, 180],
+          [1820, 360],
+          [1700, 520],
+          [1360, 540],
+          [1200, 380],
+        ],
+      },
+      {
+        type: 'asteroid',
+        vertices: [
+          [1280, 1480],
+          [1680, 1460],
+          [1820, 1640],
+          [1700, 1820],
+          [1360, 1840],
+          [1200, 1660],
+        ],
+      },
+      {
+        type: 'wormhole',
+        id: 'wh_l6_a',
+        linkedId: 'wh_l6_b',
+        vertices: [
+          [220, 220],
+          [420, 200],
+          [500, 360],
+          [380, 480],
+          [200, 420],
+        ],
+      },
+      {
+        type: 'wormhole',
+        id: 'wh_l6_b',
+        linkedId: 'wh_l6_a',
+        vertices: [
+          [2580, 1620],
+          [2780, 1600],
+          [2860, 1760],
+          [2740, 1880],
+          [2560, 1820],
+        ],
+      },
+    ],
   },
   {
     id: 7,
@@ -142,6 +402,23 @@ export const LEVELS: LevelConfig[] = [
     difficultyMult: 2.0,
     unlockRequires: 6,
     terrainConfig: { nebulaCount: 4, asteroidCount: 2, wormholePairs: 2 },
+    terrainPolygons: [
+      // 左上高密星云
+      { type: 'nebula', slowFactor: 0.55, vertices: [[280, 320], [1050, 240], [1320, 720], [950, 1080], [380, 980], [180, 620]] },
+      // 右中高密星云（贴近右边）
+      { type: 'nebula', slowFactor: 0.5, vertices: [[2780, 820], [3520, 720], [3680, 1180], [3380, 1480], [2820, 1320]] },
+      // 右下星云带
+      { type: 'nebula', slowFactor: 0.6, vertices: [[2400, 1900], [3220, 1820], [3520, 2240], [2980, 2480], [2380, 2360]] },
+      // 中上小行星带（横向，中间留入口）
+      { type: 'asteroid', vertices: [[820, 80], [1620, 60], [1700, 320], [820, 360]] },
+      { type: 'asteroid', vertices: [[2200, 60], [3000, 80], [3000, 360], [2200, 320]] },
+      // 虫洞对 A：左下 ↔ 右上
+      { type: 'wormhole', id: 'wh_l7_a', linkedId: 'wh_l7_b', vertices: [[280, 2120], [520, 2080], [560, 2300], [380, 2380], [220, 2280]] },
+      { type: 'wormhole', id: 'wh_l7_b', linkedId: 'wh_l7_a', vertices: [[3380, 280], [3620, 320], [3700, 540], [3500, 640], [3320, 480]] },
+      // 虫洞对 B：左中 ↔ 右中（贴世界边缘）
+      { type: 'wormhole', id: 'wh_l7_c', linkedId: 'wh_l7_d', vertices: [[80, 1180], [320, 1160], [360, 1380], [180, 1460], [40, 1340]] },
+      { type: 'wormhole', id: 'wh_l7_d', linkedId: 'wh_l7_c', vertices: [[3520, 1180], [3760, 1180], [3760, 1380], [3580, 1460], [3460, 1340]] },
+    ],
   },
   {
     id: 8,
@@ -162,5 +439,23 @@ export const LEVELS: LevelConfig[] = [
     difficultyMult: 2.3,
     unlockRequires: 7,
     terrainConfig: { nebulaCount: 4, asteroidCount: 3, wormholePairs: 2 },
+    terrainPolygons: [
+      // 4 象限星云（中央 Boss 竞技场保持开阔）
+      // 左上
+      { type: 'nebula', slowFactor: 0.55, vertices: [[260, 380], [1080, 280], [1240, 760], [880, 1080], [380, 980], [120, 680]] },
+      // 右上
+      { type: 'nebula', slowFactor: 0.5, vertices: [[3100, 320], [3920, 380], [4080, 880], [3680, 1100], [3120, 940], [3000, 600]] },
+      // 左下
+      { type: 'nebula', slowFactor: 0.6, vertices: [[180, 1980], [880, 1880], [1120, 2280], [780, 2640], [280, 2720], [80, 2380]] },
+      // 右下
+      { type: 'nebula', slowFactor: 0.55, vertices: [[3220, 2020], [3920, 1980], [4140, 2360], [3880, 2780], [3320, 2740], [3120, 2380]] },
+      // 3 块碎片带（边缘中点，阐释“奇点碎片”）
+      { type: 'asteroid', vertices: [[1880, 80], [2380, 80], [2520, 320], [2300, 480], [1860, 420], [1740, 220]] },
+      { type: 'asteroid', vertices: [[80, 1380], [320, 1280], [560, 1500], [420, 1740], [180, 1720]] },
+      { type: 'asteroid', vertices: [[3880, 1320], [4140, 1380], [4180, 1700], [3960, 1820], [3780, 1620]] },
+      // 虫洞对：左上远角 ↔ 右下远角（避开 boss 场）
+      { type: 'wormhole', id: 'wh_l8_a', linkedId: 'wh_l8_b', vertices: [[260, 80], [580, 80], [620, 320], [380, 380], [180, 280]] },
+      { type: 'wormhole', id: 'wh_l8_b', linkedId: 'wh_l8_a', vertices: [[3680, 2680], [4020, 2680], [4080, 2920], [3820, 2960], [3640, 2860]] },
+    ],
   },
 ];

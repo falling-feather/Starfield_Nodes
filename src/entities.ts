@@ -13,6 +13,7 @@ import {
 import { ENEMY_DEATH_REWARDS, DEFAULT_ENEMY_REWARD, RUNTIME } from './data/balance';
 import { dist } from './graph';
 import { getNebulaSlowFactor } from './graph';
+import { pointInPolygon } from './terrain-poly';
 import { findShieldRepairLink, markSynergy } from './graph';
 import { COMBAT } from './data/balance';
 import { sfxHit, sfxKill, sfxSplit, sfxDisrupt, sfxNodeHit } from './audio';
@@ -226,6 +227,24 @@ export function updateEnemies(state: GameState, dt: number): void {
           enemy.x = linked.x + Math.cos(angle) * (linked.radius + 10);
           enemy.y = linked.y + Math.sin(angle) * (linked.radius + 10);
           enemy.teleportCooldown = 2; // 2秒传送免疫
+          break;
+        }
+      }
+    }
+    if (enemy.teleportCooldown > 0) continue;
+    // V1.3.1：多边形虫洞传送到配对多边形质心
+    for (const poly of state.terrainPolygons) {
+      if (poly.type !== 'wormhole' || !poly.linkedId) continue;
+      if (pointInPolygon(enemy.x, enemy.y, poly)) {
+        const linked = state.terrainPolygons.find(p => p.id === poly.linkedId);
+        if (linked) {
+          const angle = rand() * Math.PI * 2;
+          // bbox 半边长作为传送偏移参考半径
+          const lb = linked.bbox;
+          const r = Math.max(lb.maxX - lb.minX, lb.maxY - lb.minY) * 0.5;
+          enemy.x = linked.centroid.x + Math.cos(angle) * (r + 12);
+          enemy.y = linked.centroid.y + Math.sin(angle) * (r + 12);
+          enemy.teleportCooldown = 2;
           break;
         }
       }

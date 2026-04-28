@@ -5,6 +5,7 @@ import { NODE_CONFIGS } from './data/nodes';
 import type { Camera } from './types';
 import { COLORS } from './ui-tokens';
 import { distributeEnergy, initializeMap, processNodeEffects, decayDisconnectedEnergy, updateOvercharge, updateConnectedStatus } from './graph';
+import { buildTerrainPolygon, isPointInAsteroidPolygon } from './terrain-poly';
 import type { TechBonuses } from './graph';
 import { spawnEnemy, spawnBoss, updateEnemies } from './entities';
 import { updateParticles, emitNodeParticles } from './particles';
@@ -108,6 +109,7 @@ export class Game {
     const nodeCount = levelConfig?.nodeCount;
     const terrainCfg = levelConfig?.terrainConfig;
     initializeMap(this.state, nodeCount, terrainCfg);
+    this.applyLevelTerrainPolygons();
 
     this.state.resources = levelConfig?.startResources ?? 100;
     this.state.crystals = levelConfig?.startCrystals ?? 0;
@@ -151,6 +153,7 @@ export class Game {
       worldHeight,
       camera,
       terrainZones: [],
+      terrainPolygons: [],
       timeScale: 1,
       weatherClouds: [],
       screenShake: 0,
@@ -160,6 +163,29 @@ export class Game {
       discoveredSynergies: new Set<string>(this.profile.discoveredSynergies ?? []),
       pendingSynergyEvents: [],
     };
+  }
+
+  /** V1.3.0：根据关卡配置注入固定多边形地形，并清理落在 asteroid 多边形内的随机节点 */
+  private applyLevelTerrainPolygons(): void {
+    const cfg = this.levelConfig?.terrainPolygons;
+    if (!cfg || cfg.length === 0) {
+      this.state.terrainPolygons = [];
+      return;
+    }
+    this.state.terrainPolygons = cfg.map(p =>
+      buildTerrainPolygon({
+        id: p.id,
+        type: p.type,
+        vertices: p.vertices,
+        slowFactor: p.slowFactor,
+        linkedId: p.linkedId,
+      }),
+    );
+    // 移除落在 asteroid 多边形里的随机节点（保留 core 与玩家节点）
+    this.state.nodes = this.state.nodes.filter(n => {
+      if (n.type === 'core') return true;
+      return !isPointInAsteroidPolygon(this.state, n.x, n.y);
+    });
   }
 
   private handleResize(): void {
@@ -208,6 +234,7 @@ export class Game {
     const nodeCount = this.levelConfig?.nodeCount;
     const terrainCfg = this.levelConfig?.terrainConfig;
     initializeMap(this.state, nodeCount, terrainCfg);
+    this.applyLevelTerrainPolygons();
     this.state.resources = this.levelConfig?.startResources ?? 100;
     this.state.crystals = this.levelConfig?.startCrystals ?? 0;
   }
@@ -477,6 +504,8 @@ export class Game {
 
   private render(dt: number): void {
     this.renderer.render(this.state, dt);
+    // V1.3.2 dev-only 多边形编辑器叠加层
+    this.renderer.drawPolygonEditorOverlay(this.state, this.input.polygonEditor);
     this.ui.selectedEdgeType = this.state.selectedEdgeType;
     this.ui.render(this.state);
 

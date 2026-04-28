@@ -1,5 +1,6 @@
 // ===== Canvas 渲染引擎 =====
-import type { GameState, GameNode, NodeType, Camera, TerrainZone } from './types';
+import type { GameState, GameNode, NodeType, Camera, TerrainZone, TerrainPolygon } from './types';
+import type { PolygonEditor } from './polygon-editor';
 import { MAX_EDGE_LENGTH, TERRITORY_RADIUS, EXPANDED_TERRITORY_RADIUS } from './data/runtime';
 import { NODE_CONFIGS } from './data/nodes';
 import { EDGE_CONFIGS } from './data/edges';
@@ -254,6 +255,113 @@ export class Renderer {
         case 'wormhole': this.drawWormhole(zone, state); break;
       }
     }
+    // V1.3.0: 多边形地形
+    for (const poly of state.terrainPolygons) {
+      switch (poly.type) {
+        case 'nebula': this.drawNebulaPolygon(poly); break;
+        case 'asteroid': this.drawAsteroidPolygon(poly); break;
+        case 'wormhole': this.drawWormholePolygon(poly, state); break;
+      }
+    }
+  }
+
+  /** 在 ctx 上追踪多边形路径 */
+  private tracePolygon(poly: TerrainPolygon): void {
+    const ctx = this.ctx;
+    const v = poly.vertices;
+    ctx.beginPath();
+    ctx.moveTo(v[0].x, v[0].y);
+    for (let i = 1; i < v.length; i++) ctx.lineTo(v[i].x, v[i].y);
+    ctx.closePath();
+  }
+
+  private drawNebulaPolygon(poly: TerrainPolygon): void {
+    const ctx = this.ctx;
+    const cx = poly.centroid.x, cy = poly.centroid.y;
+    const b = poly.bbox;
+    const r = Math.max(b.maxX - b.minX, b.maxY - b.minY) * 0.5;
+    const pulse = Math.sin(this.time * 0.5 + cx * 0.01) * 0.04 + 0.14;
+    ctx.save();
+    this.tracePolygon(poly);
+    ctx.clip();
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0, `rgba(100,50,180,${pulse})`);
+    grad.addColorStop(0.5, `rgba(70,30,150,${pulse * 0.7})`);
+    grad.addColorStop(1, `rgba(40,15,100,${pulse * 0.25})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY);
+    ctx.restore();
+    // 边界描边
+    ctx.save();
+    ctx.strokeStyle = 'rgba(150,100,220,0.35)';
+    ctx.lineWidth = 1.2;
+    this.tracePolygon(poly);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(150,100,220,0.4)';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('星云区', cx, cy);
+    ctx.restore();
+  }
+
+  private drawAsteroidPolygon(poly: TerrainPolygon): void {
+    const ctx = this.ctx;
+    const cx = poly.centroid.x, cy = poly.centroid.y;
+    const b = poly.bbox;
+    const r = Math.max(b.maxX - b.minX, b.maxY - b.minY) * 0.5;
+    ctx.save();
+    this.tracePolygon(poly);
+    ctx.clip();
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0, 'rgba(80,60,40,0.22)');
+    grad.addColorStop(0.7, 'rgba(60,45,30,0.14)');
+    grad.addColorStop(1, 'rgba(40,30,20,0.05)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY);
+    ctx.restore();
+    // 危险虚线
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,100,50,0.3)';
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([5, 6]);
+    this.tracePolygon(poly);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,140,80,0.5)';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('小行星带', cx, cy);
+    ctx.restore();
+  }
+
+  private drawWormholePolygon(poly: TerrainPolygon, _state: GameState): void {
+    const ctx = this.ctx;
+    const cx = poly.centroid.x, cy = poly.centroid.y;
+    const b = poly.bbox;
+    const r = Math.max(b.maxX - b.minX, b.maxY - b.minY) * 0.5;
+    ctx.save();
+    this.tracePolygon(poly);
+    ctx.clip();
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0, 'rgba(80,200,255,0.25)');
+    grad.addColorStop(0.6, 'rgba(40,140,220,0.12)');
+    grad.addColorStop(1, 'rgba(20,80,160,0.04)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY);
+    ctx.restore();
+    ctx.save();
+    ctx.strokeStyle = 'rgba(120,210,255,0.45)';
+    ctx.lineWidth = 1.2;
+    this.tracePolygon(poly);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(160,230,255,0.5)';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('虫洞', cx, cy);
+    ctx.restore();
   }
 
   private drawNebula(zone: TerrainZone): void {
@@ -2337,5 +2445,103 @@ export class Renderer {
     const g = parseInt(hex.slice(3, 5), 16);
     const b = parseInt(hex.slice(5, 7), 16);
     return `rgba(${r},${g},${b},${alpha})`;
+  }
+
+  /**
+   * V1.3.2 dev-only：在世界空间内绘制多边形编辑器叠加层
+   * 由 game.ts 在 renderer.render 之后调用（独立 save/restore + 摄像机变换）
+   */
+  drawPolygonEditorOverlay(state: GameState, editor: PolygonEditor): void {
+    if (!editor.active) return;
+    const ctx = this.ctx;
+    const cam = state.camera;
+
+    const typeColor: Record<string, string> = {
+      nebula: '#7da6ff',
+      asteroid: '#ff9b6b',
+      wormhole: '#a8dcff',
+    };
+
+    ctx.save();
+    ctx.translate(-cam.x * cam.zoom, -cam.y * cam.zoom);
+    ctx.scale(cam.zoom, cam.zoom);
+
+    // 1) 已闭合草稿：实线 + 半透明填充 + 序号标签
+    editor.drafts.forEach((p, idx) => {
+      const color = typeColor[p.type] ?? '#ffffff';
+      ctx.beginPath();
+      p.vertices.forEach(([x, y], i) => {
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = color + '33';
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2 / cam.zoom;
+      ctx.stroke();
+      // 顶点点（被拖动的顶点高亮成绿色）
+      for (let vi = 0; vi < p.vertices.length; vi++) {
+        const [x, y] = p.vertices[vi];
+        const isDrag = editor.dragTarget && editor.dragTarget.draftIdx === idx && editor.dragTarget.vertexIdx === vi;
+        ctx.fillStyle = isDrag ? '#00ff88' : color;
+        ctx.beginPath();
+        ctx.arc(x, y, (isDrag ? 5 : 3) / cam.zoom, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // 序号标签（质心）
+      const cx = p.vertices.reduce((s, v) => s + v[0], 0) / p.vertices.length;
+      const cy = p.vertices.reduce((s, v) => s + v[1], 0) / p.vertices.length;
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `${14 / cam.zoom}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`#${idx + 1} ${p.type}`, cx, cy);
+    });
+
+    // 2) 进行中顶点：虚线连接 + 红色顶点
+    if (editor.pendingVertices.length > 0) {
+      const color = typeColor[editor.currentType] ?? '#ffffff';
+      ctx.save();
+      ctx.setLineDash([6 / cam.zoom, 4 / cam.zoom]);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5 / cam.zoom;
+      ctx.beginPath();
+      editor.pendingVertices.forEach(([x, y], i) => {
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.restore();
+      // 顶点
+      for (let i = 0; i < editor.pendingVertices.length; i++) {
+        const [x, y] = editor.pendingVertices[i];
+        ctx.fillStyle = i === 0 ? '#ffeb3b' : '#ff5252';
+        ctx.beginPath();
+        ctx.arc(x, y, 4 / cam.zoom, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `${11 / cam.zoom}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${i + 1}`, x, y - 10 / cam.zoom);
+      }
+    }
+
+    ctx.restore();
+
+    // 3) 屏幕空间提示横幅（顶部）
+    ctx.save();
+    const w = state.canvasWidth;
+    ctx.fillStyle = 'rgba(0,0,0,0.72)';
+    ctx.fillRect(0, 0, w, 28);
+    ctx.fillStyle = '#7da6ff';
+    ctx.font = 'bold 13px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(
+      `[多边形编辑器] 类型=${editor.currentType}  顶点=${editor.pendingVertices.length}  草稿=${editor.drafts.length}  ` +
+      `| N/A/W=切类型  Click=加点/拖顶点  R-Click=删顶点  Enter=闭合  Backspace=撤销  Esc=清进行中  Ctrl+L=载入  Ctrl+S=导出  Ctrl+D=清空  Ctrl+E=退出`,
+      8, 14,
+    );
+    ctx.restore();
   }
 }

@@ -39,6 +39,15 @@ export interface LevelConfig {
     asteroidCount?: number;
     wormholePairs?: number;
   };
+  /** V1.3.0+ 关卡固定多边形地形（与 terrainConfig 随机生成并存，按需配置） */
+  terrainPolygons?: Array<{
+    type: 'nebula' | 'asteroid' | 'wormhole';
+    /** 顶点：紧凑写法 [x, y]，按顺序闭合 */
+    vertices: [number, number][];
+    slowFactor?: number;
+    linkedId?: string;
+    id?: string;
+  }>;
 }
 
 // LEVELS 已迁移至 src/data/levels.ts，从此处重新导出以保持向后兼容
