@@ -107,6 +107,9 @@ export class Renderer {
     // 绘制缓冲器增幅光环
     this.drawBufferAuras(state);
 
+    // V1.4.2 跨虫洞虚拟连线（在 buffer aura 之后画，覆盖在其上面）
+    this.drawCrossWormholeFx(state);
+
     // 绘制采集器收集特效
     this.drawCollectorFields(state);
 
@@ -2266,15 +2269,49 @@ export class Renderer {
     }
   }
 
+  // ===== V1.4.2 跨虫洞虚拟连线 =====
+  private drawCrossWormholeFx(state: GameState): void {
+    const fxList = state.crossWormholeFx;
+    if (!fxList || fxList.length === 0) return;
+    const ctx = this.ctx;
+    ctx.save();
+    for (const fx of fxList) {
+      const alpha = Math.min(1, fx.ttl / 30);
+      ctx.strokeStyle = fx.color;
+      ctx.globalAlpha = alpha * 0.85;
+      ctx.lineWidth = fx.kind === 'relay' ? 2.5 : 2;
+      ctx.setLineDash([8, 6]);
+      ctx.lineDashOffset = -this.time * 30;
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = fx.color;
+      ctx.beginPath();
+      ctx.moveTo(fx.ax, fx.ay);
+      ctx.lineTo(fx.bx, fx.by);
+      ctx.stroke();
+      // 端点光圈
+      ctx.setLineDash([]);
+      ctx.fillStyle = fx.color;
+      ctx.globalAlpha = alpha * 0.6;
+      ctx.beginPath();
+      ctx.arc(fx.ax, fx.ay, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(fx.bx, fx.by, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
   // ===== 缓冲器增幅光环 =====
   private drawBufferAuras(state: GameState): void {
     const ctx = this.ctx;
     const bufferNodes = state.nodes.filter(
       n => n.type === 'buffer' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
     );
-    if (bufferNodes.length === 0) return;
-
-    for (const buffer of bufferNodes) {
+    if (bufferNodes.length === 0) return;    for (const buffer of bufferNodes) {
       const ev = buffer.evolved;
       const range = ev ? 200 : 160;
       const pulse = Math.sin(this.time * 2.5 + buffer.pulsePhase) * 0.25 + 0.75;

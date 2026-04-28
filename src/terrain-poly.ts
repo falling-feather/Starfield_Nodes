@@ -123,3 +123,78 @@ export function lineBlockedByAsteroidPolygon(
   }
   return false;
 }
+
+/** V1.4.0 点到线段的最短距离平方 */
+function pointToSegmentDistSq(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) {
+    const ex = px - ax, ey = py - ay;
+    return ex * ex + ey * ey;
+  }
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  const cx = ax + t * dx, cy = ay + t * dy;
+  const ex = px - cx, ey = py - cy;
+  return ex * ex + ey * ey;
+}
+
+/** V1.4.0 是否在任意 nebula 多边形内（用于产能加成） */
+export function isPointInNebulaPolygon(state: GameState, x: number, y: number): boolean {
+  for (const poly of state.terrainPolygons) {
+    if (poly.type !== 'nebula') continue;
+    if (pointInPolygon(x, y, poly)) return true;
+  }
+  return false;
+}
+
+/** V1.4.0 点是否在任意 asteroid 多边形边缘 maxDist 范围内（包含内部）。
+ *  炮塔受益时通常不会建在多边形内部（已被禁建），所以只需"靠边"判定。 */
+export function isNearAsteroidPolygonEdge(state: GameState, x: number, y: number, maxDist: number): boolean {
+  const maxSq = maxDist * maxDist;
+  for (const poly of state.terrainPolygons) {
+    if (poly.type !== 'asteroid') continue;
+    const b = poly.bbox;
+    // bbox 早退：扩展 maxDist
+    if (x < b.minX - maxDist || x > b.maxX + maxDist || y < b.minY - maxDist || y > b.maxY + maxDist) continue;
+    const verts = poly.vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const j = (i + 1) % verts.length;
+      const a = verts[i], c = verts[j];
+      if (pointToSegmentDistSq(x, y, a.x, a.y, c.x, c.y) <= maxSq) return true;
+    }
+  }
+  return false;
+}
+
+/** V1.4.1 找到点所在的 wormhole 多边形（任一）；返回 null 表示不在任何 wormhole 内 */
+export function findWormholePolygonAt(state: GameState, x: number, y: number): TerrainPolygon | null {
+  for (const poly of state.terrainPolygons) {
+    if (poly.type !== 'wormhole') continue;
+    if (pointInPolygon(x, y, poly)) return poly;
+  }
+  return null;
+}
+
+/** V1.4.1 虫洞枢纽：当前节点 (nodeX, nodeY) 是否激活枢纽加成
+ *  条件：自己在 wormhole 多边形 W 内，且 W 的 linkedId 对应的多边形 P 内存在节点 type ∈ requireTypes。
+ *  例：requireTypes=['energy'] → 双向能量站枢纽。
+ */
+export function isWormholeHubActive(
+  state: GameState,
+  nodeX: number, nodeY: number,
+  requireTypes: string[],
+): boolean {
+  const here = findWormholePolygonAt(state, nodeX, nodeY);
+  if (!here || !here.linkedId) return false;
+  const linked = state.terrainPolygons.find(p => p.id === here.linkedId && p.type === 'wormhole');
+  if (!linked) return false;
+  for (const n of state.nodes) {
+    if (n.status === 'destroyed') continue;
+    if (!requireTypes.includes(n.type)) continue;
+    if (pointInPolygon(n.x, n.y, linked)) return true;
+  }
+  return false;
+}
+

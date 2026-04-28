@@ -162,6 +162,7 @@ export class Game {
       resourcesSpent: 0,
       discoveredSynergies: new Set<string>(this.profile.discoveredSynergies ?? []),
       pendingSynergyEvents: [],
+      crossWormholeFx: [],
     };
   }
 
@@ -463,6 +464,11 @@ export class Game {
       if (enemy.hitFlash > 0) {
         enemy.hitFlash = Math.max(0, enemy.hitFlash - 4 * dt);
       }
+    }
+    // V1.4.2：跨虫洞 fx ttl 衰减（按帧 dt 秒，30→0 约 0.5s）
+    if (this.state.crossWormholeFx && this.state.crossWormholeFx.length > 0) {
+      for (const fx of this.state.crossWormholeFx) fx.ttl -= dt * 60;
+      this.state.crossWormholeFx = this.state.crossWormholeFx.filter(fx => fx.ttl > 0);
     }
   }
 

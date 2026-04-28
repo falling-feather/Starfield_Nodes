@@ -2824,3 +2824,174 @@ V1.3.2 编辑器只能新画 → 导出 → 手动粘贴；想微调已有的多
 - V1.3.3.1（小迭代）：用编辑器实际微调 L1-L8 任何不舒服的多边形位置
 - V1.4.0：地形-节点协同（星云内能量节点产能加成 / 小行星带边缘炮塔射程加成 / 虫洞两端电力枢纽）
 - V1.3.4（可选）：编辑器支持设置 slowFactor / linkedId（通过弹出小输入框或快捷键 1-9）
+
+
+## V1.4.0 — 多边形地形与节点协同（A 星云能量加成 + B 小行星带射程加成）
+
+### 背景
+V1.3.x 把多边形地形彻底打通了——能阻挡、能减速、能传送、能编辑。但地形目前对节点只有**惩罚**（小行星带禁建、阻断连线），缺少**正向引导**。本版本加两条协同效果让玩家有动机围绕地形布局：星云内堆能量站，小行星带边缘排炮塔。虫洞协同（C）放 V1.4.1。
+
+### 实现
+- `src/data/balance.ts` 新增 `TERRAIN_SYNERGY`：
+  - `nebulaEnergyBonus: 1.3`
+  - `asteroidTurretRangeBonus: 1.25`
+  - `asteroidEdgeRange: 90`（距 asteroid 多边形边缘多少像素以内算"靠边"）
+- `src/terrain-poly.ts` 新增工具：
+  - `pointToSegmentDistSq(px,py, ax,ay, bx,by)` 内部辅助
+  - `isPointInNebulaPolygon(state, x, y)` — 任一 nebula 多边形内
+  - `isNearAsteroidPolygonEdge(state, x, y, maxDist)` — 到任一 asteroid 多边形任意边的距离 ≤ maxDist；带 bbox 早退（扩展 maxDist）
+- `src/graph.ts` 协同接入：
+  - `case 'energy'`：自充能 = `baseGain * (isPointInNebulaPolygon ? 1.3 : 1)`，进化版 baseGain=6 时也按倍率
+  - `fireTurret(...)`：射程 = `base * level * rangeMult * (isNearAsteroidPolygonEdge ? 1.25 : 1)`
+  - `fireSniper(...)`：同样的 edgeBonus 因子（沿用同一个常量，因为狙击手本身就是远程概念）
+
+### 取舍
+- 协同**不叠加** — `Math.max` 而非乘法堆叠，避免后续加更多多边形时数值爆炸
+- 边缘距离用"任一边的最短距离"，命中后立即 return，O(N顶点)；多边形数量小（每关 ≤ 10 块）所以无需空间索引
+- 没改炮塔射程的视觉指示器（HUD 选中节点显示射程圈仍是基础值）— 这是预览静态值，加入动态 +25% 的视觉反馈会让选中圈和实际命中圈错位反而更困惑；若用户反馈需要再加一个"加成中"小图标
+- 进化能量站的 `evolvedEnergyAssist` 充能给邻居那部分**没加 nebula bonus**——避免远程通过站桩把奖励泄漏到星云外
+- `tesla` 的固定 `+5` 能量没加 bonus（性质上是攻击副产物，不算主产能）
+- 没做"节点必须完全位于多边形内"——只判定中心点，避免边界节点闪烁
+
+### 验证
+- `npm run build` 成功，bundle **205.56 → 206.40 KB**（+0.84 KB / gzip +0.36 KB）
+- TypeScript 严格模式无报错
+- 待人工测试：
+  1. L1 把能量站建在左上星云内 vs 建在外面，对比能量增长速率（约 +30%）
+  2. L1 把炮塔建在右下小行星带边缘 90px 内 → 实际有效射程 +25%（敌人会更早进入射程被击中）
+
+### 后续
+- V1.4.1：虫洞两端电力枢纽 — 同对虫洞内的 energy/relay/buffer 节点形成"远程能量纽带"，互相 +20% 产能或允许跨虫洞 relay 充能
+- V1.4.2：在 HUD/教程提示玩家协同效果（避免新手不知情）
+- V1.4.x：协同视觉化（被加成的节点带光环/粒子）
+
+
+## V1.4.1 — 虫洞两端电力枢纽（energy 双向 +20%）
+
+### 背景
+V1.4.0 给了 nebula/asteroid 协同，但虫洞除了 V1.3.1 的"敌人传送"还没有任何节点级正向反馈。本版本：在配对的两个 wormhole 多边形里**都**放 `energy` 节点，会形成枢纽，两端的能量站充能 ×1.2。鼓励玩家把虫洞当成"远程发电厂网络"。
+
+### 实现
+- `src/data/balance.ts` `TERRAIN_SYNERGY` 新增 `wormholeEnergyHubBonus: 1.2`
+- `src/terrain-poly.ts` 新增：
+  - `findWormholePolygonAt(state,x,y)`：返回点所在的 wormhole 多边形或 null
+  - `isWormholeHubActive(state, nodeX, nodeY, requireTypes)`：节点在某 wormhole 多边形 W 内 + W.linkedId 对应的 P 内有 `requireTypes` 中任一类型节点 → true
+- `src/graph.ts` `case 'energy'`：能量站充能改为 `baseGain * nebulaMult * hubMult`，两个加成乘法叠加。同时持有 nebula(1.3) + hub(1.2) ≈ ×1.56 充能（理论上限，需要在某 nebula∩wormhole 重叠区，目前关卡设计不会重叠，所以实际只会单选一个）
+
+### 取舍
+- 只对 `energy` 启用枢纽加成；relay/buffer 的"远程能量纽带"语义复杂（涉及虚拟边、跨距充能），留给 V1.4.1.1+
+- 用 `requireTypes` 参数化设计，未来加 `['relay']` / `['buffer']` 一行就能扩展
+- 枢纽要求"对端**也**有同类节点"，避免单端建一座就吃满 buff
+- 双端各自独立判断（每帧），无需事件 / 缓存——多边形数 ≤ 10 + 节点数 < 100，O(N×M) 完全够用
+- Hub 与 Nebula 加成**乘法叠加**，而非取 max——鼓励高级玩家挖掘重叠地形（虽然 L1-L8 当前没有 nebula∩wormhole 重叠地图）
+
+### 验证
+- `npm run build` 成功，bundle **206.40 → 206.84 KB**（+0.44 KB / gzip +0.11 KB）
+- TypeScript 严格模式无报错
+- 待人工测试：进 L5 或 L6（含虫洞对）：
+  1. 在 `wh_l5_a` 多边形内放一个 energy → 充能正常 ×1
+  2. 再去 `wh_l5_b` 多边形内放一个 energy → 立刻**两个都**变 ×1.2
+  3. 拆掉 `wh_l5_b` 那个 → 两端都恢复 ×1
+
+### 后续
+- V1.4.1.1：relay 在虫洞内 + 对端也有 relay → 跨虫洞充能跳点（虚拟 edge）
+- V1.4.1.2：buffer 在虫洞内 + 对端也有 buffer → 互相增加 aura 范围或倍率
+- V1.4.2：协同效果视觉化（被加成节点带光环/数字飘字）
+- V1.5.0：教程补充地形协同知识点
+
+
+## V1.4.1.1 — Relay 跨虫洞充能（虚拟边）
+
+### 背景
+V1.4.1 让 energy 节点在虫洞两端形成枢纽，但 relay 网络仍受限于物理 edge 长度（MAX_EDGE_LENGTH ~ 350）。本版本：当一对虫洞两端各有一个同 owner 的 relay，把它们视为"虚拟相连"，让 energyNode → relay (W) → 虫洞跳跃 → R2 (P) → R2 的二跳邻居 都能受益于 `relayNetworkBoost`。等于免费跨大半张地图的能量管道。
+
+### 实现
+- `src/terrain-poly.ts` `findWormholePolygonAt` 已在 V1.4.1 导出，新增导出 `pointInPolygon` 给 graph 复用
+- `src/graph.ts` `energyRelayNetwork` 在原有 1-hop relay → 2-hop tip 充能后，新增段：
+  - 若 1-hop relay R1 位于 wormhole 多边形 W 内，且 W.linkedId 对应的 P 内有同 owner relay R2
+  - 充 R2 本身（boost）
+  - 充 R2 的所有非 energyNode/非 R1 边邻居（boost）
+- 标记 synergy 包含 R2，UI 上画 `relay-energy` 协同光弧时会跨虫洞延伸（因为 markSynergy 用节点列表）
+
+### 取舍
+- 距离不衰减：跨虫洞充能与短边等价，鼓励"远程枢纽"战术
+- 不需要建 edge：虚拟边纯逻辑，UI 上不画虫洞间的能量线（可选未来加）
+- 单跳：R2 后只走 R2 的二跳邻居，不递归（避免链式爆炸）
+- 同 owner 限定，敌方 relay 不会沾光
+- 性能：每能量节点每 tick 多 O(R × N) 一次 polygon 检查，N=节点数，R=该 energy 节点的 1-hop relay 数。当前关卡 N<100、R<5，可忽略
+
+### 验证
+- `npm run build` 成功，bundle **206.84 → 207.46 KB**（+0.62 KB / gzip +0.14 KB）
+- TypeScript 严格模式无报错
+- 待人工测试：进 L5
+  1. core 旁建 1 个 energy
+  2. energy 连一个 relay（R1），R1 拖进 `wh_l5_a` 多边形
+  3. 在 `wh_l5_b` 多边形内建另一个 relay（R2），R2 再连一个 turret 当 tip
+  4. 该 turret 应每 tick 收到 `synergyRelayNetworkBoost` 充能（即使 R1↔R2 之间没有任何物理 edge）
+
+### 后续
+- V1.4.1.2：buffer 跨虫洞 aura 联动
+- V1.4.2：协同视觉化（光环 / 跨虫洞虚拟能量线）
+- V1.5.0：教程补充地形协同知识点
+
+
+## V1.4.1.2 — Buffer 跨虫洞 aura 联动
+
+### 背景
+V1.4.1 / V1.4.1.1 已经把 energy 与 relay 接入虫洞枢纽。Buffer 是另一类典型 aura 节点（`bufferBoostNearby` 范围内同方节点充能），自然延伸：让 buffer 也能跨虫洞共享 aura，组成"双枢纽充电站"。
+
+### 实现
+- `src/graph.ts` `bufferBoostNearby` 末尾追加：
+  - 找 buffer 所在 wormhole W 与配对 P
+  - 对 P 内每个同 owner buffer B2，把 B2 周围 `range` 内的非 neutral 节点也按 boost 充能
+  - 标记新协同 `'buffer-wormhole'`（颜色 `#a8dcff` 虫洞蓝）
+- `src/graph.ts` `SYNERGY_FLASH_COLORS` 注册 `'buffer-wormhole'`
+- `src/ui.ts` SYNERGIES 列表新增条目"虫洞共振"，第 5 关解锁
+
+### 取舍
+- 复用本端 buffer 的 `boost / range`，不另设衰减或加成倍率
+- 不把 boost ×2（不让本端 + 远端额外叠 buff），单端 boost 就够：每 tick 双 aura 区都充能 1 次
+- 与 `energy-buffer` 协同正交：本端有 energy 直连时整段 boost 已提升，跨虫洞照样翻倍生效（鼓励"两端都堆 energy+buffer 组合"）
+- 性能：每 buffer 每 tick 多 O(N) buffer 扫描 + 命中后 O(N) 节点扫描；当前节点数 < 100 可忽略
+
+### 验证
+- `npm run build`：bundle **207.46 → 208.25 KB**（+0.79 KB / gzip +0.25 KB）
+- TS 严格模式 0 报错
+- 待人工：L5 在 wh_l5_a 内放 buffer B1（保证 currentEnergy ≥ activationThreshold），在 wh_l5_b 内放 buffer B2；B2 远端放 turret，turret 应在 B2 的 `bufferRange` 内被持续充能（即使旁边没有任何 buffer 物理直邻）
+
+### 后续
+- V1.4.2：协同视觉化（光环 + 跨虫洞虚拟 aura 圈）
+- V1.5.0：教程补充地形 / 虫洞协同知识点
+- 收工
+
+
+## V1.4.2 — 协同视觉化（跨虫洞虚拟连线）
+
+### 背景
+V1.4.1.1 / V1.4.1.2 把 relay 与 buffer 接入虫洞虚拟边，但两端节点之间没有任何视觉提示，玩家很难判断"现在到底有没有触发跨虫洞协同"。本版本给虚拟边加可见反馈。
+
+### 实现
+- `types.ts` `GameState.crossWormholeFx?: { ax,ay,bx,by,color,ttl,kind }[]` —— 跨虫洞虚拟连线特效池
+- `game.ts` `createState()` 初始化为 `[]`；每帧末按 dt × 60 衰减 ttl，过滤 ≤ 0 的项
+- `graph.ts`：
+  - V1.4.1.1 relay 跨虫洞段：每命中一对 (R1, R2) push 一条 `color='#78c8ff', ttl=30, kind='relay'`
+  - V1.4.1.2 buffer 跨虫洞段：每命中一对 (B1, B2) push 一条 `color='#a8dcff', ttl=30, kind='buffer'`
+- `renderer.ts` 新增 `drawCrossWormholeFx`：在世界坐标下用对应颜色画虚线（lineDash 移动），两端各画 6px 光圈，alpha 跟 ttl 衰减；在 `drawBufferAuras` 之后调用，确保覆盖在地形/其它光环之上
+
+### 取舍
+- 不复用 `synergyFlash`：因为节点本身的 flash 是按节点级别衰减，跨虫洞需要"两点连线"语义，单独存储更直观
+- ttl=30 帧（≈ 0.5s）：跨虫洞充能逻辑每 tick 都会重 push，所以只要 R1/R2 同时存活就持续闪烁；一旦中断 0.5s 内淡出
+- 不缓存"上次配对"，简单 push + filter，每帧最多 O(配对数)，可忽略
+- 颜色与 `SYNERGY_FLASH_COLORS` 中 `relay-energy` / `buffer-wormhole` 保持一致，玩家能直接关联
+
+### 验证
+- `npm run build`：bundle **208.25 → 209.31 KB**（+1.06 KB / gzip +0.28 KB）
+- TS 严格模式 0 报错
+- 待人工：进 L5 复用 V1.4.1.1 与 V1.4.1.2 的搭建步骤
+  - 跨虫洞 relay 充能时：R1↔R2 应有蓝色虚线脉冲
+  - 跨虫洞 buffer aura 时：B1↔B2 应有浅蓝虚线脉冲
+  - 拖走任一端 0.5s 内虚线淡出
+
+### 后续
+- V1.5.0：教程补充地形 / 虫洞协同知识点
+- 收工

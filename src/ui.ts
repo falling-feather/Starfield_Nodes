@@ -1517,6 +1517,15 @@ export class UI {
       unlock: '第 3 关「迷雾深处」',
       color: 'rgba(208, 156, 255, 0.85)',
     },
+    {
+      id: 'buffer-wormhole',
+      pair: 'buffer × wormhole',
+      name: '虫洞共振',
+      mode: '扩展',
+      effect: '同方 Buffer 分别身处一对虫洞两端：两个 Buffer 互互接管对端范围充能（几乎等于双端 Buffer 同时覆盖）',
+      unlock: '第 5 关「虫洞市」',
+      color: 'rgba(168, 220, 255, 0.85)',
+    },
   ];
 
   private drawSynergyPanel(state: GameState): void {

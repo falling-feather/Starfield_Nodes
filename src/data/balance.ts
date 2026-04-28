@@ -114,6 +114,20 @@ export const ENERGY_GAINS = {
   tesla: 5,
 } as const;
 
+/**
+ * V1.4.0 TERRAIN_SYNERGY — 多边形地形与节点协同效果
+ * - nebulaEnergyBonus: 能量站位于 nebula 多边形内 → 自充能 × bonus
+ * - asteroidTurretRangeBonus: 炮塔/狙击手 在 asteroid 多边形边缘附近 → 射程 × bonus
+ * - asteroidEdgeRange: 距 asteroid 多边形边缘多少像素以内算"靠边"
+ */
+export const TERRAIN_SYNERGY = {
+  nebulaEnergyBonus: 1.3,
+  asteroidTurretRangeBonus: 1.25,
+  asteroidEdgeRange: 90,
+  /** V1.4.1 虫洞枢纽：当前节点位于虫洞多边形内 + 配对虫洞多边形内也有同类 energy 节点 → 充能 × bonus */
+  wormholeEnergyHubBonus: 1.2,
+} as const;
+
 /** 派生工具：升级费用、进化费用，统一从 ECONOMY 计算（保留原函数签名兼容） */
 export function calcUpgradeCost(level: number): number {
   return ECONOMY.upgradeBaseCost * level;

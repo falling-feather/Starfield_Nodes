@@ -9,11 +9,11 @@ import {
 import { NODE_CONFIGS } from './data/nodes';
 import { EDGE_CONFIGS } from './data/edges';
 import { COLORS } from './ui-tokens';
-import { OVERCHARGE, COMBAT, ENERGY_COSTS, ENERGY_GAINS, ECONOMY } from './data/balance';
+import { OVERCHARGE, COMBAT, ENERGY_COSTS, ENERGY_GAINS, ECONOMY, TERRAIN_SYNERGY } from './data/balance';
 import { ENEMY_BASE_SPEED, DEFAULT_ENEMY_BASE_SPEED } from './data/enemies';
 import { sfxTesla, sfxFactory, sfxTrapExplode, sfxShoot, sfxOvercharge } from './audio';
 import { rand } from './rng';
-import { lineBlockedByAsteroidPolygon } from './terrain-poly';
+import { lineBlockedByAsteroidPolygon, isPointInNebulaPolygon, isNearAsteroidPolygonEdge, isWormholeHubActive, findWormholePolygonAt, pointInPolygon } from './terrain-poly';
 import { emitDestructionParticles } from './particles';
 import { EnemyGrid } from './spatial-grid';
 import type { Enemy } from './types';
@@ -62,6 +62,7 @@ const SYNERGY_FLASH_COLORS: Record<string, string> = {
   'energy-buffer': '#c882ff',
   'relay-energy': '#78c8ff',
   'magnet-radar': '#d09cff',
+  'buffer-wormhole': '#a8dcff',
 };
 
 export function createNode(x: number, y: number, type: NodeType): GameNode {
@@ -514,7 +515,14 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         break;
       case 'energy':
         // 能量站 — 进化(核聚变): 双倍自充+自动充能最低邻居 | 超载: 广播
-        node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + (ev ? ENERGY_GAINS.energy.e : ENERGY_GAINS.energy.n));
+        {
+          const baseGain = ev ? ENERGY_GAINS.energy.e : ENERGY_GAINS.energy.n;
+          // V1.4.0 星云能量加成
+          const nebulaMult = isPointInNebulaPolygon(state, node.x, node.y) ? TERRAIN_SYNERGY.nebulaEnergyBonus : 1;
+          // V1.4.1 虫洞枢纽：两端虫洞多边形内均有 energy 节点 → 互相 +20%
+          const hubMult = isWormholeHubActive(state, node.x, node.y, ['energy']) ? TERRAIN_SYNERGY.wormholeEnergyHubBonus : 1;
+          node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + baseGain * nebulaMult * hubMult);
+        }
         if (ev) evolvedEnergyAssist(state, node);
         if (oc) overchargeEnergyBroadcast(state, node);
         // V1.1.9 联动：relay 网络充能（结构型）
@@ -633,7 +641,10 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
 function fireTurret(state: GameState, turret: GameNode, damageMult: number, rangeMult: number, evolved: boolean = false): void {
   if (state.enemies.length === 0) return;
 
-  const range = COMBAT.turret.rangeBase * turret.level * rangeMult;
+  // V1.4.0 靠 asteroid 多边形边缘 → 射程加成
+  const edgeBonus = isNearAsteroidPolygonEdge(state, turret.x, turret.y, TERRAIN_SYNERGY.asteroidEdgeRange)
+    ? TERRAIN_SYNERGY.asteroidTurretRangeBonus : 1;
+  const range = COMBAT.turret.rangeBase * turret.level * rangeMult * edgeBonus;
   let closest: { enemy: typeof state.enemies[0]; d: number } | null = null;
 
   // V1.2.6：网格查询替代全表扫描
@@ -1144,6 +1155,32 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
       node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + boost);
     }
   }
+
+  // V1.4.1.2 虫洞双端 aura：buffer 在 W 内 + 配对 P 内有同 owner buffer B2
+  // → B2 周围同 range 内也获得 boost（互互跨虫洞覆盖）
+  const here = findWormholePolygonAt(state, buffer.x, buffer.y);
+  if (here && here.linkedId) {
+    const linked = state.terrainPolygons.find(p => p.id === here.linkedId && p.type === 'wormhole');
+    if (linked) {
+      const linkedBuffers: GameNode[] = [];
+      for (const b2 of state.nodes) {
+        if (b2.id === buffer.id || b2.status === 'destroyed') continue;
+        if (b2.type !== 'buffer' || b2.owner !== buffer.owner) continue;
+        if (!pointInPolygon(b2.x, b2.y, linked)) continue;
+        linkedBuffers.push(b2);
+        if (!state.crossWormholeFx) state.crossWormholeFx = [];
+        state.crossWormholeFx.push({ ax: buffer.x, ay: buffer.y, bx: b2.x, by: b2.y, color: '#a8dcff', ttl: 30, kind: 'buffer' });
+        for (const node of state.nodes) {
+          if (node.id === buffer.id || node.id === b2.id || node.status === 'destroyed') continue;
+          if (node.owner === 'neutral') continue;
+          if (dist(b2, node) <= range) {
+            node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + boost);
+          }
+        }
+      }
+      if (linkedBuffers.length > 0) markSynergy(state, 'buffer-wormhole', [buffer, ...linkedBuffers]);
+    }
+  }
 }
 
 /** 超载缓冲器：大范围能量脉冲 + 临时超充 */
@@ -1165,7 +1202,10 @@ function overchargeBufferPulse(state: GameState, buffer: GameNode, evolved: bool
 function fireSniper(state: GameState, sniper: GameNode, damageMult: number, rangeMult: number, evolved: boolean, overcharged: boolean): void {
   if (state.enemies.length === 0) return;
 
-  const range = (COMBAT.sniper.rangeBase + sniper.level * COMBAT.sniper.rangePerLevel) * rangeMult;
+  // V1.4.0 靠 asteroid 多边形边缘 → 射程加成
+  const edgeBonus = isNearAsteroidPolygonEdge(state, sniper.x, sniper.y, TERRAIN_SYNERGY.asteroidEdgeRange)
+    ? TERRAIN_SYNERGY.asteroidTurretRangeBonus : 1;
+  const range = (COMBAT.sniper.rangeBase + sniper.level * COMBAT.sniper.rangePerLevel) * rangeMult * edgeBonus;
   let target: { enemy: typeof state.enemies[0]; d: number } | null = null;
 
   // V1.2.6：网格查询替代全表扫描；优先攻击血量最高的敌人（远程狙击策略）
@@ -1427,6 +1467,40 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
       relayUsed = true;
     }
     if (relayUsed) involvedRelays.push(relay);
+
+    // V1.4.1.1 虫洞中继枢纽：relay 位于 wormhole 多边形 W 内，且 W 配对 P 内有另一个同 owner relay R2
+    // → 虚拟边 relay↔R2，给 R2 本身 + R2 的二跳邻居充能
+    const here = findWormholePolygonAt(state, relay.x, relay.y);
+    if (here && here.linkedId) {
+      const linked = state.terrainPolygons.find(p => p.id === here.linkedId && p.type === 'wormhole');
+      if (linked) {
+        for (const r2 of state.nodes) {
+          if (r2.id === relay.id || r2.id === energyNode.id) continue;
+          if (r2.status === 'destroyed' || r2.type !== 'relay') continue;
+          if (r2.owner !== energyNode.owner) continue;
+          if (!pointInPolygon(r2.x, r2.y, linked)) continue;
+          // 充 R2 本身
+          r2.currentEnergy = Math.min(r2.maxEnergy, r2.currentEnergy + boost);
+          triggered = true;
+          involvedRelays.push(r2);
+          // V1.4.2 fx：relay 虚拟跨虫洞能量线
+          if (!state.crossWormholeFx) state.crossWormholeFx = [];
+          state.crossWormholeFx.push({ ax: relay.x, ay: relay.y, bx: r2.x, by: r2.y, color: '#78c8ff', ttl: 30, kind: 'relay' });
+          // 充 R2 的二跳邻居
+          for (const e3 of state.edges) {
+            if (e3.disruptedTimer > 0) continue;
+            let tipId2: string | null = null;
+            if (e3.sourceId === r2.id) tipId2 = e3.targetId;
+            else if (e3.targetId === r2.id) tipId2 = e3.sourceId;
+            if (!tipId2 || tipId2 === energyNode.id || tipId2 === relay.id) continue;
+            const tip2 = state.nodes.find(n => n.id === tipId2);
+            if (!tip2 || tip2.status === 'destroyed') continue;
+            if (tip2.owner !== energyNode.owner) continue;
+            tip2.currentEnergy = Math.min(tip2.maxEnergy, tip2.currentEnergy + boost);
+          }
+        }
+      }
+    }
   }
   if (triggered) markSynergy(state, 'relay-energy', [energyNode, ...involvedRelays]);
 }

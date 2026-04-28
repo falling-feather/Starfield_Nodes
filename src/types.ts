@@ -196,6 +196,8 @@ export interface GameState {
   discoveredSynergies: Set<string>;
   /** V1.2.1：本帧待处理的「首次发现」事件，由 graph/entities push、game.ts 在 tick 后消费给 UI 派发 toast */
   pendingSynergyEvents: string[];
+  /** V1.4.2：跨虫洞虚拟连线 / aura 效果（renderer 每帧重画并衰减 ttl） */
+  crossWormholeFx?: { ax: number; ay: number; bx: number; by: number; color: string; ttl: number; kind: 'relay' | 'buffer' }[];
 }
 
 /** 漂浮星云 — 暂时遮挡视野 */
