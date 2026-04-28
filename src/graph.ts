@@ -14,9 +14,54 @@ import { ENEMY_BASE_SPEED, DEFAULT_ENEMY_BASE_SPEED } from './data/enemies';
 import { sfxTesla, sfxFactory, sfxTrapExplode, sfxShoot, sfxOvercharge } from './audio';
 import { rand } from './rng';
 import { emitDestructionParticles } from './particles';
+import { EnemyGrid } from './spatial-grid';
+import type { Enemy } from './types';
 
 let nodeIdCounter = 0;
 let edgeIdCounter = 0;
+
+/**
+ * V1.2.6：每 tick 重建一次的敌人空间索引。仅在 processNodeEffects 期间有效。
+ * fireXxx / radarLockDamage / blackholeGravity 等改用 queryEnemies(x,y,r) 替代全表扫描。
+ */
+const enemyGrid = new EnemyGrid(160);
+let gridReady = false;
+function queryEnemies(x: number, y: number, range: number, all: Enemy[]): Enemy[] {
+  return gridReady ? enemyGrid.query(x, y, range) : all;
+}
+
+/**
+ * V1.2.1：标记一对联动被触发。
+ * 仅在「首次发现」时把 id 推入 state.pendingSynergyEvents，供 UI 派发 toast。
+ * 重复触发幂等，无副作用。
+ *
+ * V1.2.2：可选传入参与触发的节点列表，首次触发时对这些节点设置 synergyFlash
+ * （配合 renderer 在节点周围画一圈金色脉冲环），让玩家在战斗世界中看清"哪两个节点产生了联动"。
+ */
+export function markSynergy(state: GameState, id: string, nodes?: GameNode[]): void {
+  if (state.discoveredSynergies.has(id)) return;
+  state.discoveredSynergies.add(id);
+  state.pendingSynergyEvents.push(id);
+  if (nodes && nodes.length > 0) {
+    const color = SYNERGY_FLASH_COLORS[id] ?? '#ffd760';
+    for (const n of nodes) {
+      if (!n) continue;
+      n.synergyFlash = 1;
+      n.synergyFlashColor = color;
+    }
+  }
+}
+
+/** V1.2.2：联动 id → 节点闪光颜色（与 ui.ts SYNERGIES / renderer edge 高亮颜色保持一致） */
+const SYNERGY_FLASH_COLORS: Record<string, string> = {
+  'tesla-relay': '#78dcff',
+  'buffer-collector': '#ffd760',
+  'portal-interceptor': '#ffaaff',
+  'shield-repair': '#8cffb4',
+  'energy-buffer': '#c882ff',
+  'relay-energy': '#78c8ff',
+  'magnet-radar': '#d09cff',
+};
 
 export function createNode(x: number, y: number, type: NodeType): GameNode {
   const cfg = NODE_CONFIGS[type];
@@ -161,7 +206,12 @@ export function dist(a: { x: number; y: number }, b: { x: number; y: number }): 
 
 // ===== 联动：shield 是否直连同方 repair（用于伤害减免） =====
 export function hasShieldRepairLink(state: GameState, node: GameNode): boolean {
-  if (node.type !== 'shield') return false;
+  return findShieldRepairLink(state, node) !== null;
+}
+
+/** V1.2.2：返回 shield 直连的同方 repair 节点（用于联动闪光定位），找不到返回 null */
+export function findShieldRepairLink(state: GameState, node: GameNode): GameNode | null {
+  if (node.type !== 'shield') return null;
   for (const edge of state.edges) {
     let otherId: string | null = null;
     if (edge.sourceId === node.id) otherId = edge.targetId;
@@ -171,9 +221,9 @@ export function hasShieldRepairLink(state: GameState, node: GameNode): boolean {
     if (!other || other.status === 'destroyed') continue;
     if (other.type !== 'repair') continue;
     if (other.owner !== node.owner) continue;
-    return true;
+    return other;
   }
-  return false;
+  return null;
 }
 
 // ===== 连线校验 =====
@@ -417,6 +467,10 @@ export function isOvercharged(node: GameNode): boolean {
 export function processNodeEffects(state: GameState, bonuses?: TechBonuses): void {
   const b = bonuses || { damageMultiplier: 1, rangeMultiplier: 1, coreProduction: 0 };
 
+  // V1.2.6：构建本 tick 敌人空间索引
+  enemyGrid.build(state.enemies);
+  gridReady = true;
+
   // 重置敌人速度（磁力塔每 tick 重新施加减速）
   for (const enemy of state.enemies) {
     enemy.speed = getBaseSpeed(enemy.type) + state.wave * 0.05;
@@ -566,6 +620,9 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         break;
     }
   }
+
+  // V1.2.6：清理网格上下文，避免 processNodeEffects 之外误用过期数据
+  gridReady = false;
 }
 
 function fireTurret(state: GameState, turret: GameNode, damageMult: number, rangeMult: number, evolved: boolean = false): void {
@@ -574,7 +631,9 @@ function fireTurret(state: GameState, turret: GameNode, damageMult: number, rang
   const range = COMBAT.turret.rangeBase * turret.level * rangeMult;
   let closest: { enemy: typeof state.enemies[0]; d: number } | null = null;
 
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询替代全表扫描
+  const candidates = queryEnemies(turret.x, turret.y, range, state.enemies);
+  for (const enemy of candidates) {
     const d = dist(turret, enemy);
     if (d <= range && (!closest || d < closest.d)) {
       closest = { enemy, d };
@@ -586,8 +645,10 @@ function fireTurret(state: GameState, turret: GameNode, damageMult: number, rang
     const damage = COMBAT.turret.damageBase * turret.level * damageMult;
     // 进化(狙击炮): AoE 穿透，对目标周围 evolvedAoeRadius 内敌人也造成伤害
     if (evolved) {
-      for (const e of state.enemies) {
-        if (dist(closest.enemy, e) <= COMBAT.turret.evolvedAoeRadius) {
+      const aoe = COMBAT.turret.evolvedAoeRadius;
+      const aoeCands = queryEnemies(closest.enemy.x, closest.enemy.y, aoe, state.enemies);
+      for (const e of aoeCands) {
+        if (dist(closest.enemy, e) <= aoe) {
           e.hp -= damage;
           e.hitFlash = 1;
         }
@@ -651,10 +712,31 @@ function overchargeRepairPulse(state: GameState, repair: GameNode, evolved: bool
 
 // ===== 雷达锁定伤害 =====
 function radarLockDamage(state: GameState, radar: GameNode, damageMult: number, evolved: boolean, overcharged: boolean): void {
-  const range = overcharged ? COMBAT.radar.range.oc : (evolved ? COMBAT.radar.range.e : COMBAT.radar.range.n);
+  let range = overcharged ? COMBAT.radar.range.oc : (evolved ? COMBAT.radar.range.e : COMBAT.radar.range.n);
   const baseDmg = (overcharged ? 8 : (evolved ? 5 : 3)) * radar.level * damageMult;
 
-  for (const enemy of state.enemies) {
+  // V1.2.3 联动 magnet × radar：直连同方 magnet 时检测范围 +30%
+  let magnetLink: GameNode | undefined;
+  for (const edge of state.edges) {
+    let otherId: string | null = null;
+    if (edge.sourceId === radar.id) otherId = edge.targetId;
+    else if (edge.targetId === radar.id) otherId = edge.sourceId;
+    if (!otherId) continue;
+    const other = state.nodes.find(n => n.id === otherId);
+    if (!other || other.status === 'destroyed') continue;
+    if (other.type !== 'magnet') continue;
+    if (other.owner !== radar.owner) continue;
+    magnetLink = other;
+    break;
+  }
+  if (magnetLink) {
+    range *= 1 + COMBAT.radar.synergyMagnetRangeBoost;
+    markSynergy(state, 'magnet-radar', [radar, magnetLink]);
+  }
+
+  // V1.2.6：网格查询替代全表扫描
+  const candidates = queryEnemies(radar.x, radar.y, range, state.enemies);
+  for (const enemy of candidates) {
     if (dist(radar, enemy) > range) continue;
     let dmg = baseDmg;
     // 进化: 隐身敌人受双倍
@@ -668,8 +750,9 @@ function kamikazeDetonate(state: GameState, node: GameNode, damageMult: number, 
   const blastRadius = evolved ? COMBAT.kamikaze.blastRadius.e : COMBAT.kamikaze.blastRadius.n;
   const damage = (evolved ? COMBAT.kamikaze.damage.e : COMBAT.kamikaze.damage.n) * node.level * damageMult;
 
-  // 对范围内所有敌人造成伤害
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询替代全表扫描
+  const candidates = queryEnemies(node.x, node.y, blastRadius, state.enemies);
+  for (const enemy of candidates) {
     if (enemy.hp <= 0) continue;
     const d = dist(node, enemy);
     if (d <= blastRadius) {
@@ -711,7 +794,9 @@ function arcChainLightning(state: GameState, arc: GameNode, damageMult: number, 
   // 找第一个目标（范围内最近的）
   let firstTarget: typeof state.enemies[0] | null = null;
   let minDist = Infinity;
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询替代全表扫描
+  const arcCands = queryEnemies(arc.x, arc.y, range, state.enemies);
+  for (const enemy of arcCands) {
     if (enemy.hp <= 0) continue;
     const d = dist(arc, enemy);
     if (d <= range && d < minDist) {
@@ -735,7 +820,9 @@ function arcChainLightning(state: GameState, arc: GameNode, damageMult: number, 
     // 寻找下一个弹跳目标
     let next: typeof state.enemies[0] | null = null;
     let nextDist = Infinity;
-    for (const enemy of state.enemies) {
+    // V1.2.6：网格查询（bounceRange 半径内候选）
+    const bounceCands = queryEnemies(current.x, current.y, bounceRange, state.enemies);
+    for (const enemy of bounceCands) {
       if (enemy.hp <= 0 || hit.has(enemy.id)) continue;
       const d = dist(current, enemy);
       if (d <= bounceRange && d < nextDist) {
@@ -756,7 +843,9 @@ function toxinCloud(state: GameState, toxin: GameNode, damageMult: number, evolv
   const dmg = (overcharged ? COMBAT.toxin.damage.oc : (evolved ? COMBAT.toxin.damage.e : COMBAT.toxin.damage.n)) * toxin.level * damageMult;
   const slowFactor = overcharged ? COMBAT.toxin.slowFactor.oc : (evolved ? COMBAT.toxin.slowFactor.e : COMBAT.toxin.slowFactor.n);
 
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询替代全表扫描
+  const candidates = queryEnemies(toxin.x, toxin.y, range, state.enemies);
+  for (const enemy of candidates) {
     if (enemy.hp <= 0) continue;
     if (dist(toxin, enemy) > range) continue;
 
@@ -765,7 +854,8 @@ function toxinCloud(state: GameState, toxin: GameNode, damageMult: number, evolv
 
     // 进化: 中毒的敌人死亡时扩散毒素到 spreadRange 内其他敌人
     if (evolved && enemy.hp <= 0) {
-      for (const other of state.enemies) {
+      const spreadCands = queryEnemies(enemy.x, enemy.y, COMBAT.toxin.spreadRange, state.enemies);
+      for (const other of spreadCands) {
         if (other === enemy || other.hp <= 0) continue;
         if (dist(enemy, other) <= COMBAT.toxin.spreadRange) {
           other.hp -= dmg * COMBAT.toxin.spreadDamageRatio;
@@ -837,7 +927,9 @@ function blackholeGravity(state: GameState, bh: GameNode, damageMult: number, ev
   const pullStr = overcharged ? COMBAT.blackhole.pullStrength.oc : (evolved ? COMBAT.blackhole.pullStrength.e : COMBAT.blackhole.pullStrength.n);
   const crushDmg = (overcharged ? COMBAT.blackhole.crushDamage.oc : (evolved ? COMBAT.blackhole.crushDamage.e : COMBAT.blackhole.crushDamage.n)) * bh.level * damageMult;
 
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询替代全表扫描
+  const candidates = queryEnemies(bh.x, bh.y, range, state.enemies);
+  for (const enemy of candidates) {
     if (enemy.hp <= 0) continue;
     const d = dist(bh, enemy);
     if (d > range || d < 1) continue;
@@ -868,7 +960,9 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
   const maxTargets = overcharged ? COMBAT.portal.maxTargets.oc : (evolved ? COMBAT.portal.maxTargets.e : COMBAT.portal.maxTargets.n);
 
   // 找范围内可传送的敌人 (排除传送冷却中的)
-  const candidates = state.enemies.filter(
+  // V1.2.6：先网格粗筛再精筛
+  const queryPool = queryEnemies(portal.x, portal.y, range, state.enemies);
+  const candidates = queryPool.filter(
     e => e.hp > 0 && e.teleportCooldown <= 0 && dist(portal, e) <= range
   );
   if (candidates.length === 0) return;
@@ -896,7 +990,7 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
 
   for (const enemy of targets) {
     // 联动射击：在敌人被传送前发射，目标锁定该敌人 id（传送后投射物会追到新位置）
-    if (synergyInterceptors.length > 0) state.discoveredSynergies.add('portal-interceptor');
+    if (synergyInterceptors.length > 0) markSynergy(state, 'portal-interceptor', [portal, ...synergyInterceptors]);
     for (const inter of synergyInterceptors) {
       const dmg = COMBAT.interceptor.damage * inter.level * COMBAT.portal.synergyInterceptorDamageMult;
       state.projectiles.push({
@@ -929,7 +1023,9 @@ function fireInterceptor(state: GameState, interceptor: GameNode, damageMult: nu
 
   if (overcharged) {
     // 超载: 攻击范围内所有敌人
-    for (const enemy of state.enemies) {
+    // V1.2.6：网格查询
+    const ocCands = queryEnemies(interceptor.x, interceptor.y, range, state.enemies);
+    for (const enemy of ocCands) {
       if (dist(interceptor, enemy) <= range) {
         state.projectiles.push({
           x: interceptor.x, y: interceptor.y,
@@ -945,7 +1041,9 @@ function fireInterceptor(state: GameState, interceptor: GameNode, damageMult: nu
   let bestTarget: typeof state.enemies[0] | null = null;
   let minDistToNode = Infinity;
 
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询
+  const interCands = queryEnemies(interceptor.x, interceptor.y, range, state.enemies);
+  for (const enemy of interCands) {
     if (dist(interceptor, enemy) > range) continue;
     for (const node of state.nodes) {
       if (node.status === 'destroyed' || node.id === interceptor.id) continue;
@@ -970,13 +1068,16 @@ function fireInterceptor(state: GameState, interceptor: GameNode, damageMult: nu
 function collectorHarvest(state: GameState, collector: GameNode, evolved: boolean, overcharged: boolean): void {
   const range = overcharged ? COMBAT.collector.range.oc : (evolved ? COMBAT.collector.range.e : COMBAT.collector.range.n);
   let nearbyCount = 0;
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询
+  const collectCands = queryEnemies(collector.x, collector.y, range, state.enemies);
+  for (const enemy of collectCands) {
     if (dist(collector, enemy) <= range) nearbyCount++;
   }
   if (nearbyCount === 0) return;
 
   // 联动：直连 player owned buffer 数量（用于产能加成 + 晶体阈值减免）
   let bufferLinkCount = 0;
+  const linkedBuffers: GameNode[] = [];
   for (const edge of state.edges) {
     let otherId: string | null = null;
     if (edge.sourceId === collector.id) otherId = edge.targetId;
@@ -987,9 +1088,10 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
     if (other.type !== 'buffer') continue;
     if (other.owner !== collector.owner) continue;
     bufferLinkCount++;
+    linkedBuffers.push(other);
   }
   const synergyMult = bufferLinkCount > 0 ? (1 + COMBAT.collector.synergyBufferBonus) : 1;
-  if (bufferLinkCount > 0) state.discoveredSynergies.add('buffer-collector');
+  if (bufferLinkCount > 0) markSynergy(state, 'buffer-collector', [collector, ...linkedBuffers]);
 
   const cap = overcharged ? nearbyCount : Math.min(nearbyCount, COMBAT.collector.maxNearbyCap);
   const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1) * synergyMult;
@@ -1012,6 +1114,7 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
   let boost = (evolved ? COMBAT.buffer.boostPerLevel.e : COMBAT.buffer.boostPerLevel.n) * buffer.level;
   // V1.1.8 联动：buffer 直连任一同方 energy 时，boost × synergyEnergyBoostMult
   let energyLinked = false;
+  let energyNode: GameNode | undefined;
   for (const edge of state.edges) {
     let otherId: string | null = null;
     if (edge.sourceId === buffer.id) otherId = edge.targetId;
@@ -1022,11 +1125,12 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
     if (other.type !== 'energy') continue;
     if (other.owner !== buffer.owner) continue;
     energyLinked = true;
+    energyNode = other;
     break;
   }
   if (energyLinked) {
     boost *= COMBAT.buffer.synergyEnergyBoostMult;
-    state.discoveredSynergies.add('energy-buffer');
+    markSynergy(state, 'energy-buffer', energyNode ? [buffer, energyNode] : [buffer]);
   }
   for (const node of state.nodes) {
     if (node.id === buffer.id || node.status === 'destroyed') continue;
@@ -1059,8 +1163,9 @@ function fireSniper(state: GameState, sniper: GameNode, damageMult: number, rang
   const range = (COMBAT.sniper.rangeBase + sniper.level * COMBAT.sniper.rangePerLevel) * rangeMult;
   let target: { enemy: typeof state.enemies[0]; d: number } | null = null;
 
-  // 优先攻击血量最高的敌人（远程狙击策略）
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询替代全表扫描；优先攻击血量最高的敌人（远程狙击策略）
+  const candidates = queryEnemies(sniper.x, sniper.y, range, state.enemies);
+  for (const enemy of candidates) {
     const d = dist(sniper, enemy);
     if (d <= range) {
       if (!target || enemy.hp > target.enemy.hp) {
@@ -1083,7 +1188,8 @@ function fireSniper(state: GameState, sniper: GameNode, damageMult: number, rang
       // 溅射伤害
       const splashRange = COMBAT.sniper.splashRange;
       const splashDmg = damage * COMBAT.sniper.splashDamageRatio;
-      for (const e of state.enemies) {
+      const splashCands = queryEnemies(target.enemy.x, target.enemy.y, splashRange, state.enemies);
+      for (const e of splashCands) {
         if (e.id === target.enemy.id) continue;
         if (dist(target.enemy, e) <= splashRange) {
           e.hp -= splashDmg;
@@ -1163,7 +1269,7 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
         const tip = nodeMap.get(e2.sourceId === other.id ? e2.targetId : e2.sourceId);
         if (!tip || tip.id === tesla.id || tip.status === 'destroyed') continue;
         secondHopSegs.push({ a: other, b: tip, dmg: secondDmg });
-        state.discoveredSynergies.add('tesla-relay');
+        markSynergy(state, 'tesla-relay', [tesla, other]);
       }
     }
   }
@@ -1225,7 +1331,9 @@ function factoryAttack(state: GameState, factory: GameNode, damageMult: number, 
   const range = COMBAT.antiRepair.rangeBase * rangeMult;
   let closest: { enemy: typeof state.enemies[0]; d: number } | null = null;
 
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询
+  const facCands = queryEnemies(factory.x, factory.y, range, state.enemies);
+  for (const enemy of facCands) {
     const d = dist(factory, enemy);
     if (d <= range && (!closest || d < closest.d)) {
       closest = { enemy, d };
@@ -1238,7 +1346,9 @@ function factoryAttack(state: GameState, factory: GameNode, damageMult: number, 
   const aoeRadius = evolved ? COMBAT.factory.aoeRadius.e : COMBAT.factory.aoeRadius.n;
   const damage = COMBAT.factory.damage * factory.level * damageMult;
 
-  for (const enemy of state.enemies) {
+  // V1.2.6：AoE 中心改用网格查询
+  const aoeCands = queryEnemies(closest.enemy.x, closest.enemy.y, aoeRadius, state.enemies);
+  for (const enemy of aoeCands) {
     if (dist(closest.enemy, enemy) <= aoeRadius) {
       enemy.hp -= damage;
       enemy.hitFlash = 1;
@@ -1269,7 +1379,9 @@ function magnetSlowEnemies(state: GameState, magnet: GameNode, rangeMult: number
   const range = COMBAT.magnet.normal.rangeBase * magnet.level * rangeMult;
   const slowFactor = COMBAT.magnet.normal.slowFactor;
 
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询
+  const cands = queryEnemies(magnet.x, magnet.y, range, state.enemies);
+  for (const enemy of cands) {
     if (dist(magnet, enemy) <= range) {
       // 每 tick 重新施加减速（临时效果）
       enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * slowFactor);
@@ -1281,6 +1393,7 @@ function magnetSlowEnemies(state: GameState, magnet: GameNode, rangeMult: number
 function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
   const boost = COMBAT.energy.synergyRelayNetworkBoost;
   let triggered = false;
+  const involvedRelays: GameNode[] = [];
   for (const edge of state.edges) {
     if (edge.disruptedTimer > 0) continue;
     let relayId: string | null = null;
@@ -1293,6 +1406,7 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
     if (relay.owner !== energyNode.owner) continue;
 
     // 沿 relay 找二跳邻居（≠ energyNode 自己），给同方节点充能
+    let relayUsed = false;
     for (const e2 of state.edges) {
       if (e2.id === edge.id) continue;
       if (e2.disruptedTimer > 0) continue;
@@ -1305,9 +1419,11 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
       if (tip.owner !== energyNode.owner) continue;
       tip.currentEnergy = Math.min(tip.maxEnergy, tip.currentEnergy + boost);
       triggered = true;
+      relayUsed = true;
     }
+    if (relayUsed) involvedRelays.push(relay);
   }
-  if (triggered) state.discoveredSynergies.add('relay-energy');
+  if (triggered) markSynergy(state, 'relay-energy', [energyNode, ...involvedRelays]);
 }
 
 // ===== 超载专属效果 =====
@@ -1353,7 +1469,9 @@ function overchargeMagnetSlow(state: GameState, magnet: GameNode, rangeMult: num
   const range = COMBAT.magnet.overcharge.rangeBase * magnet.level * rangeMult;
   const slowFactor = COMBAT.magnet.overcharge.slowFactor;
 
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询
+  const cands = queryEnemies(magnet.x, magnet.y, range, state.enemies);
+  for (const enemy of cands) {
     if (dist(magnet, enemy) <= range) {
       enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * slowFactor);
     }
@@ -1410,7 +1528,9 @@ function evolvedMagnetPull(state: GameState, magnet: GameNode, rangeMult: number
   const slowFactor = overcharged ? COMBAT.magnet.evolved.slowFactorOc : COMBAT.magnet.evolved.slowFactor;
   const pullStrength = COMBAT.magnet.evolved.pullStrength;
 
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询
+  const cands = queryEnemies(magnet.x, magnet.y, range, state.enemies);
+  for (const enemy of cands) {
     const d = dist(magnet, enemy);
     if (d <= range && d > COMBAT.magnetEvolved.minPullDist) {
       enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * slowFactor);
@@ -1434,8 +1554,10 @@ function trapDetonate(state: GameState, trap: GameNode, damageMult: number): boo
   const damage = COMBAT.trap.damage * trap.level * damageMult;
 
   // 检测范围内是否有敌人
+  // V1.2.6：网格查询
+  const detectCands = queryEnemies(trap.x, trap.y, detectRange, state.enemies);
   let hasEnemy = false;
-  for (const enemy of state.enemies) {
+  for (const enemy of detectCands) {
     if (dist(trap, enemy) <= detectRange) {
       hasEnemy = true;
       break;
@@ -1446,7 +1568,9 @@ function trapDetonate(state: GameState, trap: GameNode, damageMult: number): boo
   sfxTrapExplode();
 
   // 爆炸！对范围内所有敌人造成大量伤害
-  for (const enemy of state.enemies) {
+  // V1.2.6：网格查询
+  const blastCands = queryEnemies(trap.x, trap.y, blastRange, state.enemies);
+  for (const enemy of blastCands) {
     if (dist(trap, enemy) <= blastRange) {
       enemy.hp -= damage;
       enemy.hitFlash = 1;

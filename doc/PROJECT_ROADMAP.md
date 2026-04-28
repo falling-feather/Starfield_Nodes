@@ -2189,3 +2189,457 @@ V1.1.8 上线第 5 对联动后，Phase β 缺一种「结构型」机制——�
   1. 关卡结算面板加「本局新发现 N 对联动」提示，把 V1.1.7 的发现追踪闭环
   2. 联动触发时的世界内反馈（节点闪光 / toast），降低错过感
   3. 第 7 对候选：mine × tesla（电场矿区）、turret × portal（炮口陷阱）等——但需要更明确的设计目的
+
+
+## §V1.2.0 结算面板·本局首次发现联动提示（2026-05-02 增补 · Phase β-9）
+
+### 背景
+
+V1.1.7 上线了联动发现追踪 + 图鉴未发现遮罩，但当玩家在战斗中第一次触发某对联动时，没有任何明显反馈——除非他主动按 Y 打开图鉴对比。本次 V1.2.0 在关卡结算面板（VICTORY / CORE DESTROYED）下方加一段「★ 本局首次发现 N 对联动」，让发现追踪闭环。
+
+### 实现
+
+#### 数据层 src/game.ts
+
+`Game` 类新增私有字段 `synergiesAtStart: Set<string>`，初始化时拷贝 `profile.discoveredSynergies` 的快照。当关卡结束（gameOver / levelWon）走到统计保存路径时，对 `state.discoveredSynergies` 与 `synergiesAtStart` 做差集，得到的 id 列表赋给 `ui.newSynergiesThisRun`。
+
+注意：`restart()` 不重置 `synergiesAtStart`——这意味着重开后仍把"首次进入本关至今"作为统计基准；若玩家重开多次仍能累计本次进入关卡以来的所有新发现。
+
+#### UI 层 src/ui.ts
+
+- `UI` 类新增字段 `newSynergiesThisRun: string[]`，由 game 注入
+- 新方法 `drawNewSynergiesBlock(state, baseY)`：在结算面板下方渲染：
+  - 顶行 `★ 本局首次发现 N 对联动`（黄色高亮 22px）
+  - 每条一行：`【模式】 名字  ·  pair`，颜色用 SYNERGIES 中预定义的联动色，与图鉴卡片色一致
+  - 底行 `按 [Y] 查看图鉴`，引导玩家直接打开 V1.1.6 图鉴查看完整描述
+- `drawLevelWon` 与 `drawGameOver` 都在原结算文本下方调用 `drawNewSynergiesBlock`；列表为空时函数早 return，不影响原排版
+
+### 设计取舍
+
+- **只展示「本局首次发现」**：不重复展示已经发现过的联动，避免老玩家每局都看到同样的 6 条；新玩家在前几关每局都会有发现，反馈密集
+- **结算面板而非战斗中弹 toast**：战斗中信息密度已经很高（敌人/炮塔/能量条），首次发现塞在战斗里反而会被错过；放在结算面板上是玩家最专注的时刻
+- **附带引导按 Y**：发现 → 想看详情 → 自然过渡到图鉴，三步漏斗
+- **重开不重置基准**：玩家可能"我就是这关刚发现的，重开几次还想看到这条提示"，保留对玩家更友好；Phase γ 若做更严格的「本次进入关卡以来」可调整
+- **不展示历史已发现总数**：避免和图鉴里的 `已发现 X / 6` 重复
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 115ms，bundle 183.57 KB（V1.1.9 +0.93 KB） |
+| 空列表分支 | OK `drawNewSynergiesBlock` 早 return，不影响原结算面板布局 |
+| 颜色一致性 | OK 用 `SYNERGIES.find(...).color`，与图鉴 / renderer edge 高亮三处统一 |
+| 游戏内手动实测 | TODO 与 V1.1.2-V1.1.9 一并在 L2/L3 回归 |
+
+### 后续
+
+- 闭环了「发现 → 反馈」流程：战斗中没干扰，结算时明确提示，按 Y 看完整图鉴
+- 下一步推荐：
+  1. 联动触发的世界内反馈（节点闪光 / 短促音效），让正在战斗的玩家也有「哦这里发生了什么」感
+  2. L2/L3 实测回归 6 对联动 + V1.2.0 结算面板
+  3. Phase γ：跳出联动主题，做新关卡 / 探索型机制 / 难度选项 / roguelike 化
+
+
+## §V1.2.1 联动首次触发·世界内反馈 Toast（2026-05-02 增补 · Phase β-10）
+
+### 背景
+
+V1.2.0 让玩家在结算面板看到「本局首次发现 N 对联动」，但战斗中触发联动的瞬间没有反馈——玩家可能根本没意识到自己刚刚触发了一对联动。本次 V1.2.1 在战斗世界中加 toast：每次首次触发某对联动时，屏幕中央上方滑入一条用联动色描边的高亮提示。
+
+### 实现
+
+#### 数据通道
+
+- **types.ts**：`GameState` 加 `pendingSynergyEvents: string[]`，作为本帧待派发的「首次发现」事件队列
+- **graph.ts**：新增导出 `markSynergy(state, id)` 工具函数。仅在 `state.discoveredSynergies` 不含 id 时 add 并 push 到 pendingSynergyEvents。重复触发幂等（早 return）。
+- **graph.ts / entities.ts**：6 处原 `state.discoveredSynergies.add(id)` 全部替换为 `markSynergy(state, id)`，行为保持不变只是多了一次首次触发的事件投递
+
+#### 派发与渲染
+
+- **game.ts** loop 主循环：`update(dt)` 之后、`render()` 之前消费一次 `state.pendingSynergyEvents` → 调 `ui.pushSynergyToast(id)` 并清空队列。这样无论 tick 内触发几次（甚至同一帧），UI 收到的都是有序唯一事件。
+- **ui.ts** `pushSynergyToast(id)`：去重（相同 id 已在队列就不重复），最多保留 3 条，复用 `sfxAchievement()` 给出听觉反馈
+- **ui.ts** `updateSynergyToasts(state)`：每帧衰减 timer（4 秒生命周期），按联动颜色描边 + 装饰条，渲染在屏幕中央上方（避开右上角的成就 toast 通道）。入场 0.25 秒上滑 + 出场最后 1 秒渐隐。
+- 显示内容三行：`★ 首次发现联动` / `【模式】 名字  ·  pair`，颜色与图鉴卡片 / edge 高亮一致
+
+### 设计取舍
+
+- **位置选用屏幕中央上方**：右上角已被成就 toast 占用，且联动 toast 比成就更需要被注意（成就玩家会主动追求，联动机制是被动发现）
+- **复用成就音效**：成本最低；后续可以加专属音色，但目前一个明显的"叮"已经足够
+- **4 秒生命周期 + 最多 3 条**：玩家在多个联动同时触发时（比如关 3 一开局就 3 对）不会被刷屏；3 条是经验上界，超过会启用 slice
+- **去重 by id**：避免 graph 在多个 tick 重复 push 同一首次事件（理论上不会，但 markSynergy 保证了一次性，UI 端再做一层防御）
+- **不做节点闪光**：原计划带节点高亮，但 6 对联动节点位置不固定（特别是 portal-interceptor 是动态目标），实现复杂度高且容易遮挡视觉。toast 已经够用，节点闪光留作后续优化项。
+- **复用 markSynergy 而非散落 add 调用**：为后续可能的「联动统计」「联动成就」等扩展点留口；现在所有触发都过一道收口
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 117ms，bundle 184.86 KB（V1.2.0 +1.29 KB） |
+| pendingSynergyEvents 初始化 | OK Game.createInitialState 末尾、benchmark 复用同一构造函数 |
+| markSynergy 替换覆盖 | OK 6 处 add 调用全部替换（5 in graph.ts + 1 in entities.ts） |
+| 重复触发幂等 | OK markSynergy 已有 id 早 return；ui.pushSynergyToast 也有 id 去重 |
+| 队列消费时机 | OK update 之后、render 之前，不会跨帧累积也不会在 paused/gameOver 时重复触发（update 不跑则 graph 不触发也不 push） |
+| 游戏内手动实测 | TODO 与 V1.1.2-V1.2.0 一并在 L2/L3 回归 |
+
+### 后续
+
+- 战斗反馈链已经完整：触发瞬间 toast 提醒 → 关卡结束结算面汇总 → 按 Y 看图鉴详情。三段闭环，不强制阅读。
+- 下一步候选：
+  1. 节点世界内闪光（更强的瞬时视觉），需要在 markSynergy 接口扩展可选节点列表
+  2. 第 7 对联动设计（候选：beacon×magnet 引力侦察 / radar×sniper 远程标记）
+  3. Phase γ：跳出联动主题，做新关卡地图 / 难度选项 / roguelike 化路线
+
+
+## §V1.2.2 联动首次触发·节点闪光增强（2026-05-02 增补 · Phase β-11）
+
+### 背景
+
+V1.2.1 已经在屏幕中央上方加了首次发现 toast，但玩家仍然不能直接看到「是哪两个节点产生了联动」。本次 V1.2.2 在节点本体上加金色脉冲光环，让世界内反馈三段齐全：toast（屏幕通知）+ 节点光环（本体定位）+ 结算面汇总。
+
+### 实现
+
+#### 接口扩展 src/graph.ts
+
+`markSynergy` 签名加可选第三参 `nodes?: GameNode[]`，首次触发时给传入的所有节点设置 `synergyFlash = 1` + 配色。新增局部常量 `SYNERGY_FLASH_COLORS` 把每对联动 id 映射到 #hex 节点光环色，与图鉴 / edge 高亮保持一致：
+
+| id | 颜色 | 说明 |
+|---|---|---|
+| tesla-relay | `#78dcff` | 青蓝 |
+| buffer-collector | `#ffd760` | 金 |
+| portal-interceptor | `#ffaaff` | 粉紫 |
+| shield-repair | `#8cffb4` | 医疗白绿 |
+| energy-buffer | `#c882ff` | 电紫 |
+| relay-energy | `#78c8ff` | 蓝白 |
+
+#### 数据结构 src/types.ts
+
+`GameNode` 加可选字段：
+- `synergyFlash?: number`：剩余闪光强度 0~1
+- `synergyFlashColor?: string`：当前闪光颜色
+
+可选字段不破坏现有节点构造（默认 undefined）。
+
+#### 触发点扩展（5 处 graph.ts + 1 处 entities.ts）
+
+每个 markSynergy 调用都补上参与节点列表：
+- `portal-interceptor`：`[portal, ...synergyInterceptors]`
+- `buffer-collector`：`[collector, ...linkedBuffers]`（linkedBuffers 在循环中收集）
+- `energy-buffer`：`[buffer, energyNode]`
+- `tesla-relay`：`[tesla, relay]`
+- `relay-energy`：`[energyNode, ...involvedRelays]`（involvedRelays 通过 relayUsed 标记筛选）
+- `shield-repair`：`[shield, repair]`（新增 `findShieldRepairLink` 辅助函数返回 repair 节点本身，hasShieldRepairLink 改为内部调用 findShieldRepairLink）
+
+#### 衰减 + 渲染
+
+- **src/game.ts** update 中：`if (node.synergyFlash > 0) node.synergyFlash -= dt / 1.2`（1.2 秒消退）
+- **src/renderer.ts** drawNodes 末尾：当 synergyFlash > 0 时画三层外扩光环 + 内层高亮描边，颜色由 synergyFlashColor 提供，复用 this.withAlpha 工具
+
+### 设计取舍
+
+- **可选字段而非必填**：避免改动既有节点构造代码（NODE_CONFIGS / createNode / createInitialState 等），保持向后兼容
+- **1.2 秒消退**：与 toast 的 4 秒生命周期错开，节点闪光相对短促，不会长时间盖在战斗视觉上
+- **三层外扩光环**：单层环不够明显，三层 + 不同 alpha 营造"波纹扩散"质感；外层先消失内层后消失，主观感受类似"叮"音效
+- **shield-repair 改 findShieldRepairLink**：原 hasShieldRepairLink 只返 boolean，无法定位 repair 节点；拆出 findShieldRepairLink 返回节点，hasShieldRepairLink 复用前者保持向后兼容
+- **节点闪光与首次发现绑定**：仅首次触发时闪一次，后续重复触发不再闪——避免持续战斗中节点反复闪烁干扰
+- **相比 hitFlash 走必填字段路径**：synergyFlash 是稀有事件（最多 6 次/玩家生涯），用可选字段更省内存
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 175ms，bundle 185.78 KB（V1.2.1 +0.92 KB） |
+| 6 个触发点都附带节点列表 | OK |
+| 衰减归零后停止渲染 | OK renderer 只在 synergyFlash > 0 时进入分支 |
+| 与 hitFlash 共存 | OK 两个独立字段独立衰减，渲染时分别叠加 |
+| 颜色统一 | OK SYNERGY_FLASH_COLORS / SYNERGIES.color / renderer edge 三处用同一组色相 |
+| 游戏内手动实测 | TODO 与三段反馈链一同回归 |
+
+### 后续
+
+- Phase β（节点机制纵深）三段反馈完整闭环：toast / 节点光环 / 结算面，玩家从此可以"在战斗中清晰发现联动"
+- 下一步候选：
+  1. 实测回归 V1.2.0-V1.2.2 三段反馈
+  2. 第 7 对联动设计（候选：magnet×radar 重力扫描 - 雷达在磁力场内检测范围 +30%，隶属扩展型）
+  3. Phase γ：跳出联动主题，做新关卡 / 难度选项 / roguelike 化
+
+
+## §V1.2.3 第 7 对联动·magnet × radar 重力扫描（2026-05-02 增补 · Phase β-12）
+
+### 背景
+
+V1.1.6-V1.2.2 共 6 对联动，但「扫描型」主题缺一对——radar 节点在战斗中常被忽略，因为只是辐射式锁敌伤害。给 radar 配一个搭档：磁力塔（magnet）。语义上「磁力场扭曲空间，雷达脉冲沿磁力线扩散」自洽；机制上让 radar 直连同方 magnet 时检测范围 +30%。这是扩展型联动（mode=扩展），与 tesla×relay 链式电网并列。
+
+### 实现
+
+#### src/data/balance.ts
+
+`COMBAT.radar` 新增字段 `synergyMagnetRangeBoost: 0.30`。
+
+#### src/graph.ts
+
+`radarLockDamage(state, radar, …)` 函数开头扫描 edges 找直连同方 magnet：
+```ts
+let magnetLink: GameNode | undefined;
+for (const edge of state.edges) {
+  // 找 sourceId/targetId 匹配 radar.id 的 edge，对端必须是 magnet 且同方
+  // 命中后 break；找到一个就够
+}
+if (magnetLink) {
+  range *= 1 + COMBAT.radar.synergyMagnetRangeBoost;
+  markSynergy(state, 'magnet-radar', [radar, magnetLink]);
+}
+```
+
+`SYNERGY_FLASH_COLORS` 加 `'magnet-radar': '#d09cff'`（紫粉色：取 magnet `#ff44ff` 与 radar `#aaddff` 的中间调）。
+
+#### src/ui.ts
+
+`SYNERGIES[]` 加第 7 条：
+```ts
+{
+  id: 'magnet-radar',
+  pair: 'magnet × radar',
+  name: '重力扫描',
+  mode: '扩展',
+  effect: 'Radar 直连同方 Magnet 时，检测范围 +30%',
+  unlock: '第 3 关「迷雾深处」',
+  color: 'rgba(208, 156, 255, 0.85)',
+}
+```
+
+图鉴 panelH 590 → 670，容纳第 7 张卡片（每卡 80 高 + 78 标题 = 638，留 32 边距）。进度文本 `已发现 X / 7` 自动跟随 `SYNERGIES.length`。
+
+#### src/renderer.ts
+
+`drawEdges` 加 magnet ↔ radar 高亮分支：紫粉色 dash[5,4] 慢呼吸 sin*2.5 偏移 -t*60，速度比 buffer-collector(实线) 慢、比 portal-interceptor 略快，区分度足够。
+
+### 设计取舍
+
+- **扩展型 +30% 而非加成型**：radar 已有 damage 字段，再叠加伤害和 buffer-energy / collector-buffer 重复；扩展范围更符合「磁力场延伸雷达探测」的物理直觉，也是主题区分手段
+- **30% 数值**：参考 tesla-relay（二跳伤害 60% 折损）、buffer-collector（产能 +25%）、energy-relay（+1.5/tick 充能），扩展型属于"质变"取较小数值；30% 让 radar 从 200 扩到 260（普通），从 280 扩到 364（进化），刚好覆盖更多敌人初始入场点
+- **5 类模式齐备**（加成 / 事件 / 扩展 / 减免 / 结构）：第 7 对补强了"扩展"类的代表性（之前只有 tesla-relay 一对）
+- **不做 magnet 节点的反向加成**：保持联动单向，否则计算耦合复杂；玩家可以选「magnet+radar」或「magnet+turret」（减速主义）独立配置
+- **解锁关 L3**：与 portal-interceptor / buffer-collector / shield-repair 同一关解锁。L2 已有 3 对（tesla-relay / energy-buffer / energy-relay），L3 现在 4 对（buffer-collector / portal-interceptor / shield-repair / magnet-radar），梯度自然
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK 0 错误 |
+| `npm run build` | OK 119ms，bundle 186.70 KB（V1.2.2 +0.92 KB） |
+| 5 类模式覆盖 | OK 加成×3 / 事件×1 / 扩展×2 / 减免×1 / 结构×1 |
+| 关卡梯度 | OK L2 3 对 / L3 4 对 |
+| 图鉴 panelH | OK 670 容纳 7 卡，无溢出 |
+| 节点闪光颜色一致性 | OK SYNERGY_FLASH_COLORS / SYNERGIES.color / renderer 三处都用紫粉色相 |
+| 游戏内手动实测 | TODO L3 建一对 magnet+radar，观察 radar 范围确实扩大、节点闪光、toast、结算面 |
+
+### 后续
+
+- 7 对联动 / 5 模式齐全，机制纵深告一段落
+- 下一步候选：
+  1. 实测 V1.2.3 magnet×radar
+  2. **Phase β 总结**：为 V1.1.0-V1.2.3 共 13 个版本写阶段收官文档，包含联动总览表、设计原则提炼、可视化语言总结
+  3. **Phase γ 启动**：跳出联动主题，候选方向：
+     - 关卡地图扩展：第 4-6 关 boss / 特殊机制关
+     - 难度选项（休闲/标准/极限）
+     - roguelike 化：随机化敌人/节点/起点
+     - 元进阶：跨局 perk 解锁
+
+
+## §V1.2.4 滚轮翻页·选卡 + 科技树（2026-04-27 增补 · Phase β-13）
+
+### 背景
+
+V1.2.3 上线后玩家反馈两处可用性卡点：
+1. **选卡界面**：节点池超过单屏行数时，只能键盘 W/S 切换游标触发自动滚动，鼠标用户无法直接滚动行
+2. **科技树面板**：固定 `panelH=440`，第 7-8 项科技超出可视区被裁掉（如 V1.2.x 进阶层 5 项时纳米修复/狙击协议溢出）
+
+### 实现
+
+#### src/node-select.ts
+
+- 新增 `wheelHandler` + `handleWheel()`：`e.deltaY > 0 ? +1 : -1`，`rowOffset` clamp 到 `[0, totalRows-visibleRows]`
+- 在 ctor 注册 `canvas.addEventListener('wheel', ..., { passive: false })`，destroy 时移除
+- `e.preventDefault()` 防止页面整体滚动
+
+#### src/ui.ts
+
+`drawTechPanel` 大改造（自适应高度 + 滚动）：
+
+- 新字段 `private techScrollOffset = 0` / `private techMaxScroll = 0`
+- 计算 `maxTierCount = max(t1, t2, t3)` → `contentH = maxTierCount * 90`
+- `panelH = min(viewportH * 0.85, headerH + contentH + footerH + 10)`
+- `visibleContentH = panelH - headerH - footerH - 10`
+- `techMaxScroll = max(0, contentH - visibleContentH)`
+- 每帧 clamp `techScrollOffset` 到 `[0, techMaxScroll]`
+- 卡片绘制区 `ctx.save() + ctx.rect(...) + ctx.clip()` 限制溢出
+- 卡片 ty 减去 `techScrollOffset`，可见区外 `continue` 跳过（包括点击区注册）
+- Tier 列分割虚线高度跟随 clipH
+- 当 `techMaxScroll > 0`：右侧 4px 紫色滚动条，thumb 高度按比例，标题行尾追加「· 滚轮翻页」提示
+- 新增 public `scrollTechPanel(delta)`：clamp 后写回偏移
+
+#### src/input.ts
+
+`onWheel` 开头加分流：
+```ts
+if (this.techState.showPanel && this.ui) {
+  this.ui.scrollTechPanel(e.deltaY);
+  return;
+}
+// else 镜头 zoom
+```
+
+### 设计取舍
+
+- **选卡用整行步进而非像素滚动**：行高 116+10=126，与一次滚轮 deltaY≈100 不匹配；按行步进保证视觉对齐，没必要中间态
+- **科技树用像素滚动**：tier 列高度独立、卡片高度统一 90，像素滚动允许平滑停在任意位置，配合 clip 不会切到中间卡片导致歧义（玩家能预判下一格）
+- **滚动只在内容溢出时启用**：低分辨率屏（700px+）才会触发，常规 1080p 玩家无感
+- **不引入额外快捷键**：鼠标滚轮是约定俗成手势，不污染 keybinds 表
+- **滚动条放在面板内右侧 4px**：避免遮挡 tier 列内容，紫色与面板主色一致
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK |
+| `npm run build` | OK 161ms，bundle 188.25 KB（V1.2.3 +1.55 KB） |
+| 选卡滚轮：节点 ≤ 单屏 | OK 不响应（maxOffset=0 早返） |
+| 选卡滚轮：节点超过单屏 | OK 一次滚动一行，到顶/底 clamp |
+| 科技树小屏（h=600） | OK panelH 自动收缩 + 显示滚动条 |
+| 科技树大屏（h=1080） | OK panelH=contentH，无滚动条 |
+| 科技树滚动后点击卡片 | OK 命中区随 ty 偏移，可见区外不可点 |
+| 镜头 zoom（科技树关闭时） | OK 行为不变 |
+
+### 后续
+
+- 可选优化：成就面板 / 联动图鉴 / 暂停菜单也可统一接入 `scrollPanel(delta)` 抽象（目前内容未溢出，先不做）
+- 长远：键盘 PageUp/PageDown 翻页（一次跳一屏）
+
+
+## §V1.2.5 修复·主题切换面板键鼠选中失效（2026-04-27 增补 · Phase β-14）
+
+### Bug
+
+V1.2.4 实测时发现：Shift+T 唤出主题选择面板后，**鼠标点击或方向键 + Enter 都无法应用主题**。
+
+### 根因
+
+`theme-picker.ts` 的 `renderList()` 在 mouseenter / 方向键 / themeBus.change 时调用 `panel.innerHTML = ''` 全量重建子节点。鼠标移入 item 0 触发 mouseenter → renderList 重建 DOM → 浏览器把鼠标位置归位到刚出现的新 item 0 → 又触发 mouseenter → 又重建 → **无限循环**。
+
+后果：
+- click 目标在 dispatch 前就被 remove，事件被吞
+- 渲染线程被 mouseenter 风暴占用，键盘 Enter 即便能执行 applyTheme 也很容易被覆盖
+
+### 修复
+
+`theme-picker.ts` 把 `renderList()` 拆成两个职责：
+
+1. **`buildList()`** — 仅在 open / 主题色变化时调用。一次性创建 item DOM 并缓存到 `itemEls: HTMLDivElement[]`
+2. **`updateItemStyles()`** — mouseenter / ArrowUp/Down 时调用。遍历 `itemEls` 仅更新 `textContent / color / background / border`，不增删 DOM
+
+调用点替换：
+- `mouseenter` → `updateItemStyles()`（且加 `if (highlightIdx !== i)` 早返）
+- `ArrowUp/Down` → `updateItemStyles()`
+- `themeBus.change` → `buildList()`（颜色 token 变更，整体重建无副作用）
+
+### 验证
+
+| 项目 | 结果 |
+|---|---|
+| TypeScript 类型检查 | OK |
+| `npm run build` | OK 111ms，bundle 188.44 KB（V1.2.4 +0.19 KB） |
+| Shift+T 唤出面板 | OK |
+| 鼠标 hover 切换高亮 | OK 不再 mouseenter 风暴 |
+| 鼠标点击 → 应用主题 + 关闭 | OK |
+| ArrowUp/Down + Enter → 应用主题 | OK |
+| Esc / 点击遮罩关闭 | OK |
+| 主题应用后面板配色实时刷新 | OK（buildList 重建走完整路径） |
+
+### 取舍
+
+- 不引入 throttle / requestAnimationFrame 节流：根因是 DOM 自销毁，节流只能掩盖；保留 DOM + 局部更新是正解
+- 早返 `if (highlightIdx !== i)`：即便没有 mouseenter 风暴，重复 highlight 同一项也无意义
+- `buildList()` 仍保留全量重建以便 themeBus.change 时同步标题色和提示色——这条路径每次手动切主题只触发一次，无风险
+
+## V1.2.6 — 敌人空间索引网格（狙击索敌 O(N²) → O(k)）
+
+### 背景
+- 玩家反馈：场上节点变多（特别是狙击 / 雷达 / 塔阵）+ 敌人波次变密时，每帧帧率明显下降。
+- 根因：`graph.ts` 内多个攻击 / 减速 / 引力 / 检测函数都用 `for (const enemy of state.enemies)` 全表扫描判定半径；节点数 × 敌人数的二次复杂度在中后期关卡叠满。
+- 目标：在不改函数签名、不动战斗数值的前提下，把"按节点位置在半径内找敌人"这类高频查询从 O(N) 降到平均 O(k)（k 为命中半径覆盖的格子内敌人数）。
+
+### 实现
+1. 新增 `src/spatial-grid.ts`：
+   - 类 `EnemyGrid`，单元格大小 `cellSize = 160`（略大于多数塔的 `baseRange`，让一次半径查询通常仅命中 4 格）。
+   - 哈希键 `cx * 100000 + (cy + 50000)` 支持负坐标，使用 `Map<number, Enemy[]>` 稀疏存储。
+   - `build(enemies)`：跳过 `hp<=0`，按 `floor(x/cellSize)`、`floor(y/cellSize)` 分桶。
+   - `query(x, y, range)`：返回查询点附近 4 格联合的新数组（独立数组允许嵌套查询同时进行）。调用方仍需自己用 `dist()` 精筛。
+2. `graph.ts` 注入：
+   - 模块级 `enemyGrid` 单例 + `gridReady` 标志 + `queryEnemies(x, y, r, all)` 兜底（`gridReady=false` 时直接返回 `state.enemies`，保证安全降级）。
+   - `processNodeEffects` 入口 `enemyGrid.build(state.enemies); gridReady = true;`，末尾 `gridReady = false;`。
+3. 迁移到 `queryEnemies(...)` 的热函数共 12 个：
+   - 战斗类：`fireSniper`（主目标 + 进化死神击杀溅射）、`fireTurret`（主目标 + 狙击炮 AoE 进化）、`radarLockDamage`、`kamikazeDetonate`、`arcChainLightning`（首目标 + 每次 bounce）、`toxinCloud`（主循环 + 进化死亡扩散嵌套）、`blackholeGravity`、`fireInterceptor`（超载 + 普通保护友军）、`factoryAttack`（最近敌人 + AoE）、`trapDetonate`（检测 + 爆炸）。
+   - 控制类：`magnetSlowEnemies` / `overchargeMagnetSlow` / `evolvedMagnetPull`。
+   - 工具类：`portalTeleport`（先粗筛再 `filter`）、`collectorHarvest`（仅计数）。
+4. 不迁移：`teslaDamageEnemies`（用 `pointToSegmentDist` 线段距离，不适合点-半径网格）；进化 tesla chain 内层（小规模 `hitEnemies` 集合）。
+
+### 取舍
+- `cellSize=160` 是经验值：再大则单格敌人多、过滤浪费；再小则单查询命中格数变多，Map lookup 开销上升。
+- 用 `Map` 稀疏存储而非二维 `Array<Array>`，避免世界放大后空格占用内存。
+- `query` 每次 `new Array`：嵌套调用（如狙击溅射 / 毒雾扩散）需要独立结果，避免共享缓存被覆盖。
+- 未做视口裁剪 / 节点端缓存：留待 V1.2.7（如果实测仍卡顿再加）。
+
+### 验证
+- `tsc` 全绿；`vite build` 成功，bundle 188.44 KB → 189.55 KB（+1.11 KB，新文件 spatial-grid.ts）。
+- 战斗逻辑零改动：所有 `queryEnemies(...)` 输出都进入与原先相同的 `dist()` 精筛分支，命中半径与伤害公式不变。
+- dev server 启动正常（`http://localhost:5173/Starfield_Nodes/`），可手动开局摆狙击群验证视觉无差。
+
+### 后续
+- V1.2.7：UI 布局优化（节点选择面板、技能树、HUD 间距）。
+- V1.3.0：地形系统（手写多边形顶点 + 星云特效区域 + 关卡固定刷新 + 仅禁建）。
+
+## V1.2.7 — HUD 自适应布局 + 按钮可点击 + 底部状态栏动态列宽
+
+### 背景
+V1.2.6 之前 HUD 各项硬编码 `x=12,170,300,420,540,680,820`，长字符串（如 ⚠ 警告）会与右侧的 TICK / SEED 重叠；中部 [T] 科技树 与 ▶×N 加速按钮无视觉边框，可点击性差；底部状态栏 `colW` 写死为 140，导致窄屏右半部分挤压 / 宽屏左半部分留白。本版围绕这三处做布局自适应。
+
+### 实现
+1. `src/ui.ts` `drawHUD` 完全重写（约 L221–L310）：
+   - 左侧用 `leftItems` 数组 + `cursorX` 累加：每项 `ctx.measureText` 之后 `cursorX += textWidth + 24`，最小步进 110px；依次渲染 WAVE / ★ / ◆ / ✧ / ⚠。
+   - 右侧 TICK / SEED 占位计算 `rightCursor`（从右往左排）。
+   - 中右两个圆角按钮（`btnH=32`、`btnGap=10`）：[T] 科技树（紫色 `rgba(160,100,220,0.15)` 填充 + 描边）、▶×N（active 黄 / inactive 灰）。
+   - 防重叠：`ttXFinal = Math.max(ttX, cursorX + 16)` 与 `tsXFinal = ttXFinal + ttBtnW + btnGap`，再保证不越过 `rightCursor - 16`。
+   - 两个按钮注册到 `this.nodeButtons` 并打 `action`：`tech_tree` / `time_scale`。
+2. `src/input.ts` (L165–L185) 在 `time_scale` 命中检测之后追加：
+   ```ts
+   const ttBtn = this.ui.nodeButtons.find(b => b.action === 'tech_tree' && ...);
+   if (ttBtn) {
+     this.techState.showPanel = !this.techState.showPanel;
+     if (this.techState.showPanel) this.state.paused = true;
+     return;
+   }
+   ```
+   实现 [T] 按钮点击切换科技树面板（与 `T` 键效果一致）。
+3. `src/ui.ts` 底部状态栏 `colW` 改为动态（约 L693–L700）：
+   ```ts
+   const rightReserve = 660;
+   const availW = Math.max(200, state.canvasWidth - rightReserve - startX);
+   const colW = Math.max(110, Math.min(140, Math.floor(availW / Math.max(1, half))));
+   ```
+   保证左半列宽随画布宽度伸缩、不再固定 140。
+
+### 取舍
+- 保留 `nodeButtons` 这个统一数组而非新建 `hudButtons`：input 已有遍历逻辑，复用最简单；新 button 用 `action` 字段区分。
+- HUD 按钮宽度按内容而非固定文本宽：`Math.max(72, textW + 22)`，避免 i18n 后被截断。
+- `rightReserve = 660` 是经验值（覆盖 6 列 + 边距 + 滚动条），后续若底部新增列再调。
+
+### 验证
+- `tsc` 全绿；`vite build` 成功，bundle 189.55 KB → 190.54 KB（+0.99 KB）。
+- HMR 热更新可即时看到布局变化；headless Playwright 因 canvas 事件分发与 dev server HMR 状态冲突，本版未做自动截图，留作后续手动浏览器验证。
+
+### 后续
+- V1.2.8（候选）：节点选择面板长列表性能 / 技能树面板视觉细节 / 更多 HUD 国际化。
+- V1.3.0：地形系统（手写多边形顶点 + 星云特效区域 + 关卡固定刷新 + 仅禁建）。

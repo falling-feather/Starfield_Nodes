@@ -30,6 +30,8 @@ export class UI {
   levelObjectiveText: string = '';
   /** 当前展示的成就通知队列 */
   private toasts: AchToast[] = [];
+  /** V1.2.1：联动首次发现的世界内 toast 队列 */
+  private synergyToasts: { id: string; timer: number }[] = [];
   /** 显示成就面板 */
   showAchievementPanel: boolean = false;
   /** 显示快捷键设置面板 */
@@ -42,12 +44,18 @@ export class UI {
   unlockedAchievements: string[] = [];
   /** V1.1.7：存档已发现的联动 id（由外部设置） */
   discoveredSynergies: Set<string> = new Set();
+  /** V1.2.0：本局首次发现的联动 id 列表（结算面展示） */
+  newSynergiesThisRun: string[] = [];
   /** 当前选中的连线类型（由InputManager同步） */
   selectedEdgeType: EdgeType = 'standard';
   /** 节点面板按钮命中区域（屏幕坐标） */
   nodeButtons: { action: string; x: number; y: number; w: number; h: number; enabled: boolean }[] = [];
   /** 科技树卡片点击区（V1.0.6）：drawTechPanel 负责填充，input.ts 负责命中检测 */
   techCardAreas: { idx: number; techId: string; x: number; y: number; w: number; h: number; available: boolean; unlocked: boolean }[] = [];
+  /** V1.2.4：科技树滚动偏移（像素），由 input wheel 调整 */
+  private techScrollOffset = 0;
+  /** V1.2.4：科技树最大可滚动距离（drawTechPanel 内更新） */
+  private techMaxScroll = 0;
 
   // ── V1.1.0 暂停菜单 ──
   /** 暂停菜单是否打开（独立于 state.paused：菜单打开 → state.paused = true，但 P 键暂停不会打开菜单） */
@@ -175,6 +183,9 @@ export class UI {
 
     // 成就通知 Toast
     this.updateToasts(state);
+
+    // V1.2.1：联动首次发现 Toast
+    this.updateSynergyToasts(state);
   }
 
   /** 面板淡入淡出曲线 easeOutCubic */
@@ -208,55 +219,87 @@ export class UI {
     ctx.font = FONT.xl;
     ctx.textBaseline = 'middle';
 
-    // 波次
-    ctx.fillStyle = COLORS.accent.cyan;
+    // V1.2.7：根据画布宽度自适应分布——左组（指标）、中右组（按钮）、最右（TICK/SEED）
+    const W = state.canvasWidth;
+    const leftItems: { text: string; color: string }[] = [
+      { text: `⟨ WAVE ${state.wave} ⟩`, color: COLORS.accent.cyan },
+      { text: `★ ${state.score}`, color: COLORS.accent.yellow },
+      { text: `◆ ${Math.floor(state.resources)}`, color: COLORS.accent.green },
+      { text: `✧ ${Math.floor(state.crystals)}`, color: COLORS.accent.crystal },
+      { text: `⚠ ${state.enemies.length}`, color: COLORS.accent.red },
+    ];
+    // 测量每项宽度，统一最小列宽 + 自适应间距
+    let cursorX = 14;
     ctx.textAlign = 'left';
-    ctx.fillText(`⟨ WAVE ${state.wave} ⟩`, 12, 25);
-
-    // 分数
-    ctx.fillStyle = COLORS.accent.yellow;
-    ctx.fillText(`★ ${state.score}`, 170, 25);
-
-    // 资源
-    ctx.fillStyle = COLORS.accent.green;
-    ctx.fillText(`◆ ${Math.floor(state.resources)}`, 300, 25);
-
-    // 晶体
-    ctx.fillStyle = COLORS.accent.crystal;
-    ctx.fillText(`✧ ${Math.floor(state.crystals)}`, 420, 25);
-
-    // 敌人数
-    ctx.fillStyle = COLORS.accent.red;
-    ctx.fillText(`⚠ ${state.enemies.length}`, 540, 25);
-
-    // 科技树按钮
-    ctx.fillStyle = COLORS.accent.purple;
-    ctx.fillText(`[T] 科技树`, 680, 25);
-
-    // 时间加速（可点击）
-    const tsX = 820;
-    const tsW = 80;
-    if (state.timeScale > 1) {
-      ctx.fillStyle = COLORS.accent.yellowHi;
-      ctx.fillText(`▶▶ ×${state.timeScale}`, tsX + 10, 25);
-    } else {
-      ctx.fillStyle = COLORS.text.disabled;
-      ctx.fillText(`▶ ×1`, tsX + 10, 25);
+    for (const it of leftItems) {
+      ctx.fillStyle = it.color;
+      ctx.fillText(it.text, cursorX, 25);
+      const w = ctx.measureText(it.text).width;
+      cursorX += Math.max(w + 24, 110);
     }
-    this.nodeButtons.push({ action: 'time_scale', x: tsX, y: 0, w: tsW, h: 50, enabled: true });
 
-    // Tick
+    // 右侧 TICK + SEED（先布局以便按钮组能据此向左排列）
     ctx.fillStyle = COLORS.text.faint;
     ctx.textAlign = 'right';
-    ctx.fillText(`TICK ${state.tick}`, state.canvasWidth - 12, 25);
-
-    // Seed 标识（仅在注入了 seed 时显示，benchmark 复现可视）
+    ctx.fillText(`TICK ${state.tick}`, W - 14, 25);
+    const tickW = ctx.measureText(`TICK ${state.tick}`).width;
+    let rightCursor = W - 14 - tickW - 18;
     const seed = getSeed();
     if (seed !== 0) {
-      ctx.fillStyle = COLORS.accent.purple;
       ctx.font = FONT.md;
-      ctx.fillText(`SEED ${seed}`, state.canvasWidth - 120, 25);
+      ctx.fillStyle = COLORS.accent.purple;
+      ctx.fillText(`SEED ${seed}`, rightCursor, 25);
+      rightCursor -= ctx.measureText(`SEED ${seed}`).width + 18;
+      ctx.font = FONT.xl;
     }
+
+    // 中右按钮组：[T]科技树 + 时间加速（带圆角边框，可点击）
+    ctx.textAlign = 'left';
+    const btnH = 32;
+    const btnY = 25 - btnH / 2;
+    const btnGap = 10;
+
+    // 时间加速按钮
+    const tsLabel = state.timeScale > 1 ? `▶▶ ×${state.timeScale}` : `▶ ×1`;
+    const tsTextW = ctx.measureText(tsLabel).width;
+    const tsW = tsTextW + 24;
+    // 科技树按钮
+    const ttLabel = `[T] 科技树`;
+    const ttTextW = ctx.measureText(ttLabel).width;
+    const ttW = ttTextW + 24;
+
+    // 从右往左排：先 ts 再 tt
+    const tsX = rightCursor - tsW;
+    const ttX = tsX - btnGap - ttW;
+    // 防止与左侧指标重叠
+    const minBtnX = cursorX + 16;
+    const ttXFinal = Math.max(ttX, minBtnX);
+    const tsXFinal = ttXFinal + ttW + btnGap;
+
+    // 科技树按钮（可点击）
+    ctx.fillStyle = 'rgba(160, 100, 220, 0.15)';
+    this.roundRect(ctx, ttXFinal, btnY, ttW, btnH, 6);
+    ctx.fill();
+    ctx.strokeStyle = COLORS.accent.purple;
+    ctx.lineWidth = 1;
+    this.roundRect(ctx, ttXFinal, btnY, ttW, btnH, 6);
+    ctx.stroke();
+    ctx.fillStyle = COLORS.accent.purple;
+    ctx.fillText(ttLabel, ttXFinal + 12, 25);
+    this.nodeButtons.push({ action: 'tech_tree', x: ttXFinal, y: btnY, w: ttW, h: btnH, enabled: true });
+
+    // 时间加速按钮
+    const tsActive = state.timeScale > 1;
+    ctx.fillStyle = tsActive ? 'rgba(255, 220, 80, 0.18)' : 'rgba(120, 120, 120, 0.10)';
+    this.roundRect(ctx, tsXFinal, btnY, tsW, btnH, 6);
+    ctx.fill();
+    ctx.strokeStyle = tsActive ? COLORS.accent.yellowHi : COLORS.border.cyanFaint;
+    ctx.lineWidth = 1;
+    this.roundRect(ctx, tsXFinal, btnY, tsW, btnH, 6);
+    ctx.stroke();
+    ctx.fillStyle = tsActive ? COLORS.accent.yellowHi : COLORS.text.disabled;
+    ctx.fillText(tsLabel, tsXFinal + 12, 25);
+    this.nodeButtons.push({ action: 'time_scale', x: tsXFinal, y: btnY, w: tsW, h: btnH, enabled: true });
 
     ctx.restore();
   }
@@ -676,11 +719,14 @@ export class UI {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
 
-    // 动态分两排
+    // V1.2.7：动态列宽——按当前节点选择数量与可用宽度自适应
     const half = Math.ceil(buildTypes.length / 2);
     const row1 = buildTypes.slice(0, half);
     const row2 = buildTypes.slice(half);
-    const colW = 130;
+    // 右侧帮助文字预留宽度
+    const rightReserve = 660;
+    const availW = Math.max(200, state.canvasWidth - rightReserve - startX);
+    const colW = Math.max(110, Math.min(140, Math.floor(availW / Math.max(1, half))));
 
     for (let i = 0; i < row1.length; i++) {
       const bt = row1[i];
@@ -786,7 +832,24 @@ export class UI {
     const cx = state.canvasWidth / 2;
     const cy = state.canvasHeight / 2;
     const panelW = 600;
-    const panelH = 440;
+    const headerH = 70;   // 标题 + 资源行
+    const footerH = 18;   // 底部内边距 + 滚动提示
+    const cardH = 75;
+    const cardGap = 15;   // 90 - 75
+    // 按 tier 分组（与下方一致）
+    const treeAll = this.techState.tree;
+    const t1c = treeAll.filter(t => t.requires.length === 0).length;
+    const t2c = treeAll.filter(t => t.requires.length === 1).length;
+    const t3c = treeAll.filter(t => t.requires.length >= 2).length;
+    const maxTierCount = Math.max(t1c, t2c, t3c);
+    const contentH = maxTierCount * (cardH + cardGap);
+    const maxPanelH = Math.floor(state.canvasHeight * 0.85);
+    const panelH = Math.min(maxPanelH, headerH + contentH + footerH + 10);
+    const visibleContentH = panelH - headerH - footerH - 10;
+    this.techMaxScroll = Math.max(0, contentH - visibleContentH);
+    if (this.techScrollOffset > this.techMaxScroll) this.techScrollOffset = this.techMaxScroll;
+    if (this.techScrollOffset < 0) this.techScrollOffset = 0;
+
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
 
@@ -810,7 +873,8 @@ export class UI {
 
     ctx.font = FONT.base;
     ctx.fillStyle = COLORS.text.faint;
-    ctx.fillText(`◆ ${Math.floor(state.resources)} 可用资源  ·  鼠标点击 / 数字键研究 (1-9, 0)  ·  [Esc] 关闭`, cx, py + 46);
+    const hint = this.techMaxScroll > 0 ? '  ·  滚轮翻页' : '';
+    ctx.fillText(`◆ ${Math.floor(state.resources)} 可用资源  ·  鼠标点击 / 数字键研究 (1-9, 0)  ·  [Esc] 关闭${hint}`, cx, py + 46);
 
     // 重置点击区【V1.0.6】
     this.techCardAreas = [];
@@ -818,7 +882,7 @@ export class UI {
     // 绘制各科技节点
     const tree = this.techState.tree;
     const colW = panelW / 3;
-    const startY = py + 70;
+    const startY = py + headerH;
 
     // 按 tier 分组
     const tier1 = tree.filter(t => t.requires.length === 0);
@@ -827,23 +891,40 @@ export class UI {
     const tiers = [tier1, tier2, tier3];
     const tierLabels = ['基 础', '进 阶', '高 级'];
 
+    // Tier 标签（不参与滚动）
+    for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
+      const tierX = px + tierIdx * colW;
+      const tierCx = tierX + colW / 2;
+      ctx.fillStyle = COLORS.text.border;
+      ctx.font = FONT.md;
+      ctx.textAlign = 'center';
+      ctx.fillText(tierLabels[tierIdx], tierCx, startY - 8);
+    }
+
+    // 卡片区裁剪 + 滚动
+    const clipY = startY + 4;
+    const clipH = visibleContentH;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(px, clipY, panelW, clipH);
+    ctx.clip();
+
     for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
       const tier = tiers[tierIdx];
       const tierX = px + tierIdx * colW;
       const tierCx = tierX + colW / 2;
 
-      // Tier 标签
-      ctx.fillStyle = COLORS.text.border;
-      ctx.font = FONT.md;
-      ctx.textAlign = 'center';
-      ctx.fillText(tierLabels[tierIdx], tierCx, startY - 8);
-
       for (let i = 0; i < tier.length; i++) {
         const tech = tier[i];
-        const ty = startY + 10 + i * 90;
+        const ty = startY + 10 + i * (cardH + cardGap) - this.techScrollOffset;
         const cardW = colW - 20;
-        const cardH = 75;
         const cardX = tierCx - cardW / 2;
+
+        // 视口剔除（不影响命中区，命中区也用滚动后坐标即可）
+        if (ty + cardH < clipY || ty > clipY + clipH) {
+          // 仍然不记录命中区（不可见就别点）
+          continue;
+        }
 
         const available = canResearch(tech, this.techState, state.resources);
 
@@ -919,21 +1000,42 @@ export class UI {
         }
       }
 
-      // 绘制 tier 之间的连接线
+      // 绘制 tier 之间的连接线（也在裁剪区内随滚动）
       if (tierIdx < tiers.length - 1) {
         ctx.strokeStyle = COLORS.text.borderFaint;
         ctx.lineWidth = 0.5;
         ctx.setLineDash([3, 3]);
         const lineX = tierX + colW;
         ctx.beginPath();
-        ctx.moveTo(lineX, startY);
-        ctx.lineTo(lineX, startY + 280);
+        ctx.moveTo(lineX, clipY);
+        ctx.lineTo(lineX, clipY + clipH);
         ctx.stroke();
         ctx.setLineDash([]);
       }
     }
 
+    ctx.restore(); // 解除裁剪
+
+    // 滚动条（仅当可滚动时）
+    if (this.techMaxScroll > 0) {
+      const sbX = px + panelW - 6;
+      const sbY = clipY;
+      const sbH = clipH;
+      ctx.fillStyle = 'rgba(170,68,255,0.15)';
+      ctx.fillRect(sbX, sbY, 4, sbH);
+      const thumbH = Math.max(20, sbH * (clipH / contentH));
+      const thumbY = sbY + (sbH - thumbH) * (this.techScrollOffset / this.techMaxScroll);
+      ctx.fillStyle = COLORS.accent.purple;
+      ctx.fillRect(sbX, thumbY, 4, thumbH);
+    }
+
     ctx.restore();
+  }
+
+  /** V1.2.4：滚动科技树面板，由 input wheel 调用。delta 为像素，正值向下。 */
+  scrollTechPanel(delta: number): void {
+    if (!this.techState || !this.techState.showPanel) return;
+    this.techScrollOffset = Math.max(0, Math.min(this.techMaxScroll, this.techScrollOffset + delta));
   }
 
   private drawGameOver(state: GameState): void {
@@ -964,6 +1066,9 @@ export class UI {
     ctx.fillStyle = COLORS.text.muted;
     ctx.font = '21px monospace';
     ctx.fillText('[R] 重新开始', state.canvasWidth / 2, state.canvasHeight / 2 + 90);
+
+    // V1.2.0：本局首次发现的联动
+    this.drawNewSynergiesBlock(state, state.canvasHeight / 2 + 130);
 
     ctx.restore();
   }
@@ -999,7 +1104,38 @@ export class UI {
     ctx.font = '21px monospace';
     ctx.fillText('即将返回关卡选择...', state.canvasWidth / 2, state.canvasHeight / 2 + 90);
 
+    // V1.2.0：本局首次发现的联动
+    this.drawNewSynergiesBlock(state, state.canvasHeight / 2 + 130);
+
     ctx.restore();
+  }
+
+  /** V1.2.0：在结算面板下方展示「本局首次发现的联动」 */
+  private drawNewSynergiesBlock(state: GameState, baseY: number): void {
+    const list = this.newSynergiesThisRun;
+    if (!list || list.length === 0) return;
+    const ctx = this.ctx;
+    const cx = state.canvasWidth / 2;
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 22px monospace';
+    ctx.fillStyle = COLORS.accent.yellowHi;
+    ctx.fillText(`★ 本局首次发现 ${list.length} 对联动`, cx, baseY);
+
+    ctx.font = FONT.base;
+    ctx.fillStyle = COLORS.text.high;
+    let y = baseY + 28;
+    for (const id of list) {
+      const s = this.SYNERGIES.find(x => x.id === id);
+      if (!s) continue;
+      ctx.fillStyle = s.color;
+      ctx.fillText(`【${s.mode}】 ${s.name}  ·  ${s.pair}`, cx, y);
+      y += 22;
+    }
+    ctx.fillStyle = COLORS.text.muted;
+    ctx.font = FONT.sm;
+    ctx.fillText(`按 [${(getKey('synergy') || 'y').toUpperCase()}] 查看图鉴`, cx, y + 6);
   }
 
   private drawPaused(state: GameState): void {
@@ -1165,6 +1301,74 @@ export class UI {
     ctx.restore();
   }
 
+  /** V1.2.1：由 Game 在 tick 后调用，把首次发现的联动加入世界 toast 队列 */
+  pushSynergyToast(id: string): void {
+    // 避免重复（同一 id 短时间内多次 push）
+    if (this.synergyToasts.some(t => t.id === id)) return;
+    this.synergyToasts.push({ id, timer: 4 });
+    if (this.synergyToasts.length > 3) this.synergyToasts = this.synergyToasts.slice(-3);
+    sfxAchievement(); // 复用成就音效，给玩家明确反馈
+  }
+
+  /** V1.2.1：渲染并衰减联动首次发现 Toast，位置在屏幕中央上方，避免与右侧成就 toast 抢位 */
+  private updateSynergyToasts(state: GameState): void {
+    if (this.synergyToasts.length === 0) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.shadowBlur = 0;
+
+    const toastW = 360;
+    const toastH = 56;
+    const startY = 70;
+    const cx = state.canvasWidth / 2;
+
+    for (let i = this.synergyToasts.length - 1; i >= 0; i--) {
+      const toast = this.synergyToasts[i];
+      toast.timer -= 1 / 60;
+      if (toast.timer <= 0) {
+        this.synergyToasts.splice(i, 1);
+        continue;
+      }
+      const s = this.SYNERGIES.find(x => x.id === toast.id);
+      if (!s) continue;
+
+      // 入场上滑动 + 出场渐隐
+      const inT = Math.min(1, (4 - toast.timer) / 0.25);
+      const eased = 1 - Math.pow(1 - inT, 3);
+      const alpha = Math.min(1, toast.timer);
+      const idx = this.synergyToasts.length - 1 - i;
+      const tx = cx - toastW / 2;
+      const ty = startY + idx * (toastH + 6) - (1 - eased) * 10;
+
+      ctx.globalAlpha = alpha;
+      // 背景：使用联动主题色边框
+      ctx.fillStyle = 'rgba(15,8,30,0.92)';
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 2;
+      ctx.fillRect(tx, ty, toastW, toastH);
+      ctx.strokeRect(tx, ty, toastW, toastH);
+
+      // 左侧装饰条
+      ctx.fillStyle = s.color;
+      ctx.fillRect(tx, ty, 4, toastH);
+
+      // 标题
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 16px monospace';
+      ctx.fillStyle = s.color;
+      ctx.fillText(`★ 首次发现联动`, tx + 14, ty + 16);
+
+      // 名称 + 模式
+      ctx.font = FONT.md;
+      ctx.fillStyle = COLORS.text.high;
+      ctx.fillText(`【${s.mode}】 ${s.name}  ·  ${s.pair}`, tx + 14, ty + 38);
+
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
   // ───── 成就面板 ─────
 
   private drawAchievementPanel(state: GameState): void {
@@ -1304,6 +1508,15 @@ export class UI {
       unlock: '第 2 关「关键防线」',
       color: 'rgba(120, 200, 255, 0.85)',
     },
+    {
+      id: 'magnet-radar',
+      pair: 'magnet × radar',
+      name: '重力扫描',
+      mode: '扩展',
+      effect: 'Radar 直连同方 Magnet 时，检测范围 +30%',
+      unlock: '第 3 关「迷雾深处」',
+      color: 'rgba(208, 156, 255, 0.85)',
+    },
   ];
 
   private drawSynergyPanel(state: GameState): void {
@@ -1313,7 +1526,7 @@ export class UI {
     const cx = state.canvasWidth / 2;
     const cy = state.canvasHeight / 2;
     const panelW = 600;
-    const panelH = 590;
+    const panelH = 670;
     const px = cx - panelW / 2;
     const py = cy - panelH / 2;
 

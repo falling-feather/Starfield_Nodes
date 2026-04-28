@@ -45,6 +45,8 @@ export class Game {
   private onExitToTitle: (() => void) | null = null;
   private boundResize: (() => void) | null = null;
   private noCoreDamage: boolean = true;
+  /** V1.2.0：本局开始前已发现的联动 id，用于结算面计算「本局首次发现」 */
+  private synergiesAtStart: Set<string> = new Set();
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -70,6 +72,7 @@ export class Game {
     this.ui.techState = this.techState;
     this.ui.unlockedAchievements = this.profile.unlockedAchievements ?? [];
     this.ui.discoveredSynergies = new Set(this.profile.discoveredSynergies ?? []);
+    this.synergiesAtStart = new Set(this.profile.discoveredSynergies ?? []);
     this.input = new InputManager(
       this.canvas,
       this.state,
@@ -155,6 +158,7 @@ export class Game {
       nodesBuilt: 0,
       resourcesSpent: 0,
       discoveredSynergies: new Set<string>(this.profile.discoveredSynergies ?? []),
+      pendingSynergyEvents: [],
     };
   }
 
@@ -238,6 +242,14 @@ export class Game {
       this.update(dt);
     }
 
+    // V1.2.1：消费本帧的「首次发现联动」事件，派发为世界内 toast
+    if (this.state.pendingSynergyEvents.length > 0) {
+      for (const id of this.state.pendingSynergyEvents) {
+        this.ui.pushSynergyToast(id);
+      }
+      this.state.pendingSynergyEvents.length = 0;
+    }
+
     // 游戏结束或关卡胜利时保存统计 + 成就检测
     if ((this.state.gameOver || this.state.levelWon) && !this.statsSaved) {
       this.statsSaved = true;
@@ -286,6 +298,13 @@ export class Game {
         }
       }
       this.ui.discoveredSynergies = new Set(this.profile.discoveredSynergies);
+
+      // V1.2.0：计算本局首次发现的联动 id，供结算面展示
+      const newSynergies: string[] = [];
+      for (const id of this.state.discoveredSynergies) {
+        if (!this.synergiesAtStart.has(id)) newSynergies.push(id);
+      }
+      this.ui.newSynergiesThisRun = newSynergies;
 
       saveProfile(this.profile);
       if (this.onLevelEnd) {
@@ -407,6 +426,10 @@ export class Game {
     for (const node of this.state.nodes) {
       if (node.hitFlash > 0) {
         node.hitFlash = Math.max(0, node.hitFlash - 3 * dt);
+      }
+      // V1.2.2：联动闪光衰减（1.2 秒消退）
+      if (node.synergyFlash !== undefined && node.synergyFlash > 0) {
+        node.synergyFlash = Math.max(0, node.synergyFlash - dt / 1.2);
       }
     }
     for (const enemy of this.state.enemies) {

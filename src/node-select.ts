@@ -17,6 +17,7 @@ export class NodeSelectScreen {
   private time = 0;
   private keyHandler: (e: KeyboardEvent) => void;
   private clickHandler: (e: MouseEvent) => void;
+  private wheelHandler: (e: WheelEvent) => void;
   /** 节点卡片点击区域 */
   private cardAreas: { idx: number; x: number; y: number; w: number; h: number }[] = [];
   /** 确认按钮区域 */
@@ -42,15 +43,28 @@ export class NodeSelectScreen {
 
     this.keyHandler = (e: KeyboardEvent) => this.handleKey(e);
     this.clickHandler = (e: MouseEvent) => this.handleClick(e);
+    this.wheelHandler = (e: WheelEvent) => this.handleWheel(e);
     window.addEventListener('keydown', this.keyHandler);
     this.canvas.addEventListener('click', this.clickHandler);
+    this.canvas.addEventListener('wheel', this.wheelHandler, { passive: false });
     this.loop();
   }
 
   private destroy(): void {
     window.removeEventListener('keydown', this.keyHandler);
     this.canvas.removeEventListener('click', this.clickHandler);
+    this.canvas.removeEventListener('wheel', this.wheelHandler);
     cancelAnimationFrame(this.animFrameId);
+  }
+
+  private handleWheel(e: WheelEvent): void {
+    e.preventDefault();
+    const { cols, visibleRows } = this.getGridMetrics();
+    const totalRows = Math.ceil(this.available.length / cols);
+    const maxOffset = Math.max(0, totalRows - visibleRows);
+    if (maxOffset <= 0) return;
+    const dir = e.deltaY > 0 ? 1 : -1;
+    this.rowOffset = Math.max(0, Math.min(maxOffset, this.rowOffset + dir));
   }
 
   private handleKey(e: KeyboardEvent): void {

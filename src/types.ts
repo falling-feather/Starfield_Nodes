@@ -33,6 +33,10 @@ export interface GameNode {
   expanded: boolean;
   /** 受击闪红强度 0~1，每帧衰减 */
   hitFlash: number;
+  /** V1.2.2：联动首次触发闪光强度 0~1，每帧衰减；用于在节点周围画一圈金色脉冲环 */
+  synergyFlash?: number;
+  /** V1.2.2：当前 synergyFlash 对应的联动颜色（用于渲染光环） */
+  synergyFlashColor?: string;
 }
 
 // ===== 领地系统 =====
@@ -172,6 +176,8 @@ export interface GameState {
   resourcesSpent: number;
   /** V1.1.7：已发现的联动 id 集合（跨局永久） */
   discoveredSynergies: Set<string>;
+  /** V1.2.1：本帧待处理的「首次发现」事件，由 graph/entities push、game.ts 在 tick 后消费给 UI 派发 toast */
+  pendingSynergyEvents: string[];
 }
 
 /** 漂浮星云 — 暂时遮挡视野 */

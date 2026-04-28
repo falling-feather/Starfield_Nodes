@@ -581,6 +581,27 @@ export class Renderer {
         ctx.restore();
       }
 
+      // === 联动高亮：magnet ↔ radar 同方直连（V1.2.3 重力扫描） ===
+      if (active
+        && source.owner === target.owner
+        && source.owner !== 'neutral'
+        && ((source.type === 'magnet' && target.type === 'radar')
+          || (source.type === 'radar' && target.type === 'magnet'))) {
+        ctx.save();
+        // 紫粉色慢呼吸 + 内层 sweep
+        const pulse = 0.45 + Math.sin(this.time * 2.5) * 0.20;
+        ctx.strokeStyle = `rgba(208, 156, 255, ${pulse})`;
+        ctx.lineWidth = lw + 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.lineDashOffset = -this.time * 60;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
       if (edge.type === 'amplify' && active) {
         // 增幅线：双线 + 金色脉冲
         const nx = -dy / len * 3; // 法线偏移
@@ -996,6 +1017,31 @@ export class Renderer {
       ctx.lineWidth = 2 * node.hitFlash;
       ctx.beginPath();
       ctx.arc(node.x, node.y, shockR, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // V1.2.2：联动首次触发金色脉冲环（外扩动画 + 渐隐）
+    if (node.synergyFlash !== undefined && node.synergyFlash > 0) {
+      ctx.shadowBlur = 0;
+      const f = node.synergyFlash;
+      const color = node.synergyFlashColor ?? '#ffd760';
+      // 三层光环：外扩 + 衰减
+      for (let layer = 0; layer < 3; layer++) {
+        const t = (1 - f) + layer * 0.18;
+        const r = node.radius * (1.4 + t * 1.6);
+        const a = f * (0.55 - layer * 0.18);
+        if (a <= 0) continue;
+        ctx.strokeStyle = this.withAlpha(color, a);
+        ctx.lineWidth = 2.5 * f;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // 内层高亮描边
+      ctx.strokeStyle = this.withAlpha(color, f * 0.85);
+      ctx.lineWidth = 2 * f;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.radius + 1, 0, Math.PI * 2);
       ctx.stroke();
     }
 

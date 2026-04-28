@@ -164,13 +164,21 @@ export class InputManager {
     if (e.button === 0) {
       const { x, y } = this.screenToWorld(sx, sy);
 
-      // 检查HUD按钮点击（时间加速）
+      // 检查HUD按钮点击（时间加速 / 科技树 — V1.2.7）
       if (this.ui) {
         const tsBtn = this.ui.nodeButtons.find(
           b => b.action === 'time_scale' && sx >= b.x && sx <= b.x + b.w && sy >= b.y && sy <= b.y + b.h
         );
         if (tsBtn) {
           this.state.timeScale = this.state.timeScale >= 3 ? 1 : this.state.timeScale + 1;
+          return;
+        }
+        const ttBtn = this.ui.nodeButtons.find(
+          b => b.action === 'tech_tree' && sx >= b.x && sx <= b.x + b.w && sy >= b.y && sy <= b.y + b.h
+        );
+        if (ttBtn) {
+          this.techState.showPanel = !this.techState.showPanel;
+          if (this.techState.showPanel) this.state.paused = true;
           return;
         }
       }
@@ -672,6 +680,11 @@ export class InputManager {
 
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
+    // V1.2.4：科技树打开时滚轮翻页，不操作镜头
+    if (this.techState.showPanel && this.ui) {
+      this.ui.scrollTechPanel(e.deltaY);
+      return;
+    }
     const cam = this.state.camera;
     const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
     cam.targetZoom = Math.max(0.3, Math.min(2.0, cam.targetZoom * zoomFactor));
