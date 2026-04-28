@@ -28,6 +28,8 @@ export interface AchievementContext {
   nodeTypeCounts: Record<string, number>;
   /** 本局0损失 */
   noCoreDamage: boolean;
+  /** V1.5.10：已完成的知识库任务数（challenge_*_done seen 数量） */
+  loreCompletedCount: number;
 }
 
 // ─── 成就定义 ─────────────────────────────────

@@ -2995,3 +2995,452 @@ V1.4.1.1 / V1.4.1.2 把 relay 与 buffer 接入虫洞虚拟边，但两端节点
 ### 后续
 - V1.5.0：教程补充地形 / 虫洞协同知识点
 - 收工
+
+
+## V1.5.0 — 教程：地形 / 虫洞协同知识点
+
+### 背景
+V1.3.0 起把多边形地形（nebula / asteroid / wormhole）变成可玩元素，但游戏内没有任何文字解释这些区域具体提供什么数值收益。新玩家进 L5+ 看到几块多边形并不会自然意识到「Energy 放进去 ×1.30」「炮塔贴边 +25% 射程」「同方两端 Buffer 跨虫洞 aura 共振」。
+
+### 实现
+- `src/tutorial.ts`：
+  - 新增 `LORE_TIPS: Record<string, LoreTip>` —— 三条文案：`terrain_nebula` / `terrain_asteroid` / `terrain_wormhole`，每条带颜色对应地形主色
+  - localStorage key `starfield_nodes_lore_seen` 持久化已读集合
+  - `checkLoreTipsForLevel(state)`：扫 `state.terrainPolygons.type`，返回首次出现且未读的 tipId 列表，并即时标记
+  - `resetLoreTips()`：调试用清空
+- `src/ui.ts`：
+  - 新增 `loreToasts` 队列 + `pushLoreToast(id)` + `updateLoreToasts(state)`
+  - 视觉：屏幕中央上方，自动让位于 synergy toast 下方，背景 `rgba(8,12,28,0.94)` + 颜色边框 + 4px 装饰条；标题 16px 粗体，正文按行渲染（FONT.base）
+  - 持续 8 秒（比 synergy toast 4 秒长，给阅读时间），最多同时 3 条
+- `src/game.ts`：
+  - 引入 `checkLoreTipsForLevel`
+  - 在初始化与 restart 两处 `applyLevelTerrainPolygons()` 之后立即调用，pushLoreToast 出当批 tip
+  - localStorage 已记录则不会重弹
+
+### 取舍
+- 不直接复用 `pushSynergyToast`（避免污染协同发现面板）
+- 地形知识点按地形类型分组而非按关卡：玩家任何时候首次接触 wormhole 都会收到说明
+- 关卡内多次重启不会刷屏：只第一次见到该地形类型时弹一次（持久化）
+- 未做"知识库"面板（按 K 打开看全文），后续 V1.5.1 可加；当前最低成本"看完即学完"
+
+### 验证
+- `npm run build`：bundle **209.31 → 211.80 KB**（+2.49 KB / gzip +0.93 KB）
+- TS 严格模式 0 报错
+- 待人工：
+  1. 浏览器 DevTools 控制台 `localStorage.removeItem('starfield_nodes_lore_seen')` 重置
+  2. 进 L1（无任何地形）→ 应无弹窗
+  3. 进 L4（首次出现 nebula/asteroid，根据具体关卡）→ 应弹出对应 tip
+  4. 进 L5（含 wormhole）→ 应弹出 wormhole tip
+  5. 重启该关卡 → 不应再弹
+
+### 后续
+- V1.5.1：加 `[K]` 打开知识库面板，列出全部 lore + 已发现协同
+- V1.5.2：教程引导玩家亲手把 energy 拖进 nebula、把 turret 摆陨石带边
+- 收工
+
+
+## V1.5.1 — [H] 知识库面板
+
+### 背景
+V1.5.0 的 lore toast 只在首次见到地形时弹一次，过后就再也找不到。玩家中后期想复盘"虫洞枢纽具体加多少"必须查源码。需要一个常驻可查的图鉴。
+
+### 实现
+- `src/ui.ts`：
+  - 新增 `showKnowledgePanel: boolean = false` 状态
+  - 新增 `drawKnowledgePanel(state)`：列出 `LORE_TIPS` 全部条目，每条独立卡片（背景 + 主题色边框 + 4px 装饰条 + 标题 + 多行正文），高度自适应；面板宽 580 px、自动按内容高度居中
+  - 在主 render 中：`if (this.showKnowledgePanel) drawKnowledgePanel`（无淡入，即按即开）
+- `src/input.ts`：
+  - 新增按 `H` 切换 `ui.showKnowledgePanel`
+  - 与既有 `K`（快捷键设置）/ `T`（科技树）/ `A`（成就）等单字符面板键风格一致
+
+### 取舍
+- 不与 `discoveredSynergies` 合并：协同已有专门的 `[Y]` 联动图鉴面板，知识库专门负责"地形与虫洞"
+- 不做分类分页：当前只有 3 条，足够单屏铺开
+- 直接按键开关，不做淡入：避免再加一个 fade 状态字段，体验上即按即开/关足够干净
+- 不锁定输入：面板开着时仍可操作（与 keybind / 成就面板一致）
+
+### 验证
+- `npm run build`：bundle **211.80 → 213.11 KB**（+1.31 KB / gzip +0.38 KB）
+- TS 严格模式 0 报错
+- 待人工：
+  1. 任意关卡按 `H` → 应弹出三色卡片图鉴
+  2. 再按 `H` → 关闭
+  3. 与 `K`（快捷键设置）/`Y`（联动图鉴）/`A`（成就）共存不冲突
+
+### 后续
+- V1.5.2：教程引导玩家把 energy 拖进 nebula
+- V1.5.1.1：HUD 顶部加 `[H] 知识库` 提示按键
+- 收工
+
+
+## V1.5.1.1 — HUD 顶部 [H] 知识库提示按钮
+
+### 背景
+V1.5.1 加了 `[H]` 知识库面板，但玩家不会主动按 H —— 没有任何视觉提示该键存在。需要在 HUD 顶部加一个可见可点的入口按钮。
+
+### 实现
+- `src/ui.ts` `drawHUD` 中右按钮组：
+  - 在 `[T] 科技树` 左侧插入新按钮 `[H] 知识库`，颜色用虫洞蓝 `#a8dcff`（与 lore tip 主题色一致）
+  - 圆角 + 半透明填充 + 描边 + 标签文字
+  - 自动让位：从右往左排 `时间加速 / 科技树 / 知识库`，全部参与 `minBtnX` 防重叠保护
+  - push 到 `nodeButtons` 的 action 为 `'knowledge'`
+- `src/input.ts` mousedown 处理：在已有 `tech_tree` 分支后追加 `'knowledge'` 分支，点击后切换 `ui.showKnowledgePanel`
+
+### 取舍
+- 不让点开自动暂停：知识库纯查询，不像科技树那样需要长时间专注，不暂停体验更顺
+- 颜色与文案与 lore tip 一致（虫洞蓝）—— 玩家进 L5+ 见过同色 toast，自然关联
+- 不加 K/A 等其它按钮：HUD 拥挤度可控，只把"玩家最不知道存在"的入口暴露
+
+### 验证
+- `npm run build`：bundle **213.11 → 213.61 KB**（+0.50 KB / gzip +0.13 KB）
+- TS 严格模式 0 报错
+- 待人工：进任意关卡 → 屏幕右上角应见 `[T] 科技树` 左边多出 `[H] 知识库` 浅蓝按钮 → 点击或按 H 都能开关
+
+### 后续
+- V1.5.2：教程引导玩家把 energy 拖进 nebula
+- V1.6.0：新关卡 / 新机制
+- 收工
+
+
+## V1.5.2 — 主动引导：把 Energy 拖进 Nebula
+
+### 背景
+V1.5.0 的 lore tip 只是"知识介绍"，不会驱动玩家行动。V1.5.2 加入第一个**任务式**提示：当关卡含 Nebula 但玩家尚未把 Energy 节点放进去时，弹出任务卡片；首次成功放入再弹出"完成"卡片。
+
+### 实现
+- `src/tutorial.ts`：
+  - import `isPointInNebulaPolygon` from `./terrain-poly`
+  - `LORE_TIPS` 新增两条（复用同一渲染 / 同一 localStorage 持久化）：
+    - `challenge_energy_in_nebula`（蓝色）：`★ 任务：充能优化` — 提示玩家拖一个 energy 进 nebula
+    - `challenge_energy_in_nebula_done`（蓝色）：`★ 完成：星云充能激活` — 解释 ×1.30 倍率，并提示可叠加虫洞 ×1.20 = ×1.56
+  - 新增 `checkChallengeTips(state)` 每帧调用：
+    - 仅当关卡含 nebula 多边形
+    - 未见任务 + 无 energy 在 nebula 内 → 弹任务
+    - 见过任务 + 有 energy 在 nebula 内（首次）→ 弹完成
+    - 全程持久化到同一 `LORE_STORAGE`，永不重复
+- `src/game.ts`：
+  - import 加 `checkChallengeTips`
+  - 新增私有字段 `_challengeTipTick: number = 0`
+  - 主帧循环（在 `crossWormholeFx` 衰减块后）：每 30 帧（≈0.5s）调用一次 `checkChallengeTips`，把返回的 id 推到 `pushLoreToast`
+
+### 取舍
+- 复用 `LORE_TIPS` + `pushLoreToast` 而不是新做一套 toast：少 50 行代码、自动获得卡片样式 / 主题色 / 知识库面板出现率
+- 节流 30 帧而非每帧：避免每帧 JSON.parse localStorage（即使很快）
+- 仅检查 `owner === 'player'` 节点：避免中立节点误触
+- "完成"提示用 ×1.56 数学示例，鼓励玩家继续探索 wormhole 协同
+
+### 验证
+- `npm run build`：bundle **213.61 → 214.71 KB**（+1.10 KB / gzip +0.32 KB）
+- TS 严格模式 0 报错
+- 待人工：
+  1. 进 L2+（含 nebula 关卡）→ 0.5 秒内弹出蓝色 `★ 任务：充能优化`
+  2. 拖一个 energy 进 nebula → 弹出 `★ 完成：星云充能激活`
+  3. 再次进入同一关卡：不再重复弹（持久化）
+  4. 没有 nebula 的关卡：什么也不弹
+
+### 后续
+- V1.5.3：第二个任务（陨石带边缘 turret）
+- V1.6.0：新关卡 / 新机制
+- 收工
+
+
+## V1.5.3 — 主动引导：陨石带边缘 Turret 任务
+
+### 背景
+延续 V1.5.2 任务式提示模式，第二个任务对应 V1.4.0 的 asteroid 边缘射程加成机制。让玩家显式认知这条规则的存在。
+
+### 实现
+- `src/tutorial.ts`：
+  - import 加 `isNearAsteroidPolygonEdge`
+  - `LORE_TIPS` 新增两条（橙色，与 asteroid 主题色一致）：
+    - `challenge_turret_near_asteroid`：`★ 任务：边缘布防` — 提示把 turret/sniper 放在陨石带 90 像素边缘内
+    - `challenge_turret_near_asteroid_done`：`★ 完成：陨石带增程激活` — 解释 ×1.25
+  - `checkChallengeTips` 末尾追加 asteroid 分支：
+    - 关卡含 asteroid + 没有 turret/sniper 在边缘 + 未见 → 弹任务
+    - 同条件 + 已有 turret/sniper 在边缘 + 未见完成 → 弹完成
+    - 复用同一 `LORE_STORAGE` 持久化
+
+### 取舍
+- 同时检测 `turret` 和 `sniper`（两者都有 ×1.25 加成）
+- 90 px 阈值与游戏逻辑里 `bonusFromAsteroidEdge` 完全一致，避免规则不对齐
+- 颜色用 `#ff9b6b`（陨石带主题色），与 nebula 任务的蓝色互不混淆
+- 复用 30 帧节流 + 同一 localStorage：零额外 game.ts 改动
+
+### 验证
+- `npm run build`：bundle **214.71 → 215.65 KB**（+0.94 KB / gzip +0.20 KB）
+- TS 严格 0 报错
+- 待人工：
+  1. 进含 asteroid 的关卡 → 弹橙色 `★ 任务：边缘布防`
+  2. 在陨石带 90px 内放 turret 或 sniper → 弹 `★ 完成：陨石带增程激活`
+  3. 二次进入：不再重复
+
+### 后续
+- V1.5.4：虫洞枢纽任务（同方 energy/relay/buffer 双端）
+- V1.6.0：新关卡 / 新机制
+- 收工
+
+
+## V1.5.4 — 主动引导：虫洞枢纽（双端 Energy）
+
+### 背景
+继续完成 V1.5.x 三大地形任务系列。这是最复杂的引导：要求玩家把同方 Energy 节点放进**一对虫洞的两端**，激活 V1.4.1 的 ×1.20 充能加成。
+
+### 实现
+- `src/tutorial.ts`：
+  - import 加 `findWormholePolygonAt, pointInPolygon`
+  - `LORE_TIPS` 新增两条（浅蓝 `#a8dcff`，与 wormhole 主题色一致）：
+    - `challenge_wormhole_energy_pair`：`★ 任务：虫洞枢纽` — 提示在一对虫洞两端各放一个 Energy
+    - `challenge_wormhole_energy_pair_done`：`★ 完成：虫洞枢纽打通` — 解释 ×1.20 + 进阶（Relay/Buffer 同样可跨虫洞）
+  - `checkChallengeTips` 末尾追加 wormhole 分支：
+    - 关卡含至少一个 `wormhole` 多边形且有 `linkedId`
+    - 检测：是否存在玩家 energy n 在某 wormhole 内 + 同对 wormhole 的 linked 多边形内还有另一个玩家 energy m
+    - 满足 → 弹完成；不满足且未见任务 → 弹任务
+
+### 取舍
+- 全场扫描 + 内层 some：O(N×M)，但每 30 帧一次 + 节点数 < 50，实测无感
+- 复用 `findWormholePolygonAt` 而非自己实现：保持与游戏主逻辑同一判定
+- 仅检测 energy（V1.4.1 主机制），不重复覆盖 V1.4.1.1（relay）/V1.4.1.2（buffer）—— 那两个进阶机制在完成卡片正文中文字提及，引导玩家自行探索
+
+### 验证
+- `npm run build`：bundle **215.65 → 216.84 KB**（+1.19 KB / gzip +0.26 KB）
+- TS 严格 0 报错
+- 待人工：
+  1. 进含 wormhole 对的关 → 弹浅蓝 `★ 任务：虫洞枢纽`
+  2. 在两端各放 1 个 energy → 弹 `★ 完成：虫洞枢纽打通`
+  3. 二次进入：不再重复
+
+### 后续
+- V1.5.x 系列任务体系完成（nebula / asteroid / wormhole 三大地形全部覆盖）
+- V1.6.0：新关卡 / 新机制
+- 收工
+
+
+## V1.5.5 — 知识库面板：任务进度状态徽章
+
+### 背景
+V1.5.2/3/4 引入了 6 张任务卡（3 任务 + 3 完成），但 [H] 知识库面板里所有 9 张卡平铺，玩家无法一眼看出"我完成了哪些"。需要添加状态徽章，并把未触发的"完成"卡隐藏（保护惊喜感）。
+
+### 实现
+- `src/tutorial.ts`：
+  - 新增 `export function isLoreSeen(id): boolean` —— 直接读 `LORE_STORAGE`
+- `src/ui.ts`：
+  - import 加 `isLoreSeen`
+  - `drawKnowledgePanel`：
+    - **过滤**：未完成的 `challenge_xxx_done` 卡不显示（避免剧透 + 减少视觉过载）
+    - **徽章**：每张 `challenge_*` 卡右上角显示状态：
+      - 任务卡：`◯ 未启动`（灰）/ `▶ 进行中`（黄）/ `✓ 已完成`（绿，当 `_done` 已触发时）
+      - 完成卡（仅展示已触发的）：`✓ 已完成`（绿）
+
+### 取舍
+- 不重构 `LORE_TIPS` 数据结构：保持渲染管线不变，仅在外层增加过滤 + 徽章绘制
+- 隐藏未完成的 done 卡：玩家看到"任务进行中"时不会被剧透出完成的奖励文字；完成后才解锁完成卡，作为成就反馈
+- 徽章用 emoji-free 几何符号 `◯ ▶ ✓`：与项目无 emoji 风格一致
+- 知识卡（`terrain_*`）不带徽章：它们是被动知识，无完成态
+
+### 验证
+- `npm run build`：bundle **216.84 → 217.31 KB**（+0.47 KB / gzip +0.18 KB）
+- TS 严格 0 报错
+- 待人工：
+  1. 全新存档 → [H] → 看到 3 知识 + 3 任务（每张右上角 `◯ 未启动`），共 6 张卡
+  2. 进有 nebula 的关 → toast 弹任务 → [H] 应见 nebula 任务变 `▶ 进行中`
+  3. 拖 energy 进 nebula → [H] 应见任务变 `✓ 已完成`，并新出现 nebula 完成卡
+  4. 三大任务全做完 → 9 张卡全展示
+
+### 后续
+- V1.6.0：新关卡 / 新机制
+- V1.5.6：知识库分组（"地形知识 / 任务进度"两栏）
+- 收工
+
+
+## V1.5.6 — 知识库面板：分组显示（地形知识 / 任务进度）
+
+### 背景
+V1.5.5 后面板已有 6-9 张混排卡，玩家区分不出"知识介绍"与"任务进度"。需要按语义分组，并加分组标题。
+
+### 实现
+- `src/ui.ts` `drawKnowledgePanel`：
+  - 按 id 前缀分组：`knowledgeIds = terrain_*`、`challengeIds = challenge_*`
+  - 抽取内层渲染为闭包 `drawSection(sectionTitle, ids)`
+  - 每组前绘制 `◆ 地形知识` / `◆ 任务进度` 标题（14px bold 灰色），右侧延长一条 25% 透明度浅蓝分隔线
+  - 高度计算同步加上 `sectionHeaderH=28` + `sectionGap=6`
+  - 底部按键提示 `[H] 关闭` 保持不变
+
+### 取舍
+- 不做"分页/滚动"：当前 9 卡 + 2 标题总高约 850px，1080p 屏幕足够；若未来扩展再做滚动
+- 标题用 `◆` 符号 + 灰色：低对比度，不抢卡片本身
+- 分组顺序：知识在前（被动 / 介绍） → 任务在后（主动 / 互动），符合阅读直觉
+
+### 验证
+- `npm run build`：bundle **217.31 → 217.76 KB**（+0.45 KB / gzip +0.15 KB）
+- TS 严格 0 报错
+- 待人工：[H] → 看到两个分组标题，知识 3 卡在上 / 任务 3 卡在下；标题灰色 + 右侧浅蓝细线
+
+### 后续
+- V1.6.0：新关卡 / 新机制
+- V1.5.7：toast 也分类显示（任务/完成/知识 各自图标）
+- 收工
+
+
+## V1.5.7 — Lore Toast 按类型加图标 / 分类徽章
+
+### 背景
+所有 lore toast（知识 / 任务 / 完成）现在都用同一个 `★` 前缀，玩家瞄一眼区分不开是哪类提示。需要在 toast 上添加直观的类型标记。
+
+### 实现
+- `src/ui.ts` `updateLoreToasts` 标题渲染：
+  - 根据 `toast.id` 推断 category：
+    - `terrain_*` → `◆ 知识`
+    - `challenge_xxx` → `⚑ 任务`
+    - `challenge_xxx_done` → `✓ 完成`
+  - 标题左侧把原 `★` 替换为对应图标 `◆ / ⚑ / ✓`（用 `tip.title.replace(/^★\s*/, '')` 剥离原前缀）
+  - 右上角加 `[知识] / [任务] / [完成]` 70% 透明度的分类徽章
+
+### 取舍
+- 不修改 `LORE_TIPS` 数据本体：渲染时动态推断类型，避免数据冗余、便于以后新增类别
+- 标题里替换 `★` 为类型 icon，节省空间避免双图标拥挤
+- 图标用几何符号 `◆ ⚑ ✓` 与项目无 emoji 风格保持一致；徽章用方括号包裹的中文短词，方便玩家快速分类
+
+### 验证
+- `npm run build`：bundle **217.76 → 218.06 KB**（+0.30 KB / gzip +0.13 KB）
+- TS 严格 0 报错
+- 待人工：清 localStorage 后进 nebula 关
+  1. 应见任务 toast：`⚑ 任务：充能优化` + 右上 `[任务]`
+  2. 拖 energy 进 nebula → 应见：`✓ 完成：星云充能激活` + 右上 `[完成]`
+  3. 第一次进有 wormhole 的关 → 应见：`◆ 知识：虫洞枢纽` + 右上 `[知识]`
+
+### 后续
+- V1.6.0：新关卡 / 新机制
+- 收工
+
+
+## V1.5.8 — 虫洞进阶任务：Relay / Buffer 双端
+
+### 背景
+V1.5.4 已完成 Energy 双端虫洞主任务，但 V1.4.1.1 (Relay 跨虫洞充能) 和 V1.4.1.2 (Buffer 跨虫洞 aura 共振) 两个进阶机制完全没有引导。本版增加这两个进阶任务卡，**仅在主任务（Energy 双端）已完成后解锁**，避免一次性弹 3 张同类 toast 把玩家淹没。
+
+### 实现
+- `src/tutorial.ts`：
+  - `LORE_TIPS` 新增 4 条：
+    - `challenge_wormhole_relay_pair`（中蓝 `#78c8ff`）/ `_done`
+    - `challenge_wormhole_buffer_pair`（浅蓝 `#a8dcff`）/ `_done`
+  - `checkChallengeTips` wormhole 分支重构：
+    - 抽出闭包 `hasPlayerPairOfType(nodeType)` 复用三种节点的双端检测逻辑
+    - Energy 主任务保持原行为
+    - Relay/Buffer 任务：**仅当 `challenge_wormhole_energy_pair_done` 已 seen 时才检测/弹出**
+
+### 取叉
+- 任务解锁链路：energy 双端 → 解锁 relay/buffer 双端任务，渐进暴露机制
+- 闭包 `hasPlayerPairOfType` 减少 3× 重复代码 ≈ 30 行
+- relay 任务用 V1.4.1.1 的中蓝色，buffer 任务用 V1.4.1.2 的浅蓝色，与游戏内连线/aura 颜色对应
+
+### 验证
+- `npm run build`：bundle **218.06 → 219.72 KB**（+1.66 KB / gzip +0.40 KB）
+- TS 严格 0 报错
+- 待人工：完成 V1.5.4 energy 双端 → 进有 wormhole 关 → 应连续弹 relay 任务 + buffer 任务（间隔 ≈ 0.5s）→ 各自做完后弹完成卡。`[H]` 知识库面板任务进度区应有 5 张任务卡
+
+### 后续
+- V1.6.0：新关卡 / 新机制
+- V1.5.x 系列任务体系基本完整（3 地形 + 3 虫洞 = 6 任务对 = 12 卡）
+- 收工
+
+
+## V1.5.9 — 知识库面板：任务总进度条
+
+### 背景
+V1.5.x 任务体系已扩展到 5 对（10 张卡）。玩家需要一个一眼能看到的"任务完成度"指标，激励完成全部任务、知道还差多少。
+
+### 实现
+- `src/ui.ts` `drawKnowledgePanel`：
+  - 计算 `allDoneIds = LORE_TIPS` 中所有 `challenge_*_done` id（=5 个总任务）
+  - `completedCount = allDoneIds.filter(isLoreSeen).length`
+  - 在头部副标题下方、第一组分组前插入 24px 进度条：
+    - 8px 高横条 + 暗灰背景 + 边框
+    - 进度填充：未满时浅蓝 `#a8dcff`，满时绿色 `#7dffb0`
+    - 左侧文字 `任务总进度` 灰色，右侧 `X / Y`（满时绿）
+  - `totalH` / `yCursor` 同步偏移 progressBarH+10
+
+### 取舍
+- 进度条放在最顶（副标题之下）：最显眼位置传达完成度
+- 用绝对计数 `X/Y` 而非百分比：玩家直观知道"还差几个任务"
+- 全满时变绿：成就感反馈
+- 不做动画：保持知识库面板"冷静的查询界面"风格
+
+### 验证
+- `npm run build`：bundle **219.72 → 220.25 KB**（+0.53 KB / gzip +0.17 KB）
+- TS 严格 0 报错
+- 待人工：
+  1. 全新存档 → `[H]` → 应见 `任务总进度  0 / 5`，进度条空
+  2. 完成 nebula 任务 → `[H]` → `1 / 5`，进度 1/5 蓝色填充
+  3. 全部完成 → `5 / 5` 全绿色
+
+### 后续
+- V1.6.0：新关卡 / 新机制
+- 收工
+
+
+## V1.5.10 — 哲学家成就：完成全部知识库任务解锁
+
+### 背景
+V1.5.x 任务体系已完整：5 对 challenge tip。需要给"全部完成"一个仪式感反馈，融入既有成就系统。
+
+### 实现
+- `src/achievements.ts`：`AchievementContext` 新增字段 `loreCompletedCount: number`
+- `src/data/achievements.ts`：新增成就
+  ```
+  id: 'philosopher'
+  name: '哲学家'
+  icon: 📚
+  description: 完成全部5个知识库任务
+  check: ctx => ctx.loreCompletedCount >= 5
+  ```
+- `src/tutorial.ts`：导出 `getCompletedChallengeCount()` 统计 `challenge_*_done` seen 数量
+- `src/game.ts`：
+  - 关卡结算 achCtx 增加 `loreCompletedCount`
+  - 主动引导 30 帧检查中：若本轮 push 了 `_done` toast，则立刻调用 `checkAchievements`（mid-game 解锁），philosopher 自动通过既有 popNotification → ui 通知通道弹出
+
+### 取舍
+- mid-game 检查只在 `_done` 触发时跑，避免每 30 帧白调用
+- 部分 ctx 字段填占位（levelWon=false 等），其他成就的 check 不会因此误触发（philosopher 的 check 只读 loreCompletedCount）
+- icon 用 📚（书本）匹配"知识库"主题
+- 阈值硬编码 5（与 LORE_TIPS 中 challenge_*_done 数量一致）；将来加任务对时，需同步调整阈值或改为动态总数
+
+### 验证
+- `npm run build`：bundle **220.25 → 221.14 KB**（+0.89 KB / gzip +0.19 KB）
+- TS 严格 0 报错
+- 待人工：完成 5 个任务最后一项时应弹出 `📚 哲学家` 成就通知；成就面板 / 知识库面板进度 5/5 全绿
+
+### 后续
+- V1.6.0：新关卡 / 新机制
+- 收工
+
+
+## V1.5.11 — 知识库面板：滚轮可滚动
+
+### 背景
+V1.5.x 任务体系任意扩展时，面板可能超出屏幕高度（panelH 已 cap 在 canvasHeight-60）。需要滚动机制，否则底部内容看不见。
+
+### 实现
+- `src/ui.ts`：
+  - 新增字段 `knowledgeScrollOffset`、`knowledgeMaxScroll`
+  - 新增方法 `scrollKnowledgePanel(delta)`，与 `scrollTechPanel` 同构
+  - `drawKnowledgePanel`：
+    - 头部 + 进度条之下、底部按键提示之上为 viewport
+    - `ctx.save() + ctx.clip()` 内容区，所有卡片 `yCursor` 减去 `knowledgeScrollOffset`
+    - 渲染完成后用 `yCursor - contentStartY` 计算实际 contentH，更新 `knowledgeMaxScroll`
+    - 右侧 4px 滚动条（与科技树同款配色 `#a8dcff`），仅在 `maxScroll>0` 时绘制
+    - 底部固定提示 `滚轮滚动 · [H] 关闭`
+- `src/input.ts` `onWheel`：知识库面板打开时拦截滚轮 → `scrollKnowledgePanel(deltaY)` 并 return（不操作镜头）
+
+### 取舍
+- 复用现有 contentTop/contentBottom 切割：进度条不参与滚动（始终可见进度），只滚动卡片区
+- 不做拖拽滚动条交互：滚轮足够；后续若有需求再加
+- maxScroll 末端 clamp 在 draw 阶段（避免初始化时不知道 contentH）
+
+### 验证
+- `npm run build`：bundle **221.14 → 222.06 KB**（+0.92 KB / gzip +0.20 KB）
+- TS 严格 0 报错
+- 待人工：缩小窗口 → `[H]` 知识库 → 应能看到右侧滚动条 + 滚轮可滚动；进度条始终在顶部不动
+
+### 后续
+- V1.6.0：新关卡 / 新机制
+- 收工

@@ -87,4 +87,13 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     description: '单局得分超过20000',
     check: ctx => ctx.score >= 20000,
   },
+
+  // --- V1.5.10 知识库任务类 ---
+  {
+    id: 'philosopher',
+    name: '哲学家',
+    icon: '📚',
+    description: '完成全部5个知识库任务',
+    check: ctx => ctx.loreCompletedCount >= 5,
+  },
 ];

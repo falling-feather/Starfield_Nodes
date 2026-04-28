@@ -20,7 +20,7 @@ import type { LevelConfig } from './levels';
 import { initAudio, startBgm, stopBgm, sfxGameOver, sfxVictory } from './audio';
 import { checkAchievements, clearNotifications } from './achievements';
 import type { AchievementContext } from './achievements';
-import { startTutorial, updateTutorial, skipTutorial, isTutorialDone } from './tutorial';
+import { startTutorial, updateTutorial, skipTutorial, isTutorialDone, checkLoreTipsForLevel, checkChallengeTips, getCompletedChallengeCount } from './tutorial';
 
 export class Game {
   // benchmark/调试需要从外部读取，故公开
@@ -45,6 +45,7 @@ export class Game {
   private onExitToLevelSelect: (() => void) | null = null;
   private onExitToTitle: (() => void) | null = null;
   private boundResize: (() => void) | null = null;
+  private _challengeTipTick: number = 0;
   private noCoreDamage: boolean = true;
   /** V1.2.0：本局开始前已发现的联动 id，用于结算面计算「本局首次发现」 */
   private synergiesAtStart: Set<string> = new Set();
@@ -110,6 +111,11 @@ export class Game {
     const terrainCfg = levelConfig?.terrainConfig;
     initializeMap(this.state, nodeCount, terrainCfg);
     this.applyLevelTerrainPolygons();
+
+    // V1.5.0：首次遇到 nebula/asteroid/wormhole 地形时弹出知识点
+    for (const tipId of checkLoreTipsForLevel(this.state)) {
+      this.ui.pushLoreToast(tipId);
+    }
 
     this.state.resources = levelConfig?.startResources ?? 100;
     this.state.crystals = levelConfig?.startCrystals ?? 0;
@@ -236,6 +242,10 @@ export class Game {
     const terrainCfg = this.levelConfig?.terrainConfig;
     initializeMap(this.state, nodeCount, terrainCfg);
     this.applyLevelTerrainPolygons();
+    // V1.5.0：restart 后也尝试触发 lore tip（localStorage 已记录过则不重复）
+    for (const tipId of checkLoreTipsForLevel(this.state)) {
+      this.ui.pushLoreToast(tipId);
+    }
     this.state.resources = this.levelConfig?.startResources ?? 100;
     this.state.crystals = this.levelConfig?.startCrystals ?? 0;
   }
@@ -313,6 +323,7 @@ export class Game {
         clearedLevels: this.profile.clearedLevels,
         nodeTypeCounts,
         noCoreDamage: allCoresFull && this.noCoreDamage,
+        loreCompletedCount: getCompletedChallengeCount(),
       };
       if (!this.profile.unlockedAchievements) this.profile.unlockedAchievements = [];
       checkAchievements(achCtx, this.profile.unlockedAchievements);
@@ -469,6 +480,37 @@ export class Game {
     if (this.state.crossWormholeFx && this.state.crossWormholeFx.length > 0) {
       for (const fx of this.state.crossWormholeFx) fx.ttl -= dt * 60;
       this.state.crossWormholeFx = this.state.crossWormholeFx.filter(fx => fx.ttl > 0);
+    }
+    // V1.5.2：每 30 帧检查主动引导任务点
+    this._challengeTipTick = (this._challengeTipTick ?? 0) + 1;
+    if (this._challengeTipTick >= 30) {
+      this._challengeTipTick = 0;
+      let pushedDone = false;
+      for (const tipId of checkChallengeTips(this.state)) {
+        this.ui.pushLoreToast(tipId);
+        if (tipId.endsWith('_done')) pushedDone = true;
+      }
+      // V1.5.10：任务完成后检查哲学家成就
+      if (pushedDone && this.profile) {
+        if (!this.profile.unlockedAchievements) this.profile.unlockedAchievements = [];
+        const partialCtx: AchievementContext = {
+          score: this.state.score,
+          wave: this.state.wave,
+          enemiesKilled: this.enemiesKilled,
+          nodesBuilt: this.nodesBuilt,
+          levelWon: false,
+          gameOver: false,
+          levelId: this.levelConfig?.id ?? null,
+          totalEnemiesKilled: this.profile.stats.totalEnemiesKilled,
+          totalNodesBuilt: this.profile.stats.totalNodesBuilt,
+          clearedLevels: this.profile.clearedLevels ?? [],
+          nodeTypeCounts: {},
+          noCoreDamage: false,
+          loreCompletedCount: getCompletedChallengeCount(),
+        };
+        checkAchievements(partialCtx, this.profile.unlockedAchievements);
+        this.ui.unlockedAchievements = this.profile.unlockedAchievements;
+      }
     }
   }
 

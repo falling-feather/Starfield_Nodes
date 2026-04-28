@@ -204,6 +204,14 @@ export class InputManager {
           if (this.techState.showPanel) this.state.paused = true;
           return;
         }
+        // V1.5.1.1：知识库按钮
+        const knBtn = this.ui.nodeButtons.find(
+          b => b.action === 'knowledge' && sx >= b.x && sx <= b.x + b.w && sy >= b.y && sy <= b.y + b.h
+        );
+        if (knBtn) {
+          this.ui.showKnowledgePanel = !this.ui.showKnowledgePanel;
+          return;
+        }
       }
 
       // 检查UI按钮点击（屏幕坐标）
@@ -562,6 +570,12 @@ export class InputManager {
       return;
     }
 
+    // V1.5.1 知识库面板
+    if (key === 'h' && this.ui) {
+      this.ui.showKnowledgePanel = !this.ui.showKnowledgePanel;
+      return;
+    }
+
     // 建造快捷键：优先使用 allowedNodeTypes 选择顺序动态绑定数字键 1..9,0（V1.0.5）
     // 未提供 allowedNodeTypes 时退回到原有24 键静态表（充当高阶、调试、 bench 场景默认）
     const numKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
@@ -766,6 +780,11 @@ export class InputManager {
     // V1.2.4：科技树打开时滚轮翻页，不操作镜头
     if (this.techState.showPanel && this.ui) {
       this.ui.scrollTechPanel(e.deltaY);
+      return;
+    }
+    // V1.5.11：知识库面板打开时滚轮翻页
+    if (this.ui && this.ui.showKnowledgePanel) {
+      this.ui.scrollKnowledgePanel(e.deltaY);
       return;
     }
     const cam = this.state.camera;

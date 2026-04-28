@@ -13,7 +13,7 @@ import type { AchievementDef } from './achievements';
 import { getKey, getAllBindings, setKey, resetKeybinds } from './keybinds';
 import { isOvercharged } from './graph';
 import type { KeyAction } from './keybinds';
-import { getCurrentStep, getProgress, isTutorialActive } from './tutorial';
+import { getCurrentStep, getProgress, isTutorialActive, LORE_TIPS, isLoreSeen } from './tutorial';
 import { COLORS, FONT, ANIM } from './ui-tokens';
 import { getSeed } from './rng';
 
@@ -32,10 +32,12 @@ export class UI {
   private toasts: AchToast[] = [];
   /** V1.2.1：联动首次发现的世界内 toast 队列 */
   private synergyToasts: { id: string; timer: number }[] = [];
+  private loreToasts: { id: string; timer: number }[] = [];
   /** 显示成就面板 */
   showAchievementPanel: boolean = false;
   /** 显示快捷键设置面板 */
   showKeybindPanel: boolean = false;
+  showKnowledgePanel: boolean = false;
   /** 显示联动图鉴面板（V1.1.6） */
   showSynergyPanel: boolean = false;
   /** 正在编辑的快捷键操作（等待按键输入） */
@@ -56,6 +58,10 @@ export class UI {
   private techScrollOffset = 0;
   /** V1.2.4：科技树最大可滚动距离（drawTechPanel 内更新） */
   private techMaxScroll = 0;
+  /** V1.5.11：知识库面板滚动偏移（像素） */
+  private knowledgeScrollOffset = 0;
+  /** V1.5.11：知识库面板最大可滚动距离（drawKnowledgePanel 内更新） */
+  private knowledgeMaxScroll = 0;
 
   // ── V1.1.0 暂停菜单 ──
   /** 暂停菜单是否打开（独立于 state.paused：菜单打开 → state.paused = true，但 P 键暂停不会打开菜单） */
@@ -172,6 +178,11 @@ export class UI {
       ctx.restore();
     }
 
+    // V1.5.1：知识库面板（直接显示，不带淡入）
+    if (this.showKnowledgePanel) {
+      this.drawKnowledgePanel(state);
+    }
+
     // 联动图鉴面板（V1.1.6，带淡入淡出）
     if (this.synergyFade > 0.01) {
       const ctx = this.ctx;
@@ -186,6 +197,7 @@ export class UI {
 
     // V1.2.1：联动首次发现 Toast
     this.updateSynergyToasts(state);
+    this.updateLoreToasts(state);
   }
 
   /** 面板淡入淡出曲线 easeOutCubic */
@@ -268,13 +280,31 @@ export class UI {
     const ttTextW = ctx.measureText(ttLabel).width;
     const ttW = ttTextW + 24;
 
-    // 从右往左排：先 ts 再 tt
+    // 从右往左排：先 ts 再 tt 再 kn
     const tsX = rightCursor - tsW;
     const ttX = tsX - btnGap - ttW;
+    // V1.5.1.1：知识库按钮
+    const knLabel = `[H] 知识库`;
+    const knTextW = ctx.measureText(knLabel).width;
+    const knW = knTextW + 24;
+    const knX = ttX - btnGap - knW;
     // 防止与左侧指标重叠
     const minBtnX = cursorX + 16;
-    const ttXFinal = Math.max(ttX, minBtnX);
+    const knXFinal = Math.max(knX, minBtnX);
+    const ttXFinal = knXFinal + knW + btnGap;
     const tsXFinal = ttXFinal + ttW + btnGap;
+
+    // 知识库按钮（可点击）
+    ctx.fillStyle = 'rgba(168, 220, 255, 0.15)';
+    this.roundRect(ctx, knXFinal, btnY, knW, btnH, 6);
+    ctx.fill();
+    ctx.strokeStyle = '#a8dcff';
+    ctx.lineWidth = 1;
+    this.roundRect(ctx, knXFinal, btnY, knW, btnH, 6);
+    ctx.stroke();
+    ctx.fillStyle = '#a8dcff';
+    ctx.fillText(knLabel, knXFinal + 12, 25);
+    this.nodeButtons.push({ action: 'knowledge', x: knXFinal, y: btnY, w: knW, h: btnH, enabled: true });
 
     // 科技树按钮（可点击）
     ctx.fillStyle = 'rgba(160, 100, 220, 0.15)';
@@ -1038,6 +1068,12 @@ export class UI {
     this.techScrollOffset = Math.max(0, Math.min(this.techMaxScroll, this.techScrollOffset + delta));
   }
 
+  /** V1.5.11：滚动知识库面板 */
+  scrollKnowledgePanel(delta: number): void {
+    if (!this.showKnowledgePanel) return;
+    this.knowledgeScrollOffset = Math.max(0, Math.min(this.knowledgeMaxScroll, this.knowledgeScrollOffset + delta));
+  }
+
   private drawGameOver(state: GameState): void {
     const ctx = this.ctx;
     ctx.save();
@@ -1310,6 +1346,97 @@ export class UI {
     sfxAchievement(); // 复用成就音效，给玩家明确反馈
   }
 
+  /** V1.5.0：弹出地形/虫洞知识点 toast（id 来自 LORE_TIPS） */
+  pushLoreToast(id: string): void {
+    if (!LORE_TIPS[id]) return;
+    if (this.loreToasts.some(t => t.id === id)) return;
+    this.loreToasts.push({ id, timer: 8 });
+    if (this.loreToasts.length > 3) this.loreToasts = this.loreToasts.slice(-3);
+    sfxAchievement();
+  }
+
+  /** V1.5.0：渲染 lore toast（位置在 synergy toast 下方，避免冲突） */
+  private updateLoreToasts(state: GameState): void {
+    if (this.loreToasts.length === 0) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.shadowBlur = 0;
+
+    const toastW = 440;
+    const lineH = 18;
+    const titleH = 28;
+    const padding = 12;
+    // 起点：避开 synergy toast 区域（startY=70 + 最多 3×62）
+    const startY = 70 + Math.min(this.synergyToasts.length, 3) * 62 + 10;
+    const cx = state.canvasWidth / 2;
+    let yCursor = startY;
+
+    for (let i = 0; i < this.loreToasts.length; i++) {
+      const toast = this.loreToasts[i];
+      toast.timer -= 1 / 60;
+      if (toast.timer <= 0) {
+        this.loreToasts.splice(i, 1);
+        i--;
+        continue;
+      }
+      const tip = LORE_TIPS[toast.id];
+      if (!tip) continue;
+
+      const toastH = titleH + tip.lines.length * lineH + padding * 2;
+      const inT = Math.min(1, (8 - toast.timer) / 0.3);
+      const eased = 1 - Math.pow(1 - inT, 3);
+      const alpha = Math.min(1, toast.timer);
+      const tx = cx - toastW / 2;
+      const ty = yCursor - (1 - eased) * 14;
+
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = 'rgba(8,12,28,0.94)';
+      ctx.strokeStyle = tip.color;
+      ctx.lineWidth = 2;
+      ctx.fillRect(tx, ty, toastW, toastH);
+      ctx.strokeRect(tx, ty, toastW, toastH);
+
+      // 左侧装饰条
+      ctx.fillStyle = tip.color;
+      ctx.fillRect(tx, ty, 4, toastH);
+
+      // V1.5.7：根据 toast 类型加左侧分类徽章 + 右上角小图标
+      let category = '知识';
+      let icon = '◆';
+      if (toast.id.startsWith('challenge_')) {
+        if (toast.id.endsWith('_done')) { category = '完成'; icon = '✓'; }
+        else { category = '任务'; icon = '⚑'; }
+      }
+
+      // 标题（左侧加 icon）
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.font = 'bold 16px monospace';
+      ctx.fillStyle = tip.color;
+      ctx.fillText(`${icon} ${tip.title.replace(/^★\s*/, '')}`, tx + padding + 6, ty + padding);
+
+      // 右上角分类徽章
+      ctx.font = FONT.base;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = tip.color;
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.fillText(`[${category}]`, tx + toastW - padding, ty + padding + 2);
+      ctx.globalAlpha = alpha;
+      ctx.textAlign = 'left';
+
+      // 正文
+      ctx.font = FONT.base;
+      ctx.fillStyle = COLORS.text.high;
+      for (let li = 0; li < tip.lines.length; li++) {
+        ctx.fillText(tip.lines[li], tx + padding + 6, ty + padding + titleH + li * lineH);
+      }
+
+      ctx.globalAlpha = 1;
+      yCursor += toastH + 8;
+    }
+    ctx.restore();
+  }
+
   /** V1.2.1：渲染并衰减联动首次发现 Toast，位置在屏幕中央上方，避免与右侧成就 toast 抢位 */
   private updateSynergyToasts(state: GameState): void {
     if (this.synergyToasts.length === 0) return;
@@ -1366,6 +1493,201 @@ export class UI {
 
       ctx.globalAlpha = 1;
     }
+    ctx.restore();
+  }
+
+  // ───── V1.5.1 知识库面板 ─────
+  private drawKnowledgePanel(state: GameState): void {
+    const ctx = this.ctx;
+    ctx.save();
+
+    const cx = state.canvasWidth / 2;
+    const cy = state.canvasHeight / 2;
+    const panelW = 580;
+    // V1.5.5\uff1a\u672a\u5b8c\u6210\u7684 _done \u5361\u9690\u85cf\uff08\u907f\u514d\u9762\u677f\u8fc7\u9ad8 + \u4fdd\u62a4\u60ca\u559c\u611f\uff09
+    const tipIds = Object.keys(LORE_TIPS).filter(id => {
+      if (id.endsWith('_done') && id.startsWith('challenge_')) return isLoreSeen(id);
+      return true;
+    });
+    const lineH = 18;
+    const titleH = 32;
+    const tipPad = 14;
+    const tipGap = 12;
+    let totalH = 60; // 头部
+    totalH += progressBarH + 10; // V1.5.9 进度条
+    for (const id of tipIds) {
+      const tip = LORE_TIPS[id];
+      totalH += titleH + tip.lines.length * lineH + tipPad * 2 + tipGap;
+    }
+    totalH += 30; // 底部按键提示
+    const panelH = Math.min(totalH, state.canvasHeight - 60);
+    const px = cx - panelW / 2;
+    const py = cy - panelH / 2;
+
+    // 遮罩
+    ctx.fillStyle = 'rgba(0,0,0,0.78)';
+    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
+
+    // 面板背景
+    ctx.fillStyle = 'rgba(10,12,30,0.96)';
+    ctx.strokeStyle = '#a8dcff';
+    ctx.lineWidth = 2;
+    ctx.fillRect(px, py, panelW, panelH);
+    ctx.strokeRect(px, py, panelW, panelH);
+
+    // 标题
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 24px monospace';
+    ctx.fillStyle = '#a8dcff';
+    ctx.fillText('⟨ 星 域 知 识 库 ⟩', cx, py + 22);
+    ctx.font = FONT.base;
+    ctx.fillStyle = COLORS.text.muted;
+    ctx.fillText('地形与虫洞协同 · [H] 关闭', cx, py + 46);
+
+    // V1.5.9：总进度条
+    {
+      const barX = px + 18;
+      const barY = py + 64;
+      const barW = panelW - 36;
+      const ratio = totalCount > 0 ? completedCount / totalCount : 0;
+      // 背景槽
+      ctx.fillStyle = 'rgba(40,48,80,0.85)';
+      ctx.fillRect(barX, barY + 8, barW, 8);
+      // 填充
+      ctx.fillStyle = ratio >= 1 ? '#7dffb0' : '#a8dcff';
+      ctx.fillRect(barX, barY + 8, barW * ratio, 8);
+      // 边框
+      ctx.strokeStyle = 'rgba(168,220,255,0.4)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(barX, barY + 8, barW, 8);
+      // 文本
+      ctx.font = FONT.base;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = COLORS.text.muted;
+      ctx.fillText(`任务总进度`, barX, barY - 6);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = ratio >= 1 ? '#7dffb0' : COLORS.text.high;
+      ctx.fillText(`${completedCount} / ${totalCount}`, barX + barW, barY - 6);
+    }
+
+    // V1.5.11：可滚动内容区裁剪
+    const contentTop = py + 64 + progressBarH + 10;
+    const contentBottom = py + panelH - 30; // 留底部按键提示
+    const viewportH = contentBottom - contentTop;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(px + 8, contentTop, panelW - 16, viewportH);
+    ctx.clip();
+
+    // V1.5.6：分组渲染（V1.5.11 加入滚动偏移）
+    const contentStartY = contentTop - this.knowledgeScrollOffset;
+    let yCursor = contentStartY;
+
+    const drawSection = (sectionTitle: string, ids: string[]) => {
+      if (ids.length === 0) return;
+      // 分组标题
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 14px monospace';
+      ctx.fillStyle = COLORS.text.muted;
+      ctx.fillText(sectionTitle, px + 18, yCursor + sectionHeaderH / 2);
+      // 一条中心分隔线
+      const titleW = ctx.measureText(sectionTitle).width;
+      ctx.strokeStyle = 'rgba(168,220,255,0.25)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(px + 18 + titleW + 10, yCursor + sectionHeaderH / 2);
+      ctx.lineTo(px + panelW - 18, yCursor + sectionHeaderH / 2);
+      ctx.stroke();
+      yCursor += sectionHeaderH + sectionGap;
+
+      for (const id of ids) {
+        const tip = LORE_TIPS[id];
+        const blockH = titleH + tip.lines.length * lineH + tipPad * 2;
+        const tx = px + 16;
+        const ty = yCursor;
+        const tw = panelW - 32;
+
+        ctx.fillStyle = 'rgba(20,28,52,0.85)';
+        ctx.strokeStyle = tip.color;
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(tx, ty, tw, blockH);
+        ctx.strokeRect(tx, ty, tw, blockH);
+        ctx.fillStyle = tip.color;
+        ctx.fillRect(tx, ty, 4, blockH);
+
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.font = 'bold 16px monospace';
+        ctx.fillStyle = tip.color;
+        ctx.fillText(tip.title, tx + tipPad + 6, ty + tipPad);
+
+        // V1.5.5：任务卡右上角状态徽章
+        if (id.startsWith('challenge_')) {
+          const isDone = id.endsWith('_done');
+          const seen = isLoreSeen(id);
+          let badgeText = '';
+          let badgeColor = COLORS.text.muted;
+          if (isDone) {
+            badgeText = seen ? '✓ 已完成' : '○ 未完成';
+            badgeColor = seen ? '#7dffb0' : COLORS.text.muted;
+          } else {
+            const doneId = id + '_done';
+            const doneSeen = isLoreSeen(doneId);
+            badgeText = doneSeen ? '✓ 已完成' : (seen ? '▶ 进行中' : '○ 未启动');
+            badgeColor = doneSeen ? '#7dffb0' : (seen ? '#ffd060' : COLORS.text.muted);
+          }
+          ctx.font = FONT.base;
+          ctx.textAlign = 'right';
+          ctx.fillStyle = badgeColor;
+          ctx.fillText(badgeText, tx + tw - tipPad, ty + tipPad + 2);
+          ctx.textAlign = 'left';
+        }
+
+        ctx.font = FONT.base;
+        ctx.fillStyle = COLORS.text.high;
+        for (let li = 0; li < tip.lines.length; li++) {
+          ctx.fillText(tip.lines[li], tx + tipPad + 6, ty + tipPad + titleH + li * lineH);
+        }
+
+        yCursor += blockH + tipGap;
+      }
+    };
+
+    drawSection('◆ 地形知识', knowledgeIds);
+    drawSection('◆ 任务进度', challengeIds);
+
+    ctx.restore(); // 结束裁剪
+
+    // V1.5.11：内容总高度（绝对坐标 yCursor 减去 contentStartY 即为已绘制高度）
+    const contentH = yCursor - contentStartY;
+    this.knowledgeMaxScroll = Math.max(0, contentH - viewportH);
+    if (this.knowledgeScrollOffset > this.knowledgeMaxScroll) {
+      this.knowledgeScrollOffset = this.knowledgeMaxScroll;
+    }
+
+    // V1.5.11：滚动条
+    if (this.knowledgeMaxScroll > 0) {
+      const sbX = px + panelW - 8;
+      const sbY = contentTop;
+      const sbH = viewportH;
+      ctx.fillStyle = 'rgba(168,220,255,0.12)';
+      ctx.fillRect(sbX, sbY, 4, sbH);
+      const thumbH = Math.max(20, sbH * (viewportH / contentH));
+      const thumbY = sbY + (sbH - thumbH) * (this.knowledgeScrollOffset / this.knowledgeMaxScroll);
+      ctx.fillStyle = '#a8dcff';
+      ctx.fillRect(sbX, thumbY, 4, thumbH);
+    }
+
+    // V1.5.11：底部按键提示
+    ctx.font = FONT.base;
+    ctx.fillStyle = COLORS.text.muted;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('滚轮滚动 · [H] 关闭', cx, py + panelH - 16);
+
     ctx.restore();
   }
 
