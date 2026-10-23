@@ -1,0 +1,447 @@
+{
+  "created_on": "2026-10-20",
+  "tool": "OpenAI 内置 imagegen（imagegen Skill）",
+  "processing": "仅以无损 WebP 重新编码，逐像素核对全部 alpha 与所有非完全透明像素的 RGB；完全透明处的无效 RGB 由编码器清理。原图未裁切，显示边界由 alpha 测量，小尺寸缓存与炮塔转向在游戏中绘制。",
+  "common_prompt": "Use case: stylized-concept. Asset type: one production-ready transparent sprite for the original 2D space tower-defense game Starfield Nodes. Art direction: a clearly authored HAND-DRAWN 2D top-down strategy game asset, orthographic overhead camera looking straight down, compact ingenious industrial spacecraft machinery. Strong economical hand-inked dark navy contour, broad flat colored panels with only two or three hand-painted shadow values, subtle edge wear, warm ivory trim, decisive negative spaces. Readability at only 48 pixels is paramount. This is a playable game sprite, not a shiny concept render: no isometric perspective, no photorealism, no plastic 3D render, no cluttered tiny greebles, no neon bloom or luminous haze, no generic repeated hexagonal pedestal. The functional silhouette and colored body must dominate. Exactly one isolated complete object centered on a square canvas, occupying about 78 percent of the canvas width/height, all tips inside a clear 10 percent margin, on a genuinely transparent background. No scenery, no floor, no ground shadow, no lettering, no numbers, no logo, no frame, no infographic.",
+  "human_direction": "逐类指定功能轮廓、固定功能色和俯视角，以首张红色短管炮为统一风格参照；在真实建造栏、战场及缩小显示中复核。",
+  "reference_asset": "turret.webp",
+  "assets": [
+    {
+      "type": "core",
+      "color": "#b9eee7",
+      "silhouette": "四翼星核",
+      "file": "core.webp",
+      "source": "exec-066d7a19-9dd8-4e0d-bd74-cc97eda99cfc.png",
+      "source_sha256": "248f3b18b29c6be162d10532d5ce9adb9045bcf88ac6c4593dd9d90c0d2c9648",
+      "sha256": "40e6653bafa4a8a0e6543e17bc71bef094a6bc0e629baed073a0f65c2261bf66",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        58,
+        61,
+        1137,
+        1110
+      ],
+      "bytes": 583688,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A warm IVORY and PALE AQUA command core. Four broad pointed ivory arms form an unmistakable DIAMOND STAR silhouette around a large pale-aqua faceted central power crystal. Compact radial star-shaped command station, four separated tapering wings and one dark central socket, no gun, no tall spire. Ivory body, pale mint crystal, dark navy cavities. It must read as a wide four-pointed STAR."
+    },
+    {
+      "type": "energy",
+      "color": "#9bd85b",
+      "silhouette": "三叶电池",
+      "file": "energy.webp",
+      "source": "exec-9e449310-9024-4973-b497-fa62903bf52e.png",
+      "source_sha256": "ab5764757ddf2518af94a19eb467e59f76a95af9836b69581334122d30526e68",
+      "sha256": "140df3921e68f52e120a5e1e4283beafb74986496c075378e0cfb11617a3749f",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        46,
+        68,
+        1161,
+        1069
+      ],
+      "bytes": 716344,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A vivid LEAF GREEN power generator. THREE broad leaf-shaped green solar vanes, each a solid long rounded triangular paddle, radiate from a squat dark central motor with a tiny ivory hub, giving a distinctive three-leaf CLOVER / windmill silhouette. A few large dark photovoltaic cells drawn on each green paddle. Bright leaf green #9bd85b occupies most panels, warm ivory connectors. No gun, no circular or hexagonal platform, no antenna."
+    },
+    {
+      "type": "turret",
+      "color": "#f17c67",
+      "silhouette": "短管重炮",
+      "file": "turret.webp",
+      "source": "exec-8931062e-4109-4c08-b149-26be1a554fd3.png",
+      "source_sha256": "e24003ae5418dcf3d465ae03fc12d704d3be402404e88d17c9595386afaa640d",
+      "sha256": "a188b4de59da1f4cd12fc6c693b58a4204ec07bdfd140d7549efff270b7dddf1",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        40,
+        97,
+        1174,
+        1022
+      ],
+      "bytes": 761342,
+      "prompt_suffix": "Subject: a CORAL RED short-range artillery turret. Shape language: low broad crab-like armored gun mount with four short widely splayed landing feet, a chunky square red rotating head, ONE very wide SHORT cannon aimed straight toward the TOP of the image. Big dark rectangular muzzle, two huge red shoulder armor plates, one pale ivory breech stripe. Main body paint warm vermilion/coral red (#f17c67), with deep navy shadows and a little warm ivory. At thumbnail size it must look squat, broad, blunt and red, unmistakably an artillery gun. Make the central red head comprise most of the sprite, avoid tall antennae, avoid long sniper barrel, avoid missile banks. The rotation/pivot of the gun is the exact image center."
+    },
+    {
+      "type": "mine",
+      "color": "#efbd4e",
+      "silhouette": "双爪钻机",
+      "file": "mine.webp",
+      "source": "exec-74f451bb-ac6f-422a-bc77-0a1a88cef59e.png",
+      "source_sha256": "e253699e1b88c55d222315d69db921941141ba695cd44a21b37e6040cc2efa32",
+      "sha256": "3057c7b722754189d15e7b5578267642ddf7343caad5ced23bb991e0ec8fc810",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        139,
+        58,
+        976,
+        1085
+      ],
+      "bytes": 816648,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: An AMBER YELLOW asteroid mining machine. TWO large yellow articulated grabbing pincers point forward to the TOP with a clear dark open gap between them; one dark short conical auger drill sits in that central gap. A wide squat rectangular ore hopper at the bottom, thick industrial yellow arms and warm ivory hinge joints. Open claw / squared U silhouette, construction-machine yellow #efbd4e covers most of body. No gun or pedestal, no rocks surrounding it."
+    },
+    {
+      "type": "relay",
+      "color": "#55d3d5",
+      "silhouette": "窄身双叉",
+      "file": "relay.webp",
+      "source": "exec-879e31df-cc2d-49da-80f4-99ee0a9b1c5c.png",
+      "source_sha256": "694326cc1e95791a6fe2d2a4a36f4de762ad6fef8a3cc846c133da599b552a15",
+      "sha256": "c9ccd71229481f2bd3072dab7286d48e5424bf039314f8aba4b67add2e7110bc",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        377,
+        64,
+        500,
+        1126
+      ],
+      "bytes": 400290,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A CYAN power relay coupler. Very narrow long central ivory conductor bar pointing vertically, TWO wide cyan U-shaped fork terminals opening at the TOP and BOTTOM, with large clear gaps inside the forks. Overall slim H / tuning-fork silhouette, two symmetrical cyan side arms, a small dark power junction at exact center. Cyan #55d3d5 dominates, ivory insulator joints. No radar dish, no mast, no round base, no clover solar panels."
+    },
+    {
+      "type": "beacon",
+      "color": "#ba9cf0",
+      "silhouette": "四瓣望远镜",
+      "file": "beacon.webp",
+      "source": "exec-7922fd30-ed07-4d57-a3cb-726967ccb17a.png",
+      "source_sha256": "2e02cec2ec1bcab81a969a16877ffe58079aad517e8d0e7e8338b6f8ba520ba6",
+      "sha256": "531d36fac877f5a19703bfb6b6c87c9e856f45d9b51b2c3025dcb92ba7237e95",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        60,
+        70,
+        1135,
+        1086
+      ],
+      "bytes": 814368,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A LAVENDER deep-space observation beacon. A huge dark glass circular optical lens in a purple ring at center, FOUR long lavender triangular sensor fins spread around it diagonally with large gaps between them, like an OPEN COMPASS ROSE / optical satellite. Lens and fins dominate the footprint, one tiny ivory alignment bead on each tip. Dominant pale violet #ba9cf0. No gun, no radar bowl, no tall mast, no common hexagonal footing."
+    },
+    {
+      "type": "repair",
+      "color": "#67d6a4",
+      "silhouette": "十字维修臂",
+      "file": "repair.webp",
+      "source": "exec-6d591abc-ec4e-4a0e-b02b-de54f3ec9dd1.png",
+      "source_sha256": "155eea09f853b863b3c35ac19fda3d44fb70c77c3f14549d18a876c6510e6618",
+      "sha256": "807e5c3652041e96ead2b22e80fcc0baf60a68652b3a8b95608d5039fb240c34",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        35,
+        72,
+        1186,
+        1114
+      ],
+      "bytes": 497902,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A MINT GREEN repair station. A clear chunky PLUS-SHAPED machine, FOUR rounded rectangular mint green tool arms extend from one dark square workshop hub. Each end has a different simple ivory gripper tip. A small pale ivory cross-shaped mechanical inlay at the center without letters. The silhouette is an equal-armed PLUS, mint green #67d6a4 body panels. No gun, no circular base."
+    },
+    {
+      "type": "factory",
+      "color": "#7e9eec",
+      "silhouette": "双舱机库",
+      "file": "factory.webp",
+      "source": "exec-3df27453-cb16-4285-b254-488a28118680.png",
+      "source_sha256": "92ec3b73f82a19d860931d022ca9b3957731e1cc6c692079dd7df6beca43bd46",
+      "sha256": "d9adf5fe978503ced5c1014232b334582fd3f49e432852b70dcbf5b2b16a5893",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        11,
+        168,
+        1233,
+        906
+      ],
+      "bytes": 848188,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A PERIWINKLE BLUE drone factory. A broad WIDE RECTANGULAR hangar with TWO huge dark rectangular launch bays side by side opening to the TOP, separated by a blue spine, stepped blue wall armor, two tiny but clearly visible ivory triangular drones seated in the two open bays. Horizontal brick-like factory / double hangar silhouette. Dominant periwinkle blue #7e9eec. No big gun barrel, no turret, no mast."
+    },
+    {
+      "type": "shield",
+      "color": "#70a8f5",
+      "silhouette": "弧形护盾",
+      "file": "shield.webp",
+      "source": "exec-644076fa-ccef-4032-858c-0a926295f8cf.png",
+      "source_sha256": "b63858221ee9c67c1cc15270b9baf93e8259199020c806671cb0e2af75f88671",
+      "sha256": "f1762b868b778035e630ec02b1942f7ffffa1519fabef9a0d0307a76dd1b0c20",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        67,
+        166,
+        1121,
+        930
+      ],
+      "bytes": 693076,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A CERULEAN BLUE shield projector. A large thick blue CRESCENT-shaped armor emitter, open toward the TOP with clear empty space in the crescent, three ivory inset shield fins on its convex outer edge, a small dark central generator connected to the crescent by a single blue strut. The entire sprite silhouette reads as a BLUE CRESCENT / horseshoe shield, with no gun or glass dome. Bold blue #70a8f5."
+    },
+    {
+      "type": "tesla",
+      "color": "#efdb71",
+      "silhouette": "双极电网",
+      "file": "tesla.webp",
+      "source": "exec-6b2bb9b0-08c4-40fd-86f8-3bcb13f07ac0.png",
+      "source_sha256": "9e183b56492bc6f1cb774f23f21cfa515bfe4629c607d36075a059cbc2a6be07",
+      "sha256": "a515e44503689339655171dd6b0c10d98b799c32312064bedff8f4ba65199058",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        81,
+        147,
+        1092,
+        960
+      ],
+      "bytes": 711926,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A PALE YELLOW electrical grid defense node. TWO tall-looking but drawn strictly overhead thick yellow electrode blocks stand apart left and right, joined by a dark squat horizontal crossbar, each block capped by a big ivory sphere. A single small solid yellow zigzag arc joins the two spheres. Wide H-shaped TWO-POLE electrical gate silhouette, dominant straw yellow #efdb71. No gun, no circular ring, no antenna dish."
+    },
+    {
+      "type": "magnet",
+      "color": "#e38dbd",
+      "silhouette": "粉色马蹄磁铁",
+      "file": "magnet.webp",
+      "source": "exec-bd0a3e23-e9d7-42de-9f67-f500de2110db.png",
+      "source_sha256": "6a46b96f98204654f1faef0d90fc0d59b07954d1b9f44ac0108ba2e2005feb25",
+      "sha256": "9b7a05be20f3b591e4f8f7d4ab5f12e7dcde224283ff0592315aa13dddbddb59",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        83,
+        95,
+        1088,
+        1067
+      ],
+      "bytes": 754140,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A ROSE PINK magnetic slowing device. One unmistakable giant U-SHAPED MAGNET with two broad square ivory pole tips pointing toward the TOP, rose pink curved armored yoke at the bottom and a small dark cable coil inside. Very bold thick horseshoe silhouette, dominant rose #e38dbd. No complete ring, no portal, no gun, no pedestal."
+    },
+    {
+      "type": "trap",
+      "color": "#ef6861",
+      "silhouette": "锯齿地雷",
+      "file": "trap.webp",
+      "source": "exec-78e8801d-6b93-4095-957e-055e078ddc2b.png",
+      "source_sha256": "8e10f08db9e1f9329dc8720130ccd18fa593f7f797e7b1c80f981f4526051b3f",
+      "sha256": "4e3a3cafa4114c915ded50f238e5942fcca50801676f9668b9781f145056f079",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        95,
+        65,
+        1063,
+        1111
+      ],
+      "bytes": 788586,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A SCARLET mechanical area mine. A very FLAT wide round scarlet plate with exactly SIX short sharp triangular teeth around its perimeter, dark circular pressure center with one simple ivory triangular warning inset WITHOUT TEXT, three bold ivory fasteners. A spiked low DISC silhouette, dominant scarlet #ef6861. No legs, no turret, no standing explosive rocket."
+    },
+    {
+      "type": "sniper",
+      "color": "#eda752",
+      "silhouette": "细长轨道炮",
+      "file": "sniper.webp",
+      "source": "exec-2de37036-6c4b-4e8e-abff-8ce46d802f97.png",
+      "source_sha256": "a056db62db5119b56461c698609f9035d08447eefbac500c8dc5e9b9a4ff6a7f",
+      "sha256": "b8b357102d6623d5825f9618cff2b4294de31bbaaff455d8b074bfbd1a7e995b",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        291,
+        11,
+        672,
+        1213
+      ],
+      "bytes": 371766,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: An OCHRE ORANGE long-range railgun. Extremely LONG THIN twin parallel dark rails point straight to TOP, held by two bright orange narrow side housings separated by an open slit. Small orange diamond-shaped breech and only TWO widely splayed ivory stabilizer feet at the bottom. Very long slender Y-shaped silhouette, at least twice as long as it is wide. Dominant ochre orange #eda752, dark rails with ivory stripe. No squat broad turret head, no short cannon, no missile pods. Aim axis and rotation pivot at canvas center."
+    },
+    {
+      "type": "buffer",
+      "color": "#4ccbb6",
+      "silhouette": "双联蓄电池",
+      "file": "buffer.webp",
+      "source": "exec-4a540203-8254-4455-b9c0-76615de07c12.png",
+      "source_sha256": "63c94ee88ea53d72f9c152a143cd8ed2fb39d7ff91f6eee8cdcf6ba111bfaaf9",
+      "sha256": "b39a87522032fa79ed3b96593323dcc865d6293724567091e2d54fb8b5ebc3ea",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        38,
+        154,
+        1180,
+        941
+      ],
+      "bytes": 670894,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A TURQUOISE energy buffer machine. TWO large long rectangular turquoise battery cartridges side by side, each with three thick ivory charge bands and a dark cap, joined by one short dark horizontal connector and two small side handles. Clear compact DOUBLE-BATTERY silhouette with a visible dark gap between cartridges. Saturated teal #4ccbb6. No gun, no solar vanes, no ring, no radar."
+    },
+    {
+      "type": "collector",
+      "color": "#c1cf6e",
+      "silhouette": "三指抓取器",
+      "file": "collector.webp",
+      "source": "exec-b433fab1-888b-49a5-bb32-1f4fa1c6041d.png",
+      "source_sha256": "62517b39c097dcade304fdb0d5f4cac12cd4352f29de21900dd1c38fc7d9d93a",
+      "sha256": "1e720d24c345b62680401d43992286ba171616fc3aac691707c148c61d46f4da",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        43,
+        69,
+        1168,
+        1107
+      ],
+      "bytes": 630150,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: An OLIVE LIME resource collector. A ROUND open dark cargo basket with THREE long curved olive green articulated grabber arms arranged evenly around the basket, the arms open wide and end in ivory gripping hooks, giving a three-finger CLAW / mechanical triskelion silhouette. Dominant olive lime #c1cf6e, central cavity visible and empty. No auger drill, no twin industrial pincers, no solar panels."
+    },
+    {
+      "type": "interceptor",
+      "color": "#58b7ed",
+      "silhouette": "扇形导弹巢",
+      "file": "interceptor.webp",
+      "source": "exec-e3b28271-ee2b-4fb2-820f-6d8b016bde5c.png",
+      "source_sha256": "58c6f3f2abbfc67cab8aca4966de49272b1449329a7b6627ff7f8e4fd3524fd0",
+      "sha256": "a42bb3160647ed6c8b829b961197fb4ae2d53f4c703dc4c467bb35a830ab7e4b",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        67,
+        167,
+        1120,
+        907
+      ],
+      "bytes": 811608,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A SKY BLUE rapid interceptor. A wide V-SHAPED missile rack with TWO large outward-angled sky blue rectangular launch pods, each showing THREE big round dark missile tubes with ivory rims facing TOP. A small central dark triangular tracker between pods. The unit reads instantly as SIX TUBES / wide spread wing-shaped missile nest. Sky blue #58b7ed armor. No cannon barrel, no tank head, no sniper rails. Aim toward TOP, pivot at exact canvas center."
+    },
+    {
+      "type": "radar",
+      "color": "#a0d4ee",
+      "silhouette": "扇面雷达",
+      "file": "radar.webp",
+      "source": "exec-0877f971-5c3c-4e6f-9335-3807fb46365d.png",
+      "source_sha256": "9bfd1b32f72ff13dcef9268f6f7bc9af981f68f608e473b9c4eeddb5498924aa",
+      "sha256": "f54339f097437f3f39c891ce736d9a413657e76eaf958db7ced290d7abc1464b",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        41,
+        89,
+        1172,
+        1076
+      ],
+      "bytes": 851886,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: An ICE BLUE tracking radar. One enormous flat open FAN-SHAPED PARABOLIC DISH faces the TOP, with five broad blue radial ribs fanning out from a small ivory hub at bottom center, and a single dark central sensor stalk. The dish is a wide semicircle with a straight bottom edge, giving a distinctive FAN / half-circle silhouette. Dominant ice blue #a0d4ee, dark navy recessed panels, no four-point compass fins or eye lens, no narrow power forks."
+    },
+    {
+      "type": "portal",
+      "color": "#b291ef",
+      "silhouette": "断环跃迁门",
+      "file": "portal.webp",
+      "source": "exec-3c72d3a3-89c4-4dd9-9c15-324dd47db8e8.png",
+      "source_sha256": "ea5d8e3a1c446a10469f638f5394b2e2d41db5cc8578eebb65f78acb87c69706",
+      "sha256": "fca0a62f6dcd73749509c3ba5ca52154e9a48655856152406a26550b0560e7b6",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        30,
+        91,
+        1194,
+        1056
+      ],
+      "bytes": 635558,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A LILAC teleport portal seen directly from overhead. FOUR chunky lilac curved quarter-ring segments separated by four LARGE gaps form a broken circular mechanical gate with an entirely EMPTY transparent center. One ivory latch on each arc, short outward-pointing dark prongs at left and right. Distinctive OPEN BROKEN RING silhouette with lavender #b291ef panels. No opaque central sphere, no painted vortex, no background, no upright isometric ring."
+    },
+    {
+      "type": "blackhole",
+      "color": "#8b79d5",
+      "silhouette": "三钩引力井",
+      "file": "blackhole.webp",
+      "source": "exec-12a693ae-590a-416b-a013-a915260c43a7.png",
+      "source_sha256": "05a7d2f517e457c4e298c9c25301d92c573014ae62b7ce14e89a7859c0f63993",
+      "sha256": "96462fac01975090060b87ba855e933c532c4be680cc8c75444aa243f129ea62",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        69,
+        83,
+        1129,
+        1073
+      ],
+      "bytes": 633020,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A DEEP VIOLET gravity well generator. A solid perfectly dark small central SPHERE is gripped by THREE large broad hooked violet mechanical claws curving clockwise around it, like a three-bladed pinwheel with clearly separated gaps. Ivory containment pads on each claw tip; dark center must remain opaque. Deep violet #8b79d5 armor. No complete portal ring, no four equal ring quarters, no neon halo, no scenery."
+    },
+    {
+      "type": "echo",
+      "color": "#e9bc98",
+      "silhouette": "侧向共振波阵",
+      "file": "echo.webp",
+      "source": "exec-40be1c81-5c18-42d4-aa7c-94afa8e1d9aa.png",
+      "source_sha256": "8fb9c7d0bf68da7666e7e01ee7673542181fd0fbcb254462b8381c405e4837c4",
+      "sha256": "bfb8ecf3cb0bc6d69378f5ba832b8bc7f729a54fa501284bd3227bf86b015ab9",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        49,
+        118,
+        1160,
+        1026
+      ],
+      "bytes": 553816,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A WARM PEACH colored SIDEWAYS acoustic echo resonator, an ASYMMETRIC mechanical sound-wave array. At the LEFT is one small dark rectangular emitter box with an ivory tip pointing RIGHT. Three SEPARATE tall curved PEACH metal wave-vanes are arranged in a progression from left to right, like the sideways radio symbol ))) : each is a thin C-shaped arc OPEN TOWARD THE LEFT, with endpoints at TOP and BOTTOM, growing in height toward the RIGHT. Large transparent spaces separate all THREE arcs; only a slender dark horizontal rail joins their midpoints. Dominant warm peach #e9bc98 with warm ivory trim. The silhouette must look like THREE LATERAL SOUND WAVES, strongly horizontally asymmetric. DO NOT make a horseshoe, U magnet, two equal mirror arms, tuning fork, complete ring, circle enclosing a center, upward-facing gate or cannon. No pink magnet yoke. Strictly overhead hand-drawn game sprite in the same ink and paint style as the reference."
+    },
+    {
+      "type": "toxin",
+      "color": "#b2d653",
+      "silhouette": "三罐喷雾器",
+      "file": "toxin.webp",
+      "source": "exec-420c4571-ed1c-459e-ad20-2948544c8852.png",
+      "source_sha256": "d842e8e4d1f961a231d95d7c3c5f0c3f3d0b109d50a3da3342c7d5ee4cc7fdae",
+      "sha256": "1b7fdeb94935a42e55505cba5977f3815db8c1a87e2475ac96612b24ca3160bb",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        76,
+        67,
+        1102,
+        982
+      ],
+      "bytes": 679730,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: An ACID GREEN toxin dispersal machine. THREE large round-ended GREEN CHEMICAL CANISTERS form a tight triangle around a small dark three-way manifold, each canister has an ivory lid and one dark stripe; THREE tiny short nozzles point outward. Three-lobed triangular cluster silhouette, dominant acid chartreuse #b2d653. No clouds or painted smoke, no skulls, no lettering, no gun."
+    },
+    {
+      "type": "arc",
+      "color": "#679ff0",
+      "silhouette": "闪电分叉塔",
+      "file": "arc.webp",
+      "source": "exec-68b9c727-c72d-45af-aef6-2eb1337f2e4a.png",
+      "source_sha256": "955b5c79b717aa216193aa4f4351758cf96e77ac944cfb55ce57cebcda81c428",
+      "sha256": "a10cbee6668ea3fc5dead55e7c1fcc9587ecb2405119069ecee81a23ad98e062",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        43,
+        75,
+        1162,
+        1104
+      ],
+      "bytes": 492192,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: An ELECTRIC BLUE lightning chain emitter. ONE central narrow stepped electric-blue conductor divides into TWO sharply zigzagging long forked arms reaching toward TOP LEFT and TOP RIGHT; each tip has one large ivory electrode ball. A tiny dark rectangular energy pack at the bottom. Long angular Y-shaped LIGHTNING FORK silhouette, dominant electric blue #679ff0. No broad two-pole H gate, no cannon, no antenna dish. Avoid actual glowing lightning FX."
+    },
+    {
+      "type": "kamikaze",
+      "color": "#ed7298",
+      "silhouette": "四瓣爆破芯",
+      "file": "kamikaze.webp",
+      "source": "exec-9a07f4da-d4a3-4707-b738-f021a00e6686.png",
+      "source_sha256": "11ee22f7fd69b1711e5d459578c8eaa69d93b9d0f0ecbd84f2ff4b11f3f00638",
+      "sha256": "90d56cea61d03ddd1546423d2ba4ae9fe5a98ee74e65c2e8f77a6f7609273eb5",
+      "width": 1254,
+      "height": 1254,
+      "bounds": [
+        81,
+        63,
+        1092,
+        1084
+      ],
+      "bytes": 647114,
+      "prompt_suffix": "Image 1 is ONLY the art style reference (ink contour, hand-painted flat panels, palette value structure). Create an entirely DIFFERENT machine, do not reuse the reference cannon or its shape.\nSubject: A HOT PINK RED self-destruct charge. FOUR big coral-magenta triangular explosive wedges point OUTWARD from a small ivory central detonator, with deep open dark seams separating wedges, giving a compact FOUR-POINT HAZARD STAR / demolition charge silhouette. Dominant pink-red #ed7298, one dark mechanical fuse block at bottom. No gun barrel, no circular six-tooth landmine, no missile nest."
+    }
+  ]
+}
