@@ -1,94 +1,83 @@
-// ===== 战争迷雾系统 =====
-import type { GameState } from './types';
+import type { GameState, VisibilityState } from './types';
 
-/**
- * 战争迷雾 - 通过离屏 canvas 生成 alpha mask
- * 已激活的节点周围可见，其余区域被迷雾覆盖
- */
+/** Exploration-memory mask; tactical visibility is owned by visibility.ts. */
 export class FogOfWar {
-  private fogCanvas: OffscreenCanvas;
-  private fogCtx: OffscreenCanvasRenderingContext2D;
-  private revealRadius = 200;   // 节点视野半径
-  private coreRevealRadius = 350; // 核心节点视野
+  private canvas: OffscreenCanvas;
+  private ctx: OffscreenCanvasRenderingContext2D;
+  private revision = -1;
+  private model?: VisibilityState;
+  private softened: OffscreenCanvas;
   enabled = true;
-
-  constructor(worldWidth: number, worldHeight: number) {
-    // 使用较低分辨率以节省性能
-    const scale = 0.25;
-    const w = Math.max(1, Math.floor(worldWidth * scale));
-    const h = Math.max(1, Math.floor(worldHeight * scale));
-    this.fogCanvas = new OffscreenCanvas(w, h);
-    this.fogCtx = this.fogCanvas.getContext('2d')!;
+  constructor(width: number, height: number) {
+    this.canvas = new OffscreenCanvas(Math.ceil(width / 6), Math.ceil(height / 6));
+    this.ctx = this.canvas.getContext('2d')!;
+    this.softened = new OffscreenCanvas(this.canvas.width, this.canvas.height);
   }
-
-  /** 在主渲染之后调用，绘制迷雾遮罩 */
   renderFog(ctx: CanvasRenderingContext2D, state: GameState): void {
     if (!this.enabled) return;
-
-    const fctx = this.fogCtx;
-    const fw = this.fogCanvas.width;
-    const fh = this.fogCanvas.height;
-    const scaleX = fw / state.worldWidth;
-    const scaleY = fh / state.worldHeight;
-
-    // 重置为全黑（不可见）
-    fctx.fillStyle = 'rgba(0,0,0,1)';
-    fctx.fillRect(0, 0, fw, fh);
-
-    // 用 "destination-out" 在节点位置挖洞
-    fctx.globalCompositeOperation = 'destination-out';
-
-    for (const node of state.nodes) {
-      if (node.status === 'destroyed') continue;
-
-      let r = node.type === 'core'
-        ? this.coreRevealRadius
-        : node.type === 'beacon'
-        ? 500 // 信标揭示超大范围迷雾
-        : this.revealRadius;
-
-      // 天气星云遮挡 — 节点在云中时视野缩小
-      for (const c of state.weatherClouds) {
-        const dx = node.x - c.x, dy = node.y - c.y;
-        if (dx * dx + dy * dy < c.radius * c.radius) {
-          r *= 0.65;
-          break;
+    const v = state.visibility;
+    if (this.model !== v || this.revision !== v.revision) {
+      const f = this.ctx,
+        scale = this.canvas.width / state.worldWidth;
+      f.globalCompositeOperation = 'source-over';
+      f.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      f.fillStyle = 'rgba(2,8,17,0.96)';
+      f.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      f.globalCompositeOperation = 'destination-out';
+      f.fillStyle = 'rgba(0,0,0,0.42)';
+      for (let y = 0; y < v.rows; y++)
+        for (let x = 0; x < v.cols; x++) {
+          if (v.explored[y * v.cols + x])
+            f.fillRect(
+              x * v.cellSize * scale,
+              y * v.cellSize * scale,
+              v.cellSize * scale + 0.5,
+              v.cellSize * scale + 0.5,
+            );
         }
+      for (const source of v.sources) {
+        const x = source.x * scale,
+          y = source.y * scale,
+          r = source.radius * scale;
+        const g = f.createRadialGradient(x, y, r * 0.7, x, y, r * 1.06);
+        g.addColorStop(0, 'rgba(0,0,0,1)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        f.fillStyle = g;
+        f.beginPath();
+        f.arc(x, y, r * 1.06, 0, Math.PI * 2);
+        f.fill();
       }
-
-      const fx = node.x * scaleX;
-      const fy = node.y * scaleY;
-      const fr = r * scaleX;
-
-      const grad = fctx.createRadialGradient(fx, fy, fr * 0.3, fx, fy, fr);
-      grad.addColorStop(0, 'rgba(0,0,0,1)');
-      grad.addColorStop(0.7, 'rgba(0,0,0,0.8)');
-      grad.addColorStop(1, 'rgba(0,0,0,0)');
-
-      fctx.fillStyle = grad;
-      fctx.beginPath();
-      fctx.arc(fx, fy, fr, 0, Math.PI * 2);
-      fctx.fill();
+      f.globalCompositeOperation = 'source-over';
+      const soft = this.softened.getContext('2d')!;
+      soft.clearRect(0, 0, this.softened.width, this.softened.height);
+      soft.filter = 'blur(3px)';
+      soft.drawImage(this.canvas, 0, 0);
+      this.revision = v.revision;
+      this.model = v;
     }
-
-    fctx.globalCompositeOperation = 'source-over';
-
-    // 将迷雾绘制到主画布（世界空间内）
-    ctx.save();
-    ctx.globalAlpha = 0.7;
-    ctx.drawImage(
-      this.fogCanvas,
-      0, 0, fw, fh,
-      0, 0, state.worldWidth, state.worldHeight
-    );
-    ctx.restore();
+    const cam = state.camera,
+      left = Math.max(0, cam.x),
+      top = Math.max(0, cam.y);
+    const width = Math.min(state.worldWidth - left, state.canvasWidth / cam.zoom),
+      height = Math.min(state.worldHeight - top, state.canvasHeight / cam.zoom);
+    if (width > 0 && height > 0)
+      ctx.drawImage(
+        this.softened,
+        (left / state.worldWidth) * this.softened.width,
+        (top / state.worldHeight) * this.softened.height,
+        (width / state.worldWidth) * this.softened.width,
+        (height / state.worldHeight) * this.softened.height,
+        left,
+        top,
+        width,
+        height,
+      );
   }
-
-  resize(worldWidth: number, worldHeight: number): void {
-    const scale = 0.25;
-    const w = Math.max(1, Math.floor(worldWidth * scale));
-    const h = Math.max(1, Math.floor(worldHeight * scale));
-    this.fogCanvas = new OffscreenCanvas(w, h);
-    this.fogCtx = this.fogCanvas.getContext('2d')!;
+  resize(width: number, height: number): void {
+    this.canvas.width = Math.ceil(width / 6);
+    this.canvas.height = Math.ceil(height / 6);
+    this.softened.width = this.canvas.width;
+    this.softened.height = this.canvas.height;
+    this.revision = -1;
   }
 }

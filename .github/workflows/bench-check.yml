@@ -23,7 +23,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install deps
@@ -37,6 +37,9 @@ jobs:
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
+
+      - name: Core regression tests
+        run: npm test
 
       - name: Build
         run: npm run build

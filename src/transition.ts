@@ -47,7 +47,7 @@ export function transitionTo(
   }
   busy = true;
 
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     el.style.transition = `opacity ${outMs}ms ease`;
     el.style.pointerEvents = 'auto';
     // 触发布局后再设置 opacity，确保 transition 生效
@@ -87,8 +87,8 @@ export function instantBlack(): void {
 }
 
 /** 立即开始淡入（与 instantBlack 配合） */
-export function fadeIn(durationMs = FADE_IN_MS): Promise<void> {
-  return new Promise(resolve => {
+export function fadeIn(durationMs: number = FADE_IN_MS): Promise<void> {
+  return new Promise((resolve) => {
     const el = ensureOverlay();
     requestAnimationFrame(() => {
       el.style.transition = `opacity ${durationMs}ms ease`;

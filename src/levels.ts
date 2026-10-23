@@ -1,11 +1,13 @@
 // ===== 关卡定义系统 =====
-import type { NodeType } from './types';
+import type { NodeType, MissionTactics, Point } from './types';
 import { LEVELS } from './data/levels';
 
-export type ObjectiveType = 'survive' | 'boss' | 'protect' | 'timed';
+export type ObjectiveType = 'survive' | 'boss' | 'protect' | 'timed' | 'network';
 
 export interface LevelConfig {
   id: number;
+  tactics?: MissionTactics;
+  corePositions?: Point[];
   name: string;
   description: string;
   worldWidth: number;
@@ -15,6 +17,7 @@ export interface LevelConfig {
   startCrystals?: number;
   /** 可用节点类型（PvZ选卡从这里选） */
   availableNodes: NodeType[];
+  requiredNodes?: NodeType[];
   /** 最大可携带节点种类数 */
   maxSelectedNodes: number;
   /** 胜利条件 */
@@ -54,6 +57,16 @@ export interface LevelConfig {
 export { LEVELS };
 
 export function getUnlockedLevels(clearedLevelIds: number[]): LevelConfig[] {
-  return LEVELS.filter(l => l.unlockRequires === 0 || clearedLevelIds.includes(l.unlockRequires));
+  return LEVELS.filter(
+    (l) =>
+      l.unlockRequires === 0 ||
+      clearedLevelIds.includes(l.id) ||
+      clearedLevelIds.includes(l.unlockRequires),
+  );
 }
 
+export function recommendedLoadout(level: LevelConfig): NodeType[] {
+  return [
+    ...(level.tactics?.recommendedNodes ?? level.availableNodes.slice(0, level.maxSelectedNodes)),
+  ];
+}

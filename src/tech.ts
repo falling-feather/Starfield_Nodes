@@ -1,5 +1,6 @@
 // ===== 科技树系统 =====
-import type { NodeType, GameState } from './types';
+import type { NodeType, GameState, GameNode } from './types';
+import { MAX_EDGE_LENGTH } from './data/runtime';
 
 export interface TechNode {
   id: string;
@@ -14,11 +15,10 @@ export interface TechNode {
 }
 
 export type TechEffect =
-  | { type: 'unlock_node'; nodeType: NodeType }
   | { type: 'boost_throughput'; amount: number }
   | { type: 'boost_damage'; multiplier: number }
   | { type: 'boost_energy'; multiplier: number }
-  | { type: 'boost_hp'; multiplier: number }
+  | { type: 'boost_hp'; multiplier: number; nodeType?: NodeType }
   | { type: 'core_production'; amount: number }
   | { type: 'reduce_cost'; multiplier: number }
   | { type: 'turret_range'; multiplier: number }
@@ -50,17 +50,18 @@ export function canResearch(tech: TechNode, techState: TechState, resources: num
   if (tech.unlocked) return false;
   if (resources < tech.cost) return false;
   // 检查前置科技是否已解锁
-  return tech.requires.every(reqId =>
-    techState.tree.find(t => t.id === reqId)?.unlocked === true
+  return tech.requires.every(
+    (reqId) => techState.tree.find((t) => t.id === reqId)?.unlocked === true,
   );
 }
 
 // 研究科技
 export function researchTech(techId: string, techState: TechState, state: GameState): boolean {
-  const tech = techState.tree.find(t => t.id === techId);
+  const tech = techState.tree.find((t) => t.id === techId);
   if (!tech || !canResearch(tech, techState, state.resources)) return false;
 
   state.resources -= tech.cost;
+  state.resourcesSpent += tech.cost;
   tech.unlocked = true;
 
   // 应用科技效果
@@ -80,12 +81,14 @@ function applyTechEffect(effect: TechEffect, state: GameState): void {
       break;
     case 'boost_hp':
       for (const node of state.nodes) {
+        if (node.owner !== 'player' || (effect.nodeType && node.type !== effect.nodeType)) continue;
         node.maxHp = Math.floor(node.maxHp * effect.multiplier);
         node.hp = Math.min(node.hp * effect.multiplier, node.maxHp);
       }
       break;
     case 'boost_energy':
       for (const node of state.nodes) {
+        if (node.owner !== 'player') continue;
         node.maxEnergy = Math.floor(node.maxEnergy * effect.multiplier);
       }
       break;
@@ -95,7 +98,6 @@ function applyTechEffect(effect: TechEffect, state: GameState): void {
     case 'reduce_cost':
     case 'auto_repair':
     case 'max_edge_length':
-    case 'unlock_node':
       // 这些效果在游戏逻辑中查询科技树状态来实现
       break;
   }
@@ -103,9 +105,14 @@ function applyTechEffect(effect: TechEffect, state: GameState): void {
 
 // 查询已解锁的科技效果
 export function getTechMultiplier(techState: TechState, effectType: TechEffect['type']): number {
-  let result = effectType === 'boost_damage' || effectType === 'boost_energy'
-    || effectType === 'boost_hp' || effectType === 'reduce_cost'
-    || effectType === 'turret_range' ? 1 : 0;
+  let result =
+    effectType === 'boost_damage' ||
+    effectType === 'boost_energy' ||
+    effectType === 'boost_hp' ||
+    effectType === 'reduce_cost' ||
+    effectType === 'turret_range'
+      ? 1
+      : 0;
 
   for (const tech of techState.tree) {
     if (!tech.unlocked) continue;
@@ -121,13 +128,19 @@ export function getTechMultiplier(techState: TechState, effectType: TechEffect['
   return result;
 }
 
-// 检查节点类型是否已解锁
-export function isNodeUnlocked(techState: TechState, nodeType: NodeType): boolean {
-  // 基础类型默认解锁
-  const defaultUnlocked: NodeType[] = ['core', 'energy', 'turret', 'mine', 'relay'];
-  if (defaultUnlocked.includes(nodeType)) return true;
+/** Apply researched structural bonuses once to a newly built/recruited or re-leveled node. */
+export function applyNodeTech(node: GameNode, state: TechState): void {
+  for (const tech of state.tree) {
+    if (!tech.unlocked) continue;
+    const e = tech.effect;
+    if (e.type === 'boost_hp' && (!e.nodeType || e.nodeType === node.type)) {
+      node.maxHp = Math.floor(node.maxHp * e.multiplier);
+      node.hp = Math.min(node.maxHp, node.hp * e.multiplier);
+    }
+    if (e.type === 'boost_energy') node.maxEnergy = Math.floor(node.maxEnergy * e.multiplier);
+  }
+}
 
-  return techState.tree.some(t =>
-    t.unlocked && t.effect.type === 'unlock_node' && t.effect.nodeType === nodeType
-  );
+export function getMaxEdgeLength(state: TechState): number {
+  return MAX_EDGE_LENGTH + getTechMultiplier(state, 'max_edge_length');
 }

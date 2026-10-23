@@ -32,7 +32,7 @@ function buildOverlay(): void {
     border: 1px solid ${COLORS.border.cyanFaint};
     border-radius: 8px;
     box-shadow: 0 8px 32px ${withAlpha(COLORS.accent.cyan, 0.25)};
-    font-family: ${FONT.body};
+    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
     color: ${COLORS.text.primary};
     transform: translateY(-8px);
     transition: transform 180ms ease-out;
@@ -53,7 +53,10 @@ function buildList(): void {
   if (!panel) return;
   const themes = listThemes();
   const current = getThemeName();
-  highlightIdx = Math.max(0, themes.findIndex((t) => t.name === current));
+  highlightIdx = Math.max(
+    0,
+    themes.findIndex((t) => t.name === current),
+  );
 
   panel.innerHTML = '';
   itemEls = [];
@@ -116,7 +119,11 @@ function updateItemStyles(): void {
     el.textContent = (active ? '● ' : '○ ') + t.label;
     el.style.color = active ? COLORS.accent.cyan : COLORS.text.body;
     el.style.background = focused ? withAlpha(COLORS.accent.cyan, 0.12) : 'transparent';
-    el.style.borderTop = el.style.borderBottom = el.style.borderLeft = el.style.borderRight = `1px solid ${focused ? COLORS.border.cyanFaint : 'transparent'}`;
+    el.style.borderTop =
+      el.style.borderBottom =
+      el.style.borderLeft =
+      el.style.borderRight =
+        `1px solid ${focused ? COLORS.border.cyanFaint : 'transparent'}`;
   });
 }
 

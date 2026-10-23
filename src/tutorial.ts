@@ -1,6 +1,12 @@
+import { TERRAIN_SYNERGY } from './data/balance';
 // ===== 分步教程系统 =====
 import type { GameState } from './types';
-import { isPointInNebulaPolygon, isNearAsteroidPolygonEdge, findWormholePolygonAt, pointInPolygon } from './terrain-poly';
+import {
+  isPointInNebulaPolygon,
+  isNearAsteroidPolygonEdge,
+  findWormholePolygonAt,
+  pointInPolygon,
+} from './terrain-poly';
 
 export interface TutorialStep {
   id: string;
@@ -11,6 +17,7 @@ export interface TutorialStep {
   /** 自动完成条件，每帧调用。返回 true 时进入下一步 */
   condition: (state: GameState) => boolean;
   /** 高亮区域类型 */
+  manual?: boolean;
   highlight?: 'center' | 'bottom' | 'top';
 }
 
@@ -24,6 +31,7 @@ const STEPS: TutorialStep[] = [
       '',
       '按 [空格] 继续...',
     ],
+    manual: true,
     condition: () => false, // 手动跳过
     highlight: 'center',
   },
@@ -36,32 +44,34 @@ const STEPS: TutorialStep[] = [
       '',
       '拖拽连接一条链路后自动继续',
     ],
-    condition: (state) => state.edges.length >= 1,
+    condition: (state) => state.edges.some((e) => !initialEdges.has(e.id)),
     highlight: 'center',
   },
   {
     id: 'build',
     title: '⟨ 第二步：建造节点 ⟩',
     lines: [
-      '按 [1] 选择能量站，然后点击空地放置。',
-      '能量站会中继并放大能量传输。',
+      '选择底部的「能量站」卡片，点击核心附近空地放置。',
+      '建好后，从核心拖拽一条连线接入它。',
       '',
-      '建造一个新节点后自动继续',
+      '建好并连接新能量站后自动继续',
     ],
-    condition: (state) => state.nodes.filter(n => n.type !== 'core').length >= 1,
+    condition: (state) =>
+      state.nodes.some((n) => n.type === 'energy' && n.connected && !initialNodes.has(n.id)),
     highlight: 'bottom',
   },
   {
     id: 'build_turret',
     title: '⟨ 第三步：防御建设 ⟩',
     lines: [
-      '按 [2] 选择炮塔，放置到敌人可能经过的位置。',
+      '选择底部的「炮塔」卡片，放置在入侵方向上。',
       '炮塔会自动攻击范围内的敌人！',
       '别忘了用链路连接它到能量网络。',
       '',
-      '建造一座炮塔后自动继续',
+      '建好并连接新炮塔后自动继续',
     ],
-    condition: (state) => state.nodes.some(n => n.type === 'turret'),
+    condition: (state) =>
+      state.nodes.some((n) => n.type === 'turret' && n.connected && !initialNodes.has(n.id)),
     highlight: 'bottom',
   },
   {
@@ -74,6 +84,7 @@ const STEPS: TutorialStep[] = [
       '',
       '按 [空格] 继续...',
     ],
+    manual: true,
     condition: () => false,
     highlight: 'center',
   },
@@ -84,10 +95,11 @@ const STEPS: TutorialStep[] = [
       '敌人会持续攻击你的节点。',
       '保护核心不被摧毁即可取得胜利！',
       '',
-      '提示：[T]打开科技树 | [3]建矿机产资源',
+      '选中节点按 [U] 升级；[T] 研究，[P] 规划。',
       '',
       '按 [空格] 开始战斗！',
     ],
+    manual: true,
     condition: () => false,
     highlight: 'center',
   },
@@ -98,8 +110,10 @@ const STEPS: TutorialStep[] = [
 let active = false;
 let currentStep = 0;
 let completed = false;
+let initialNodes = new Set<string>();
+let initialEdges = new Set<string>();
 
-const STORAGE_KEY = 'starfield_nodes_tutorial_done';
+const STORAGE_KEY = 'starfield_nodes_tutorial_v2_done';
 
 /** 是否已完成过教程 */
 export function isTutorialDone(): boolean {
@@ -112,7 +126,9 @@ function markDone(): void {
 }
 
 /** 开始教程（仅在首次游戏时调用） */
-export function startTutorial(): void {
+export function startTutorial(state: GameState): void {
+  initialNodes = new Set(state.nodes.map((n) => n.id));
+  initialEdges = new Set(state.edges.map((e) => e.id));
   if (isTutorialDone()) return;
   active = true;
   currentStep = 0;
@@ -136,7 +152,7 @@ export function advanceTutorial(): boolean {
   if (!active || completed) return false;
   const step = STEPS[currentStep];
   // 当前步骤无自动条件 → 空格推进
-  if (step) {
+  if (step?.manual) {
     currentStep++;
     if (currentStep >= STEPS.length) {
       skipTutorial();
@@ -184,7 +200,7 @@ export const LORE_TIPS: Record<string, LoreTip> = {
     id: 'terrain_nebula',
     title: '★ 知识：星云地形',
     lines: [
-      'Energy 节点位于 Nebula 多边形内时，每 tick 充能 ×1.30。',
+      '能量站 节点位于 星云区域内时，每 步 充能 ×1.30。',
       '把发电机藏进星云能显著提升电网容量。',
     ],
     color: '#7da6ff',
@@ -193,7 +209,7 @@ export const LORE_TIPS: Record<string, LoreTip> = {
     id: 'terrain_asteroid',
     title: '★ 知识：陨石带边缘',
     lines: [
-      'Turret / Sniper 距离 Asteroid 多边形边 ≤ 90 像素时，射程 ×1.25。',
+      '炮塔 / 狙击塔 距离 小行星带边界边 ≤ 90 像素时，射程 ×1.25。',
       '沿陨石带外缘布防，火力覆盖更远。',
     ],
     color: '#ff9b6b',
@@ -202,111 +218,98 @@ export const LORE_TIPS: Record<string, LoreTip> = {
     id: 'terrain_wormhole',
     title: '★ 知识：虫洞枢纽',
     lines: [
-      'Wormhole 多边形成对出现：',
-      '· 同方 Energy 在两端 → 充能 ×1.20（远程枢纽）',
-      '· 同方 Relay 在两端 → 跨虫洞虚拟边，能量网络远程跳点',
-      '· 同方 Buffer 在两端 → 跨虫洞 aura 共振',
+      '近端中继通电后可侦察彼岸，再接管远端中继。',
+      '双端中继接通后能够跨域输能，长主干需要充足产能。',
+      '远端核心可独立供电；两端能量站可互相增加20%产能。',
     ],
     color: '#a8dcff',
   },
   // V1.5.2 主动引导：energy 拖进 nebula
   challenge_energy_in_nebula: {
     id: 'challenge_energy_in_nebula',
-    title: '★ 任务：充能优化',
+    title: '可选挑战：充能优化',
     lines: [
       '当前关卡包含星云地形。',
-      '尝试把一个 Energy 节点拖/放到 Nebula 内部。',
+      '尝试把一个 能量站 节点建在 星云 内部。',
       '成功后该节点充能×1.30。',
     ],
     color: '#7da6ff',
   },
   challenge_energy_in_nebula_done: {
     id: 'challenge_energy_in_nebula_done',
-    title: '★ 完成：星云充能激活',
-    lines: [
-      'Energy 节点进入星云 → 充能×1.30。',
-      '可叠加虫洞枢纽×1.20，总倍率 ×1.56。',
-    ],
+    title: '发现完成：星云充能激活',
+    lines: ['能量站 节点进入星云 → 充能×1.30。', '可叠加虫洞枢纽×1.20，总倍率 ×1.56。'],
     color: '#7da6ff',
   },
   // V1.5.3 任务：turret/sniper 布防在陕石带边缘
   challenge_turret_near_asteroid: {
     id: 'challenge_turret_near_asteroid',
-    title: '★ 任务：边缘布防',
+    title: '可选挑战：边缘布防',
     lines: [
       '当前关卡包含陕石带地形。',
-      '尝试把 Turret 或 Sniper 建在 Asteroid 边缘±90像素内。',
+      '尝试把 炮塔 或 狙击塔 建在 小行星带 边缘±90像素内。',
       '成功后该节点射程×1.25。',
     ],
     color: '#ff9b6b',
   },
   challenge_turret_near_asteroid_done: {
     id: 'challenge_turret_near_asteroid_done',
-    title: '★ 完成：陕石带增程激活',
-    lines: [
-      'Turret/Sniper 在陕石带边缘 → 射程×1.25。',
-      '推荐沿陕石带外缘连拉一条防线。',
-    ],
+    title: '发现完成：陕石带增程激活',
+    lines: ['炮塔/狙击塔 在陕石带边缘 → 射程×1.25。', '推荐沿陕石带外缘连拉一条防线。'],
     color: '#ff9b6b',
   },
   // V1.5.4 任务：虫洞枢纽（同方 energy 在两端）
   challenge_wormhole_energy_pair: {
     id: 'challenge_wormhole_energy_pair',
-    title: '★ 任务：虫洞枢纽',
+    title: '可选挑战：虫洞枢纽',
     lines: [
-      '当前关卡包含虫洞多边形对。',
-      '在一对虫洞两端各放一个 Energy 节点。',
-      '双端同方充能×1.20，远程供能枢纽成形。',
+      '当前关卡包含虫洞区域对。',
+      '在一对虫洞两端各放一个 能量站 节点。',
+      '双端己方充能×1.20，远程供能枢纽成形。',
     ],
     color: '#a8dcff',
   },
   challenge_wormhole_energy_pair_done: {
     id: 'challenge_wormhole_energy_pair_done',
-    title: '★ 完成：虫洞枢纽打通',
+    title: '发现完成：虫洞枢纽打通',
     lines: [
-      '同方 Energy 跨虫洞双端 → 充能×1.20。',
-      '进阶：Relay 在两端可跨虫洞虚拟边，Buffer 可跨虫洞共振 aura。',
+      '己方 能量站 跨虫洞双端 → 充能×1.20。',
+      '进阶：双端中继可跨域输能，其他枢纽联动可在作战手册查看。',
     ],
     color: '#a8dcff',
   },
   // V1.5.8 虫洞进阶：Relay 双端
   challenge_wormhole_relay_pair: {
     id: 'challenge_wormhole_relay_pair',
-    title: '★ 任务：跨虫洞中继',
+    title: '可选挑战：跨虫洞中继',
     lines: [
-      '在一对虫洞两端各放一个 Relay 节点。',
-      '两个 Relay 会形成跨虫洞虚拟边，',
+      '在一对虫洞两端各放一个 中继器 节点。',
+      '双端中继接通后能够跨域输送能量，',
       '能量网络可远程跳点、跨越地形障碍。',
     ],
     color: '#78c8ff',
   },
   challenge_wormhole_relay_pair_done: {
     id: 'challenge_wormhole_relay_pair_done',
-    title: '★ 完成：跨虫洞中继启用',
-    lines: [
-      '同方 Relay 跨虫洞双端 → 能量网络远程跳点。',
-      '可与 Energy/Buffer 枢纽叠加使用。',
-    ],
+    title: '发现完成：跨虫洞中继启用',
+    lines: ['己方 中继器 跨虫洞双端 → 能量网络远程跳点。', '可与 能量站/缓冲器 枢纽叠加使用。'],
     color: '#78c8ff',
   },
   // V1.5.8 虫洞进阶：Buffer 双端
   challenge_wormhole_buffer_pair: {
     id: 'challenge_wormhole_buffer_pair',
-    title: '★ 任务：跨虫洞共振',
+    title: '可选挑战：跨虫洞共振',
     lines: [
-      '在一对虫洞两端各放一个 Buffer 节点。',
-      '两端 Buffer 会共振 aura，',
+      '在一对虫洞两端各放一个 缓冲器 节点。',
+      '两端 缓冲器 会共振 光环，',
       '远程加成另一端附近节点。',
     ],
     color: '#a8dcff',
   },
   challenge_wormhole_buffer_pair_done: {
     id: 'challenge_wormhole_buffer_pair_done',
-    title: '★ 完成：跨虫洞共振启用',
-    lines: [
-      '同方 Buffer 跨虫洞双端 → aura 跨空间广播。',
-      '适合保护远点孤立的防线。',
-    ],
+    title: '发现完成：跨虫洞共振启用',
+    lines: ['己方 缓冲器 跨虫洞双端 → 光环 跨空间广播。', '适合保护远点孤立的防线。'],
     color: '#a8dcff',
   },
 };
@@ -326,14 +329,16 @@ function loadSeenLore(): Set<string> {
 function saveSeenLore(s: Set<string>): void {
   try {
     localStorage.setItem(LORE_STORAGE, JSON.stringify([...s]));
-  } catch { /* quota / private mode → 静默 */ }
+  } catch {
+    /* quota / private mode → 静默 */
+  }
 }
 
 /** 扫描当前关卡 terrainPolygons，返回应该弹出的 lore tip id 列表（首次见的），并把它们标记为已读 */
 export function checkLoreTipsForLevel(state: GameState): string[] {
   const seen = loadSeenLore();
   const out: string[] = [];
-  const types = new Set(state.terrainPolygons.map(p => p.type));
+  const types = new Set(state.terrainPolygons.map((p) => p.type));
   const map: Record<string, string> = {
     nebula: 'terrain_nebula',
     asteroid: 'terrain_asteroid',
@@ -351,7 +356,11 @@ export function checkLoreTipsForLevel(state: GameState): string[] {
 
 /** 测试/调试用：清空已读记录（让所有 tip 下次再弹一次） */
 export function resetLoreTips(): void {
-  try { localStorage.removeItem(LORE_STORAGE); } catch { /* ignore */ }
+  try {
+    localStorage.removeItem(LORE_STORAGE);
+  } catch {
+    /* ignore */
+  }
 }
 
 /** V1.5.5 该 lore id 是否已被玩家触发过（用于知识库面板状态徽章） */
@@ -374,10 +383,16 @@ export function getCompletedChallengeCount(): number {
 export function checkChallengeTips(state: GameState): string[] {
   const seen = loadSeenLore();
   const out: string[] = [];
-  const hasNebula = state.terrainPolygons.some(p => p.type === 'nebula');
+  const hasNebula = state.terrainPolygons.some((p) => p.type === 'nebula');
   if (hasNebula) {
-    const energyInNebula = state.nodes.some(n =>
-      n.type === 'energy' && n.owner === 'player' && isPointInNebulaPolygon(state, n.x, n.y)
+    const energyInNebula = state.nodes.some(
+      (n) =>
+        n.type === 'energy' &&
+        n.owner === 'player' &&
+        n.status !== 'destroyed' &&
+        n.connected &&
+        n.currentEnergy >= n.activationThreshold &&
+        isPointInNebulaPolygon(state, n.x, n.y),
     );
     // 任务提示：关卡有星云但玩家还没把 energy 拖进去
     if (!energyInNebula && !seen.has('challenge_energy_in_nebula')) {
@@ -391,12 +406,16 @@ export function checkChallengeTips(state: GameState): string[] {
     }
   }
   // V1.5.3 turret/sniper 近陕石带边缘
-  const hasAsteroid = state.terrainPolygons.some(p => p.type === 'asteroid');
+  const hasAsteroid = state.terrainPolygons.some((p) => p.type === 'asteroid');
   if (hasAsteroid) {
-    const turretNearEdge = state.nodes.some(n =>
-      (n.type === 'turret' || n.type === 'sniper') &&
-      n.owner === 'player' &&
-      isNearAsteroidPolygonEdge(state, n.x, n.y, 90)
+    const turretNearEdge = state.nodes.some(
+      (n) =>
+        (n.type === 'turret' || n.type === 'sniper') &&
+        n.owner === 'player' &&
+        n.status !== 'destroyed' &&
+        n.connected &&
+        n.currentEnergy >= n.activationThreshold &&
+        isNearAsteroidPolygonEdge(state, n.x, n.y, TERRAIN_SYNERGY.asteroidEdgeRange),
     );
     if (!turretNearEdge && !seen.has('challenge_turret_near_asteroid')) {
       out.push('challenge_turret_near_asteroid');
@@ -408,19 +427,38 @@ export function checkChallengeTips(state: GameState): string[] {
     }
   }
   // V1.5.4 虫洞枢纽：同方 energy 在一对虫洞两端
-  const hasWormhole = state.terrainPolygons.some(p => p.type === 'wormhole' && p.linkedId);
+  const hasWormhole = state.terrainPolygons.some((p) => p.type === 'wormhole' && p.linkedId);
   if (hasWormhole) {
     // 抽取：检查在一对虫洞两端是否有同方同类节点
     const hasPlayerPairOfType = (nodeType: string): boolean => {
       for (const n of state.nodes) {
-        if (n.type !== nodeType || n.owner !== 'player') continue;
+        if (
+          n.type !== nodeType ||
+          n.owner !== 'player' ||
+          n.status === 'destroyed' ||
+          !n.connected ||
+          n.currentEnergy < n.activationThreshold
+        )
+          continue;
         const here = findWormholePolygonAt(state, n.x, n.y);
         if (!here || !here.linkedId) continue;
-        const linked = state.terrainPolygons.find(p => p.id === here.linkedId && p.type === 'wormhole');
+        const linked = state.terrainPolygons.find(
+          (p) => p.id === here.linkedId && p.type === 'wormhole',
+        );
         if (!linked) continue;
-        if (state.nodes.some(m =>
-          m !== n && m.type === nodeType && m.owner === 'player' && pointInPolygon(m.x, m.y, linked)
-        )) return true;
+        if (
+          state.nodes.some(
+            (m) =>
+              m !== n &&
+              m.type === nodeType &&
+              m.owner === 'player' &&
+              m.status !== 'destroyed' &&
+              m.connected &&
+              m.currentEnergy >= m.activationThreshold &&
+              pointInPolygon(m.x, m.y, linked),
+          )
+        )
+          return true;
       }
       return false;
     };

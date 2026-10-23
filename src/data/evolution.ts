@@ -15,7 +15,7 @@ export const EVOLVABLE_TYPES: Set<NodeType> = new Set([
 
 /** 进化后名称（用于 UI 描述） */
 export const EVOLUTION_NAMES: Partial<Record<NodeType, string>> = {
-  turret: '狙击炮',
+  turret: '聚能炮',
   mine: '精炼厂',
   shield: '堡垒',
   energy: '核聚变',
@@ -31,7 +31,7 @@ export const EVOLUTION_NAMES: Partial<Record<NodeType, string>> = {
   portal: '虫洞门',
   blackhole: '奇点',
   echo: '回响核心',
-  toxin: '瘡疫之源',
+  toxin: '瘟疫之源',
   arc: '裂雷',
   kamikaze: '超新星',
 };

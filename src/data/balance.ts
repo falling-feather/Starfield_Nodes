@@ -9,6 +9,7 @@ import { NODE_CONFIGS } from './nodes';
 export const ECONOMY = {
   /** 升级费用 = upgradeBaseCost × node.level（线性） */
   upgradeBaseCost: 30,
+  relayUpgradeCostMult: .5,
   /** 升级时 maxEnergy 增长系数：base × (1 + level × upgradeEnergyGrowth) */
   upgradeEnergyGrowth: 0.3,
   /** 升级时 maxHp 增长系数：base × (1 + level × upgradeHpGrowth) */
@@ -37,15 +38,15 @@ export interface EnemyDeathReward {
   crystal: number;
 }
 export const ENEMY_DEATH_REWARDS: Record<EnemyType, EnemyDeathReward> = {
-  scout:     { score: 15,  res: 8,  crystal: 1 },
-  heavy:     { score: 30,  res: 15, crystal: 2 },
-  swarm:     { score: 10,  res: 8,  crystal: 1 },
-  stealth:   { score: 25,  res: 8,  crystal: 2 },
-  splitter:  { score: 20,  res: 12, crystal: 1 },
-  disruptor: { score: 20,  res: 10, crystal: 2 },
-  healer:    { score: 25,  res: 12, crystal: 2 },
-  shielder:  { score: 30,  res: 15, crystal: 2 },
-  boss:      { score: 100, res: 30, crystal: 8 },
+  scout: { score: 15, res: 8, crystal: 1 },
+  heavy: { score: 30, res: 15, crystal: 2 },
+  swarm: { score: 10, res: 8, crystal: 1 },
+  stealth: { score: 25, res: 8, crystal: 2 },
+  splitter: { score: 20, res: 12, crystal: 1 },
+  disruptor: { score: 20, res: 10, crystal: 2 },
+  healer: { score: 25, res: 12, crystal: 2 },
+  shielder: { score: 30, res: 15, crystal: 2 },
+  boss: { score: 100, res: 30, crystal: 8 },
 };
 /** 默认兜底奖励（防御未知敌人 type） */
 export const DEFAULT_ENEMY_REWARD: EnemyDeathReward = { score: 10, res: 8, crystal: 1 };
@@ -53,7 +54,11 @@ export const DEFAULT_ENEMY_REWARD: EnemyDeathReward = { score: 10, res: 8, cryst
 /** 运行/玩法运行时常量（不影响每秒 tick 数的整体节奏，仅为参数集中点） */
 export const RUNTIME = {
   tickIntervalMs: 500,
+  gracePeriodTicks: 40,
   maxEdgeLength: 200,
+  energyRelaxation: .6,
+  relayConductancePerLevel: .1,
+  wormholeThroughput: 14,
   coreEnergyProduction: 15,
   enemySpawnBaseInterval: 8,
   /**
@@ -129,8 +134,8 @@ export const TERRAIN_SYNERGY = {
 } as const;
 
 /** 派生工具：升级费用、进化费用，统一从 ECONOMY 计算（保留原函数签名兼容） */
-export function calcUpgradeCost(level: number): number {
-  return ECONOMY.upgradeBaseCost * level;
+export function calcUpgradeCost(type: NodeType, level: number): number {
+  return ECONOMY.upgradeBaseCost * level * (type === 'relay' ? ECONOMY.relayUpgradeCostMult : 1);
 }
 export function calcEvolutionCost(type: NodeType): number {
   return NODE_CONFIGS[type].cost * ECONOMY.evolutionCostMult;
@@ -148,10 +153,25 @@ export function calcEvolutionCrystalCost(type: NodeType): number {
  * - oc: overcharged 超载形态
  * - 凡是后接 `× level × damageMult` / `× level × rangeMult` 的字段，仅记基础值
  */
+export function energyStationOutput(level: number, evolved: boolean): number {
+  return (evolved ? ENERGY_GAINS.energy.e : ENERGY_GAINS.energy.n) * level;
+}
+
+export const VISION = {
+  cellSize: 48,
+  core: 440,
+  beacon: 700,
+  radar: 520,
+  node: 190,
+  weatherFactor: 0.72,
+  blackoutFactor: 0.65,
+  remoteGate: 230,
+  frontierSensor: 420,
+} as const;
+
 export const COMBAT = {
-  /** 炮塔：射程/伤害都 × level × *Mult；evolvedAoeRadius 为狙击炮 AoE 穿透半径 */
-  /** §28 A/B baseline：§26 rangeBase=200, damageBase=22 (在 §27 autoUpgrade 下验证收益) */
-  turret: { rangeBase: 200, damageBase: 22, evolvedAoeRadius: 40 },
+  /** 等级主要增长伤害；射程小幅成长，进化保留局部覆盖。 */
+  turret: { rangeBase: 200, rangePerLevel: 18, evolvedRangeMult: 1.15, damageBase: 22, evolvedAoeRadius: 40 },
 
   /** 护盾：每 tick 修复 = healAmount × level */
   shield: {
@@ -167,7 +187,7 @@ export const COMBAT = {
     /** §24 调优 ③：装甲每 tick 修复 3 -> 4，对应 §22 建议的 armorBoost +1 */
     evolvedArmorHealPerTick: 4,
     /** 联动：shield 直连 player owned repair 时，受到的伤害 ×(1 - reduce) */
-    synergyRepairDamageReduce: 0.20,
+    synergyRepairDamageReduce: 0.2,
   },
 
   /** 维修站：每 tick 修复 = healAmount × level */
@@ -186,7 +206,7 @@ export const COMBAT = {
     range: { n: 200, e: 280, oc: 350 },
     damage: { n: 3, e: 5, oc: 8 },
     /** V1.2.3 联动：radar 直连同方 magnet 时，检测范围 ×（1 + synergyMagnetRangeBoost） */
-    synergyMagnetRangeBoost: 0.30,
+    synergyMagnetRangeBoost: 0.3,
   },
 
   /** 地雷：伤害 = damage × level × damageMult；blastRadius 内有 1→0.5 的距离衰减 */
@@ -234,9 +254,9 @@ export const COMBAT = {
 
   /** 工厂：伤害 = damage × level × damageMult */
   factory: {
-    range: 200,
+    range: 300,
     aoeRadius: { n: 60, e: 80 },
-    damage: 12,
+    damage: 24,
     /** 进化形态 AoE 命中后的减速系数（基于 baseSpeed） */
     evolvedSlowFactor: 0.5,
   },
@@ -275,7 +295,13 @@ export const COMBAT = {
     /** 普通形态 */
     normal: { rangeBase: 160, slowFactor: 0.4 },
     /** 进化（黑洞）形态：拉拽 + 减速 */
-    evolved: { rangeBase: 180, rangeBaseOc: 220, slowFactor: 0.35, slowFactorOc: 0.2, pullStrength: 0.3 },
+    evolved: {
+      rangeBase: 180,
+      rangeBaseOc: 220,
+      slowFactor: 0.35,
+      slowFactorOc: 0.2,
+      pullStrength: 0.3,
+    },
     /** 超载（普通形态）形态 */
     overcharge: { rangeBase: 220, slowFactor: 0.2 },
   },
@@ -330,7 +356,7 @@ export const COMBAT = {
     range: { n: 160, e: 200 },
     boostPerLevel: { n: 2, e: 4 },
     /** V1.1.8 联动：buffer 直连任一同方 energy 时，boost ×1.30（加成型，第 5 对联动） */
-    synergyEnergyBoostMult: 1.30,
+    synergyEnergyBoostMult: 1.3,
   },
 
   /** 缓冲器超载脉冲：可超充至 maxEnergy × overchargeCapRatio */

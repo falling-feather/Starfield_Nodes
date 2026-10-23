@@ -58,7 +58,9 @@ export function loadKeybinds(): void {
         if (saved[action]) bindings[action] = saved[action];
       }
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 /** 保存自定义按键到 localStorage */
@@ -73,8 +75,25 @@ export function getKey(action: KeyAction): string {
 
 /** 设置某操作的绑定键，返回是否成功（键冲突时返回 false） */
 export function setKey(action: KeyAction, key: string): boolean {
-  // 检查冲突：数字键、- 键留给建造
-  if (/^[0-9\-]$/.test(key)) return false;
+  key = key.toLowerCase();
+  // Fixed navigation, manual and construction keys remain available regardless of customization.
+  if (
+    /^[0-9\-]$/.test(key) ||
+    [
+      'h',
+      'k',
+      'escape',
+      'enter',
+      'tab',
+      ' ',
+      'backspace',
+      'control',
+      'shift',
+      'alt',
+      'meta',
+    ].includes(key)
+  )
+    return false;
   // 检查与其他操作冲突
   for (const a of Object.keys(bindings) as KeyAction[]) {
     if (a !== action && bindings[a] === key) return false;
@@ -92,7 +111,7 @@ export function resetKeybinds(): void {
 
 /** 获取全部绑定条目（用于 UI 渲染） */
 export function getAllBindings(): KeybindEntry[] {
-  return (Object.keys(DEFAULTS) as KeyAction[]).map(action => ({
+  return (Object.keys(DEFAULTS) as KeyAction[]).map((action) => ({
     action,
     label: LABELS[action],
     key: bindings[action],

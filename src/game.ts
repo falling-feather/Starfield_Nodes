@@ -1,18 +1,33 @@
+import { rand } from './rng';
+import { drawFacility } from './facility-art';
 // ===== 游戏主循环 =====
 import type { GameState, NodeType } from './types';
-import { TICK_INTERVAL, ENEMY_SPAWN_BASE_INTERVAL } from './data/runtime';
+import { TICK_INTERVAL, ENEMY_SPAWN_BASE_INTERVAL, GRACE_PERIOD_TICKS } from './data/runtime';
 import { NODE_CONFIGS } from './data/nodes';
 import type { Camera } from './types';
+import { SimulationClock } from './simulation-clock';
+import { createInitialCamera } from './camera';
+import { createVisibility, updateVisibility } from './visibility';
+import { processMissionEvents } from './mission-events';
+import { objectiveLabel } from './presentation';
+import { missionOutcome } from './mission-objectives';
+import { advanceFrontier } from './frontier';
 import { COLORS } from './ui-tokens';
-import { distributeEnergy, initializeMap, processNodeEffects, decayDisconnectedEnergy, updateOvercharge, updateConnectedStatus } from './graph';
-import { buildTerrainPolygon, isPointInAsteroidPolygon } from './terrain-poly';
+import {
+  distributeEnergy,
+  initializeMap,
+  processNodeEffects,
+  decayDisconnectedEnergy,
+  updateOvercharge,
+  updateConnectedStatus,
+} from './graph';
 import type { TechBonuses } from './graph';
-import { spawnEnemy, spawnBoss, updateEnemies } from './entities';
+import { spawnEnemy, spawnBoss, updateEnemies, processEnemySupport } from './entities';
 import { updateParticles, emitNodeParticles } from './particles';
 import { Renderer } from './renderer';
 import { UI } from './ui';
 import { InputManager } from './input';
-import { createTechState, getTechMultiplier } from './tech';
+import { createTechState, getTechMultiplier, getMaxEdgeLength } from './tech';
 import type { TechState } from './tech';
 import type { SaveProfile } from './save';
 import { updateProfileStats, saveProfile } from './save';
@@ -20,11 +35,20 @@ import type { LevelConfig } from './levels';
 import { initAudio, startBgm, stopBgm, sfxGameOver, sfxVictory } from './audio';
 import { checkAchievements, clearNotifications } from './achievements';
 import type { AchievementContext } from './achievements';
-import { startTutorial, updateTutorial, skipTutorial, isTutorialDone, checkLoreTipsForLevel, checkChallengeTips, getCompletedChallengeCount } from './tutorial';
+import {
+  startTutorial,
+  updateTutorial,
+  isTutorialDone,
+  isTutorialActive,
+  checkLoreTipsForLevel,
+  checkChallengeTips,
+  getCompletedChallengeCount,
+} from './tutorial';
 
 export class Game {
   // benchmark/调试需要从外部读取，故公开
   state: GameState;
+  readonly metrics = { frames: 0, updateMs: 0, renderMs: 0, longFrames: 0 };
   private renderer: Renderer;
   private ui: UI;
   private input: InputManager;
@@ -32,19 +56,18 @@ export class Game {
   private lastTime: number = 0;
   private tickAccumulator: number = 0;
   private animFrameId: number = 0;
-  private techState: TechState;
+  techState: TechState;
   private profile: SaveProfile;
-  private nodesBuilt: number = 0;
-  private enemiesKilled: number = 0;
   private statsSaved: boolean = false;
   private levelConfig: LevelConfig | null;
   private selectedNodes: NodeType[] | null;
   private bossSpawned: boolean = false;
-  private elapsedTime: number = 0;
+  private readonly clock = new SimulationClock();
   private onLevelEnd: ((won: boolean) => void) | null = null;
   private onExitToLevelSelect: (() => void) | null = null;
   private onExitToTitle: (() => void) | null = null;
   private boundResize: (() => void) | null = null;
+  private boundVisibility: (() => void) | null = null;
   private _challengeTipTick: number = 0;
   private noCoreDamage: boolean = true;
   /** V1.2.0：本局开始前已发现的联动 id，用于结算面计算「本局首次发现」 */
@@ -81,8 +104,13 @@ export class Game {
       () => this.restart(),
       this.techState,
       this.ui,
-      () => { this.onExitToLevelSelect?.(); },
-      () => { this.onExitToTitle?.(); },
+      () => {
+        if (this.state.gameOver || this.state.levelWon) this.onLevelEnd?.(this.state.levelWon);
+        else this.onExitToLevelSelect?.();
+      },
+      () => {
+        this.onExitToTitle?.();
+      },
     );
 
     // 限制可用节点类型
@@ -93,57 +121,54 @@ export class Game {
 
     // 设置关卡目标提示文字
     if (this.levelConfig) {
-      const obj = this.levelConfig.objective;
-      const text: Record<string, string> = {
-        survive: `目标：生存 ${this.levelConfig.targetWaves} 波`,
-        boss: `目标：击败 Boss（第 ${this.levelConfig.bossWave} 波出现）`,
-        protect: '目标：保护所有核心存活',
-        timed: `目标：坚持 ${(this.levelConfig.timeLimit ?? 0) / 60 | 0} 分钟`,
-      };
-      this.ui.levelObjectiveText = text[obj] ?? '';
+      this.ui.levelObjectiveText = objectiveLabel(this.levelConfig);
+      this.ui.levelTitle = this.levelConfig.name;
     }
 
     this.handleResize();
     this.boundResize = () => this.handleResize();
     window.addEventListener('resize', this.boundResize);
 
-    const nodeCount = levelConfig?.nodeCount;
-    const terrainCfg = levelConfig?.terrainConfig;
-    initializeMap(this.state, nodeCount, terrainCfg);
-    this.applyLevelTerrainPolygons();
+    initializeMap(this.state, levelConfig);
+
+    updateConnectedStatus(this.state);
+    updateVisibility(this.state);
 
     // V1.5.0：首次遇到 nebula/asteroid/wormhole 地形时弹出知识点
-    for (const tipId of checkLoreTipsForLevel(this.state)) {
+    for (const tipId of this.levelConfig?.id === 1 ? [] : checkLoreTipsForLevel(this.state)) {
       this.ui.pushLoreToast(tipId);
     }
-
-    this.state.resources = levelConfig?.startResources ?? 100;
-    this.state.crystals = levelConfig?.startCrystals ?? 0;
   }
 
   private createInitialState(): GameState {
     const worldWidth = this.levelConfig?.worldWidth ?? 3000;
     const worldHeight = this.levelConfig?.worldHeight ?? 2000;
-    const camera: Camera = {
-      x: worldWidth / 2 - window.innerWidth / 2,
-      y: worldHeight / 2 - window.innerHeight / 2,
-      zoom: 1,
-      targetX: worldWidth / 2 - window.innerWidth / 2,
-      targetY: worldHeight / 2 - window.innerHeight / 2,
-      targetZoom: 1,
-    };
+    const camera: Camera = createInitialCamera(
+      worldWidth,
+      worldHeight,
+      window.innerWidth,
+      window.innerHeight,
+      this.levelConfig?.corePositions,
+    );
     return {
+      visibility: createVisibility(worldWidth, worldHeight),
+      mission: this.levelConfig?.tactics,
+      elapsedSeconds: 0,
+      signalBlackoutUntil: 0,
+      alert: undefined,
+      protectedCoreIds: undefined,
       nodes: [],
       edges: [],
       enemies: [],
       particles: [],
       flowParticles: [],
+      strikeEffects: [],
       projectiles: [],
       tick: 0,
       wave: 1,
       score: 0,
-      resources: 100,
-      crystals: 0,
+      resources: this.levelConfig?.startResources ?? 100,
+      crystals: this.levelConfig?.startCrystals ?? 0,
       gameOver: false,
       levelWon: false,
       paused: false,
@@ -172,91 +197,66 @@ export class Game {
     };
   }
 
-  /** V1.3.0：根据关卡配置注入固定多边形地形，并清理落在 asteroid 多边形内的随机节点 */
-  private applyLevelTerrainPolygons(): void {
-    const cfg = this.levelConfig?.terrainPolygons;
-    if (!cfg || cfg.length === 0) {
-      this.state.terrainPolygons = [];
-      return;
-    }
-    this.state.terrainPolygons = cfg.map(p =>
-      buildTerrainPolygon({
-        id: p.id,
-        type: p.type,
-        vertices: p.vertices,
-        slowFactor: p.slowFactor,
-        linkedId: p.linkedId,
-      }),
-    );
-    // 移除落在 asteroid 多边形里的随机节点（保留 core 与玩家节点）
-    this.state.nodes = this.state.nodes.filter(n => {
-      if (n.type === 'core') return true;
-      return !isPointInAsteroidPolygon(this.state, n.x, n.y);
-    });
-  }
-
   private handleResize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
+    const cam = this.state.camera;
+    cam.x += (this.state.canvasWidth - w) / (2 * cam.zoom);
+    cam.y += (this.state.canvasHeight - h) / (2 * cam.zoom);
+    cam.targetX += (this.state.canvasWidth - w) / (2 * cam.targetZoom);
+    cam.targetY += (this.state.canvasHeight - h) / (2 * cam.targetZoom);
     this.state.canvasWidth = w;
     this.state.canvasHeight = h;
     this.renderer.resize(w, h);
   }
 
   restart(): void {
-    this.state.nodes = [];
-    this.state.edges = [];
-    this.state.enemies = [];
-    this.state.particles = [];
-    this.state.flowParticles = [];
-    this.state.projectiles = [];
-    this.state.tick = 0;
-    this.state.wave = 1;
-    this.state.score = 0;
-    this.state.resources = 100;
-    this.state.crystals = 0;
-    this.state.gameOver = false;
-    this.state.levelWon = false;
-    this.state.paused = false;
-    this.state.selectedNodeId = null;
-    this.state.selectedNodeIds = [];
-    this.state.draggingFrom = null;
-    this.state.timeScale = 1;
-    this.state.weatherClouds = [];
-
+    Object.assign(this.state, this.createInitialState());
     this.techState = createTechState();
     this.ui.techState = this.techState;
     this.input.techState = this.techState;
-
-    this.nodesBuilt = 0;
-    this.enemiesKilled = 0;
-    this.state.enemiesKilled = 0;
-    this.state.nodesBuilt = 0;
-    this.state.resourcesSpent = 0;
+    this.input.resetInteractions();
+    this.ui.resetSession();
+    clearNotifications();
+    this.tickAccumulator = 0;
+    this.clock.reset();
     this.statsSaved = false;
     this.bossSpawned = false;
-    this.elapsedTime = 0;
     this.noCoreDamage = true;
+    this.synergiesAtStart = new Set(this.profile.discoveredSynergies ?? []);
+    this._challengeTipTick = 0;
+    initializeMap(this.state, this.levelConfig ?? undefined);
 
-    const nodeCount = this.levelConfig?.nodeCount;
-    const terrainCfg = this.levelConfig?.terrainConfig;
-    initializeMap(this.state, nodeCount, terrainCfg);
-    this.applyLevelTerrainPolygons();
-    // V1.5.0：restart 后也尝试触发 lore tip（localStorage 已记录过则不重复）
-    for (const tipId of checkLoreTipsForLevel(this.state)) {
-      this.ui.pushLoreToast(tipId);
+    updateConnectedStatus(this.state);
+    updateVisibility(this.state);
+    if (isTutorialActive()) {
+      startTutorial(this.state);
+      this.state.paused = true;
     }
-    this.state.resources = this.levelConfig?.startResources ?? 100;
-    this.state.crystals = this.levelConfig?.startCrystals ?? 0;
+    this.lastTime = performance.now();
+    Object.assign(this.metrics, { frames: 0, updateMs: 0, renderMs: 0, longFrames: 0 });
   }
 
-  start(): void {
-    initAudio();
-    startBgm();
+  start(options: { audio?: boolean; tutorial?: boolean; pauseOnHidden?: boolean } = {}): void {
+    this.canvas.focus({ preventScroll: true });
+    if (options.audio !== false) {
+      initAudio();
+      startBgm();
+    }
     clearNotifications();
+    if (options.pauseOnHidden !== false) {
+      this.boundVisibility = () => {
+        if (document.hidden && !this.state.gameOver && !this.state.levelWon) {
+          this.state.paused = true;
+          this.clock.reset();
+          this.lastTime = performance.now();
+        }
+      };
+      document.addEventListener('visibilitychange', this.boundVisibility);
+    }
     // 首次进入第1关时启动教程
-    if (this.levelConfig?.id === 1 && !isTutorialDone()) {
-      startTutorial();
+    if (options.tutorial !== false && this.levelConfig?.id === 1 && !isTutorialDone()) {
+      startTutorial(this.state);
       this.state.paused = true; // 教程开始时暂停
     }
     this.lastTime = performance.now();
@@ -266,6 +266,10 @@ export class Game {
   stop(): void {
     cancelAnimationFrame(this.animFrameId);
     this.input.destroy();
+    if (this.boundVisibility) {
+      document.removeEventListener('visibilitychange', this.boundVisibility);
+      this.boundVisibility = null;
+    }
     stopBgm();
     if (this.boundResize) {
       window.removeEventListener('resize', this.boundResize);
@@ -273,12 +277,22 @@ export class Game {
   }
 
   private loop(timestamp: number): void {
+    const frameStart = performance.now();
     const dt = Math.min((timestamp - this.lastTime) / 1000, 0.05); // 限制 delta 防止跳帧
     this.lastTime = timestamp;
 
+    const cam = this.state.camera;
+    const moveLerp = 1 - Math.pow(0.001, dt),
+      zoomLerp = 1 - Math.pow(0.02, dt);
+    cam.x += (cam.targetX - cam.x) * moveLerp;
+    cam.y += (cam.targetY - cam.y) * moveLerp;
+    cam.zoom += (cam.targetZoom - cam.zoom) * zoomLerp;
+    updateTutorial(this.state);
     if (!this.state.paused && !this.state.gameOver && !this.state.levelWon) {
-      this.update(dt);
-    }
+      this.clock.advance(dt, this.state.timeScale, (step) => {
+        if (!this.state.gameOver && !this.state.levelWon) this.update(step);
+      });
+    } else this.clock.reset();
 
     // V1.2.1：消费本帧的「首次发现联动」事件，派发为世界内 toast
     if (this.state.pendingSynergyEvents.length > 0) {
@@ -293,7 +307,13 @@ export class Game {
       this.statsSaved = true;
       if (this.state.levelWon) sfxVictory();
       else sfxGameOver();
-      updateProfileStats(this.profile, this.state.score, this.state.wave, this.enemiesKilled, this.nodesBuilt);
+      updateProfileStats(
+        this.profile,
+        this.state.score,
+        this.state.wave,
+        this.state.enemiesKilled,
+        this.state.nodesBuilt,
+      );
       if (this.state.levelWon && this.levelConfig) {
         // 记录通关的关卡
         if (!this.profile.clearedLevels) this.profile.clearedLevels = [];
@@ -305,16 +325,17 @@ export class Game {
       // 成就检测
       const nodeTypeCounts: Record<string, number> = {};
       for (const n of this.state.nodes) {
+        if (n.owner !== 'player' || n.status === 'destroyed') continue;
         nodeTypeCounts[n.type] = (nodeTypeCounts[n.type] ?? 0) + 1;
       }
       const allCoresFull = this.state.nodes
-        .filter(n => n.type === 'core')
-        .every(n => n.hp >= n.maxHp);
+        .filter((n) => n.type === 'core')
+        .every((n) => n.hp >= n.maxHp);
       const achCtx: AchievementContext = {
         score: this.state.score,
         wave: this.state.wave,
-        enemiesKilled: this.enemiesKilled,
-        nodesBuilt: this.nodesBuilt,
+        enemiesKilled: this.state.enemiesKilled,
+        nodesBuilt: this.state.nodesBuilt,
         levelWon: this.state.levelWon,
         gameOver: this.state.gameOver,
         levelId: this.levelConfig?.id ?? null,
@@ -346,29 +367,22 @@ export class Game {
       this.ui.newSynergiesThisRun = newSynergies;
 
       saveProfile(this.profile);
-      if (this.onLevelEnd) {
-        // 延迟回调，让玩家看到结果
-        setTimeout(() => this.onLevelEnd!(this.state.levelWon), 3000);
-      }
     }
 
+    const renderStart = performance.now();
     this.render(dt);
+    const renderEnd = performance.now();
+    this.metrics.frames++;
+    this.metrics.updateMs += renderStart - frameStart;
+    this.metrics.renderMs += renderEnd - renderStart;
+    if (renderEnd - frameStart > 16.7) this.metrics.longFrames++;
 
-    this.animFrameId = requestAnimationFrame(t => this.loop(t));
+    this.animFrameId = requestAnimationFrame((t) => this.loop(t));
   }
 
   private update(dt: number): void {
-    // 摄像机平滑插值
-    // 位移用较快的指数缓动以保持响应感；缩放用更慢的曲线避免突兀
-    const cam = this.state.camera;
-    const moveLerp = 1 - Math.pow(0.001, dt);   // ~每帧 10% 收敛
-    const zoomLerp = 1 - Math.pow(0.02, dt);    // ~每帧 6% 收敛，过渡更柔和
-    cam.x += (cam.targetX - cam.x) * moveLerp;
-    cam.y += (cam.targetY - cam.y) * moveLerp;
-    cam.zoom += (cam.targetZoom - cam.zoom) * zoomLerp;
-
     // Tick 系统
-    this.tickAccumulator += dt * 1000 * this.state.timeScale;
+    this.tickAccumulator += dt * 1000;
     while (this.tickAccumulator >= TICK_INTERVAL) {
       this.tickAccumulator -= TICK_INTERVAL;
       this.state.tick++;
@@ -385,6 +399,9 @@ export class Game {
       // 能量超载检测
       updateOvercharge(this.state);
 
+      processMissionEvents(this.state);
+      updateVisibility(this.state);
+      processEnemySupport(this.state);
       // 节点效果
       const techBonuses: TechBonuses = {
         damageMultiplier: getTechMultiplier(this.techState, 'boost_damage'),
@@ -392,6 +409,7 @@ export class Game {
         coreProduction: getTechMultiplier(this.techState, 'core_production'),
       };
       processNodeEffects(this.state, techBonuses);
+      advanceFrontier(this.state);
 
       // 科技树效果：自动修复
       const autoRepair = getTechMultiplier(this.techState, 'auto_repair');
@@ -407,42 +425,43 @@ export class Game {
       }
 
       // 敌人生成（开局20秒空窗期 = 40 tick）
-      const GRACE_PERIOD = 40;
       const diff = this.levelConfig?.difficultyMult ?? 1;
-      const spawnInterval = Math.max(3, ENEMY_SPAWN_BASE_INTERVAL - Math.floor(this.state.wave / 2));
-      if (this.state.tick >= GRACE_PERIOD && this.state.tick % spawnInterval === 0) {
+      const frontier = this.state.mission?.frontier;
+      const spawnInterval = frontier ? Math.round(frontier.attackSeconds * 2) : Math.max(
+        3,
+        ENEMY_SPAWN_BASE_INTERVAL - Math.floor(this.state.wave / 2),
+      );
+      const grace = frontier ? frontier.preparationSeconds * 2 : GRACE_PERIOD_TICKS;
+      if (this.state.tick >= grace && this.state.tick % spawnInterval === 0) {
         spawnEnemy(this.state, diff);
       }
 
       // Boss 生成
-      if (this.levelConfig?.hasBoss && !this.bossSpawned && this.state.wave >= this.levelConfig.bossWave) {
+      if (
+        this.levelConfig?.hasBoss &&
+        !this.bossSpawned &&
+        this.state.wave >= this.levelConfig.bossWave
+      ) {
         this.bossSpawned = true;
         spawnBoss(this.state, diff);
       }
 
       // 波次递增
-      if (this.state.tick % 30 === 0) {
+      if (frontier) this.state.wave = 1 + Math.floor(Math.max(0,this.state.tick / 2 - frontier.preparationSeconds) / frontier.waveSeconds);
+      else if (this.state.tick % 30 === 0) {
         this.state.wave++;
       }
-
-      // 关卡胜利条件检测
-      this.checkVictoryCondition();
 
       // 天气系统 — 星云飘过
       this.updateWeather();
     }
 
     // 限时模式计时
-    this.elapsedTime += dt;
+    this.state.elapsedSeconds += dt;
 
     // 敌人移动 & 战斗
-    const enemiesBefore = this.state.enemies.length;
     updateEnemies(this.state, dt);
-    const killed = enemiesBefore - this.state.enemies.length;
-    if (killed > 0) {
-      this.enemiesKilled += killed;
-      this.state.enemiesKilled += killed; // §25 bench instrumentation
-    }
+    this.checkVictoryCondition();
 
     // 核心受损检测（成就用）
     if (this.noCoreDamage) {
@@ -479,7 +498,7 @@ export class Game {
     // V1.4.2：跨虫洞 fx ttl 衰减（按帧 dt 秒，30→0 约 0.5s）
     if (this.state.crossWormholeFx && this.state.crossWormholeFx.length > 0) {
       for (const fx of this.state.crossWormholeFx) fx.ttl -= dt * 60;
-      this.state.crossWormholeFx = this.state.crossWormholeFx.filter(fx => fx.ttl > 0);
+      this.state.crossWormholeFx = this.state.crossWormholeFx.filter((fx) => fx.ttl > 0);
     }
     // V1.5.2：每 30 帧检查主动引导任务点
     this._challengeTipTick = (this._challengeTipTick ?? 0) + 1;
@@ -496,8 +515,8 @@ export class Game {
         const partialCtx: AchievementContext = {
           score: this.state.score,
           wave: this.state.wave,
-          enemiesKilled: this.enemiesKilled,
-          nodesBuilt: this.nodesBuilt,
+          enemiesKilled: this.state.enemiesKilled,
+          nodesBuilt: this.state.nodesBuilt,
           levelWon: false,
           gameOver: false,
           levelId: this.levelConfig?.id ?? null,
@@ -515,51 +534,34 @@ export class Game {
   }
 
   private checkVictoryCondition(): void {
-    if (!this.levelConfig) return;
-    const lc = this.levelConfig;
-
-    switch (lc.objective) {
-      case 'survive':
-        if (this.state.wave > lc.targetWaves) {
-          this.state.levelWon = true;
-        }
-        break;
-      case 'boss':
-        // Boss 已生成且已被击杀
-        if (this.bossSpawned && !this.state.enemies.some(e => e.type === 'boss')) {
-          this.state.levelWon = true;
-        }
-        break;
-      case 'timed':
-        if (lc.timeLimit > 0 && this.elapsedTime >= lc.timeLimit) {
-          // 时间到：存活 = 胜利
-          this.state.levelWon = true;
-        }
-        break;
-      case 'protect':
-        if (this.state.wave > lc.targetWaves) {
-          // 所有核心存活
-          const allCoresAlive = this.state.nodes.filter(
-            n => n.type === 'core' && n.status !== 'destroyed'
-          ).length === this.state.nodes.filter(n => n.type === 'core').length;
-          if (allCoresAlive) {
-            this.state.levelWon = true;
-          }
-        }
-        break;
-    }
+    const outcome = missionOutcome(this.state, this.levelConfig, this.bossSpawned);
+    if (outcome === 'lost') {
+      this.state.gameOver = true;
+      this.state.levelWon = false;
+    } else if (outcome === 'won') this.state.levelWon = true;
   }
 
   private render(dt: number): void {
+    this.input.updatePointerWorld();
+    this.renderer.maxEdgeLength = getMaxEdgeLength(this.techState);
+    this.renderer.rangeMultiplier = getTechMultiplier(this.techState, 'turret_range');
     this.renderer.render(this.state, dt);
     // V1.3.2 dev-only 多边形编辑器叠加层
     this.renderer.drawPolygonEditorOverlay(this.state, this.input.polygonEditor);
     this.ui.selectedEdgeType = this.state.selectedEdgeType;
+    this.ui.buildMode = this.input.getBuildMode();
+    this.ui.buildPlacement = this.input.getBuildPlacementStatus();
     this.ui.render(this.state);
 
     // 建造模式指示
     const buildMode = this.input.getBuildMode();
-    if (buildMode) {
+    if (
+      buildMode &&
+      !this.ui.hasOpenSubPanel() &&
+      !this.ui.pauseMenuOpen &&
+      !this.state.gameOver &&
+      !this.state.levelWon
+    ) {
       this.drawBuildCursor(buildMode);
     }
 
@@ -569,7 +571,7 @@ export class Game {
     }
   }
 
-  private drawBuildCursor(type: string): void {
+  private drawBuildCursor(type: NodeType): void {
     const ctx = this.canvas.getContext('2d')!;
     const cfg = NODE_CONFIGS[type as keyof typeof NODE_CONFIGS];
     if (!cfg) return;
@@ -578,14 +580,15 @@ export class Game {
     const sx = (this.state.mouseX - cam.x) * cam.zoom;
     const sy = (this.state.mouseY - cam.y) * cam.zoom;
     const r = cfg.radius * cam.zoom;
-
-    const status = this.input.getBuildPlacementStatus();
-    const valid = status?.valid ?? false;
+    const status = this.ui.buildPlacement;
+    if (!status) return;
+    const valid = status.valid;
     const color = valid ? '#44ff88' : COLORS.accent.red;
 
     ctx.save();
 
     // 半透明填充
+    ctx.save();ctx.globalAlpha=.6;drawFacility(ctx,type,sx,sy,(cfg.radius+4)*cam.zoom,{powered:valid});ctx.restore();
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
     ctx.fillStyle = valid ? 'rgba(68,255,136,0.08)' : 'rgba(255,68,68,0.08)';
@@ -605,25 +608,11 @@ export class Game {
     ctx.lineWidth = 1;
     const cross = 6;
     ctx.beginPath();
-    ctx.moveTo(sx - cross, sy); ctx.lineTo(sx + cross, sy);
-    ctx.moveTo(sx, sy - cross); ctx.lineTo(sx, sy + cross);
+    ctx.moveTo(sx - cross, sy);
+    ctx.lineTo(sx + cross, sy);
+    ctx.moveTo(sx, sy - cross);
+    ctx.lineTo(sx, sy + cross);
     ctx.stroke();
-
-    // 标签
-    ctx.fillStyle = color;
-    ctx.font = '11px monospace';
-    ctx.textAlign = 'center';
-    const costText = status ? `${status.cost}◆` : '';
-    const discountText = status && status.discount > 0 ? ` (-${Math.round(status.discount * 100)}%)` : '';
-    const label = cfg.description?.split(' - ')[0] ?? type;
-    ctx.fillText(`${label} ${costText}${discountText}`, sx, sy - r - 14);
-
-    // 无效原因
-    if (status && !status.valid) {
-      ctx.fillStyle = COLORS.accent.redSoft;
-      ctx.font = '10px monospace';
-      ctx.fillText(status.reason, sx, sy - r - 2);
-    }
 
     ctx.restore();
   }
@@ -632,16 +621,16 @@ export class Game {
   private updateWeather(): void {
     const s = this.state;
     // 每 20 tick 有概率生成一朵云 (最多 5 朵)
-    if (s.tick % 20 === 0 && s.weatherClouds.length < 3 && Math.random() < 0.35) {
-      const edge = Math.random() < 0.5; // 从左/右边进入
+    if (s.tick % 20 === 0 && s.weatherClouds.length < 3 && rand() < 0.35) {
+      const edge = rand() < 0.5; // 从左/右边进入
       s.weatherClouds.push({
         x: edge ? -200 : s.worldWidth + 200,
-        y: Math.random() * s.worldHeight,
-        radius: 180 + Math.random() * 220,
-        vx: (edge ? 1 : -1) * (0.8 + Math.random() * 1.2),
-        vy: (Math.random() - 0.5) * 0.6,
-        opacity: 0.4 + Math.random() * 0.3,
-        life: 300 + Math.floor(Math.random() * 200),
+        y: rand() * s.worldHeight,
+        radius: 180 + rand() * 220,
+        vx: (edge ? 1 : -1) * (0.8 + rand() * 1.2),
+        vy: (rand() - 0.5) * 0.6,
+        opacity: 0.4 + rand() * 0.3,
+        life: 300 + Math.floor(rand() * 200),
       });
     }
     // 移动 & 衰减

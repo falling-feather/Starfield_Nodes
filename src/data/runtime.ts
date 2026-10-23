@@ -7,6 +7,7 @@
 import { RUNTIME, ECONOMY } from './balance';
 
 export const TICK_INTERVAL = RUNTIME.tickIntervalMs;
+export const GRACE_PERIOD_TICKS = RUNTIME.gracePeriodTicks;
 export const MAX_EDGE_LENGTH = RUNTIME.maxEdgeLength;
 export const CORE_ENERGY_PRODUCTION = RUNTIME.coreEnergyProduction;
 export const ENEMY_SPAWN_BASE_INTERVAL = RUNTIME.enemySpawnBaseInterval;

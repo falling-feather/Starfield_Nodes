@@ -100,24 +100,24 @@ export function createTechTree(): TechNode[] {
     {
       id: 'sniper_protocol',
       name: '狙击协议',
-      description: '炮塔射程 ×1.6',
+      description: '炮塔射程 ×1.3',
       cost: 300,
       icon: '⊗',
       color: '#ff6644',
       unlocked: false,
       requires: ['plasma_turrets'],
-      effect: { type: 'turret_range', multiplier: 1.6 },
+      effect: { type: 'turret_range', multiplier: 1.3 },
     },
     {
       id: 'shield_unlock',
       name: '能盾科技',
-      description: '解锁护盾节点建造',
+      description: '护盾节点生命 ×1.8',
       cost: 150,
       icon: '◈',
       color: '#8844ff',
       unlocked: false,
       requires: ['reinforced_nodes'],
-      effect: { type: 'unlock_node', nodeType: 'shield' },
+      effect: { type: 'boost_hp', multiplier: 1.8, nodeType: 'shield' },
     },
   ];
 }

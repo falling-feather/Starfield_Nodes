@@ -8,39 +8,39 @@
 const _DEFAULT_COLORS = {
   // 强调色
   accent: {
-    cyan: '#00ffff',     // 主色（HUD 波次、连线高亮等）
-    cyanSoft: '#00ccff', // 次级蓝青（提示、信息）
-    purple: '#aa44ff',   // 科技 / 强化
-    pink: '#ff44ff',     // 进化
-    green: '#00ff88',    // 资源 / 成功
-    greenSoft: '#44cc88',
-    yellow: '#ffaa00',   // 分数 / 警告
-    yellowHi: '#ffc800', // 时间加速等强提示
-    red: '#ff4444',      // 危险 / 敌人
-    redSoft: '#ff6666',  // 出售 / 错误
-    blue: '#44aaff',     // 连线
-    crystal: '#cc66ff',  // 晶体
+    cyan: '#8fdfd3', // 主色（HUD 波次、连线高亮等）
+    cyanSoft: '#94c9dd', // 次级蓝青（提示、信息）
+    purple: '#b5b4e0', // 科技 / 强化
+    pink: '#d8b5ce', // 进化
+    green: '#9bd8b9', // 资源 / 成功
+    greenSoft: '#83b99e',
+    yellow: '#dfbd83', // 分数 / 警告
+    yellowHi: '#e4cb95', // 时间加速等强提示
+    red: '#ea9d8a', // 危险 / 敌人
+    redSoft: '#f0b0a0', // 出售 / 错误
+    blue: '#9abfdf', // 连线
+    crystal: '#c3b2dd', // 晶体
   },
 
   /** 中性灰阶（文字、禁用、分隔） */
   text: {
-    primary: '#ffffff',
-    high: '#cccccc',
-    body: '#aaaaaa',
-    muted: '#888888',
-    faint: '#666666',
-    disabled: '#555555',
+    primary: '#e7f0f4',
+    high: '#c9dbe4',
+    body: '#abc0cd',
+    muted: '#92aabb',
+    faint: '#7f98a9',
+    disabled: '#6c899b',
     border: '#444444',
-    borderFaint: '#333344',
+    borderFaint: '#415c70',
   },
 
   /** 背景 / 遮罩 */
   bg: {
-    overlay: 'rgba(0,0,0,0.7)',  // HUD 顶栏
+    overlay: 'rgba(0,0,0,0.7)', // HUD 顶栏
     panel: 'rgba(10,10,30,0.92)', // 浮层面板
     panelDim: 'rgba(20,20,40,0.8)',
     card: 'rgba(0,0,0,0.88)',
-    pure: '#000000',
+    pure: '#050e19',
   },
 
   /** 描边/分隔常用 */
@@ -63,15 +63,15 @@ export const COLORS: ColorPalette = JSON.parse(JSON.stringify(_DEFAULT_COLORS));
 
 /** 字号（Canvas 文本） */
 export const FONT = {
-  xs: '12px monospace',
-  sm: '14px monospace',
-  md: '15px monospace',
-  base: '16px monospace',
-  lg: '18px monospace',
-  xl: '20px monospace',
-  xxl: '24px monospace',
-  display: '28px monospace',
-  hero: '32px monospace',
+  xs: '12px "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  sm: '14px "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  md: '15px "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  base: '16px "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  lg: '18px "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  xl: '20px "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  xxl: '24px "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  display: '28px "Segoe UI", "Microsoft YaHei UI", sans-serif',
+  hero: '32px "Segoe UI", "Microsoft YaHei UI", sans-serif',
 } as const;
 
 /** 间距（px） */

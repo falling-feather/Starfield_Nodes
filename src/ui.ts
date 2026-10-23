@@ -1,21 +1,20 @@
+import { drawBattleHUD, drawBuildDock, drawInspector, drawBatchInspector } from './battle-hud';
+import { COMBAT } from './data/balance';
+import { TICK_INTERVAL } from './data/runtime';
+import { UI_FONT, MONO_FONT, panel, wrappedText, objectiveRect } from './canvas-ui';
 // ===== UI/HUD 绘制 =====
 import type { GameState, NodeType, EdgeType } from './types';
-import { EXPAND_COST, EXPAND_CRYSTAL_COST } from './data/runtime';
-import { EVOLUTION_LEVEL, EVOLVABLE_TYPES, EVOLUTION_NAMES, getEvolutionCost, getEvolutionCrystalCost } from './data/evolution';
-import { NODE_CONFIGS } from './data/nodes';
-import { EDGE_CONFIGS } from './data/edges';
 import type { TechState } from './tech';
 import { canResearch } from './tech';
-import { isMuted } from './audio';
 import { sfxAchievement } from './audio';
 import { popNotification, ACHIEVEMENTS } from './achievements';
 import type { AchievementDef } from './achievements';
 import { getKey, getAllBindings, setKey, resetKeybinds } from './keybinds';
-import { isOvercharged } from './graph';
 import type { KeyAction } from './keybinds';
 import { getCurrentStep, getProgress, isTutorialActive, LORE_TIPS, isLoreSeen } from './tutorial';
-import { COLORS, FONT, ANIM } from './ui-tokens';
-import { getSeed } from './rng';
+import { COLORS, FONT } from './ui-tokens';
+import type { PlacementStatus } from './construction';
+import { pageWindow } from './screen-layout';
 
 /** 成就通知 Toast */
 interface AchToast {
@@ -27,7 +26,11 @@ export class UI {
   private ctx: CanvasRenderingContext2D;
   techState: TechState | null = null;
   allowedNodeTypes: NodeType[] | null = null;
+  objectiveCollapsed=false;
   levelObjectiveText: string = '';
+  levelTitle = '星域远征';
+  buildMode: NodeType | null = null;
+  buildPlacement: PlacementStatus | null = null;
   /** 当前展示的成就通知队列 */
   private toasts: AchToast[] = [];
   /** V1.2.1：联动首次发现的世界内 toast 队列 */
@@ -41,9 +44,17 @@ export class UI {
   /** 显示联动图鉴面板（V1.1.6） */
   showSynergyPanel: boolean = false;
   /** V1.6.1：当前帧已打开的子面板矩形（draw 阶段填充，input click-outside 读取） */
-  openPanelRects: { id: 'tech' | 'knowledge' | 'achievement' | 'synergy' | 'keybind'; x: number; y: number; w: number; h: number }[] = [];
+  openPanelRects: {
+    id: 'tech' | 'knowledge' | 'achievement' | 'synergy' | 'keybind';
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }[] = [];
   /** 正在编辑的快捷键操作（等待按键输入） */
   editingAction: KeyAction | null = null;
+  keybindMessage = '';
+  keybindAreas: { action: KeyAction; x: number; y: number; w: number; h: number }[] = [];
   /** 存档已解锁成就列表（由外部设置） */
   unlockedAchievements: string[] = [];
   /** V1.1.7：存档已发现的联动 id（由外部设置） */
@@ -53,21 +64,31 @@ export class UI {
   /** 当前选中的连线类型（由InputManager同步） */
   selectedEdgeType: EdgeType = 'standard';
   /** 节点面板按钮命中区域（屏幕坐标） */
-  nodeButtons: { action: string; x: number; y: number; w: number; h: number; enabled: boolean }[] = [];
+  nodeButtons: { action: string; x: number; y: number; w: number; h: number; enabled: boolean }[] =
+    [];
   /** 科技树卡片点击区（V1.0.6）：drawTechPanel 负责填充，input.ts 负责命中检测 */
-  techCardAreas: { idx: number; techId: string; x: number; y: number; w: number; h: number; available: boolean; unlocked: boolean }[] = [];
+  techCardAreas: {
+    idx: number;
+    techId: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    available: boolean;
+    unlocked: boolean;
+  }[] = [];
   /** V1.2.4：科技树滚动偏移（像素），由 input wheel 调整 */
   private techScrollOffset = 0;
   /** V1.2.4：科技树最大可滚动距离（drawTechPanel 内更新） */
   private techMaxScroll = 0;
-  /** V1.5.11：知识库面板滚动偏移（像素） */
-  private knowledgeScrollOffset = 0;
-  /** V1.5.11：知识库面板最大可滚动距离（drawKnowledgePanel 内更新） */
-  private knowledgeMaxScroll = 0;
+  private knowledgePage = 0;
+  private knowledgePages = 1;
   /** V1.6.1：成就面板滚动偏移（像素） */
   private achievementScrollOffset = 0;
   /** V1.6.1：成就面板最大可滚动距离（drawAchievementPanel 内更新） */
   private achievementMaxScroll = 0;
+  private synergyScrollOffset = 0;
+  private synergyMaxScroll = 0;
 
   // ── V1.1.0 暂停菜单 ──
   /** 暂停菜单是否打开（独立于 state.paused：菜单打开 → state.paused = true，但 P 键暂停不会打开菜单） */
@@ -75,22 +96,18 @@ export class UI {
   /** 当前高亮的菜单项索引 */
   pauseMenuIndex: number = 0;
   /** 暂停菜单条目（label + action token，由 input.ts 解释执行） */
-  readonly pauseMenuItems: { label: string; action: 'resume' | 'restart' | 'levels' | 'title' }[] = [
-    { label: '继续', action: 'resume' },
-    { label: '重开本关', action: 'restart' },
-    { label: '返回选卡', action: 'levels' },
-    { label: '返回标题', action: 'title' },
-  ];
+  readonly pauseMenuItems: { label: string; action: 'resume' | 'restart' | 'levels' | 'title' }[] =
+    [
+      { label: '继续', action: 'resume' },
+      { label: '重开本关', action: 'restart' },
+      { label: '返回航线', action: 'levels' },
+      { label: '返回标题', action: 'title' },
+    ];
   /** 暂停菜单条目命中区（屏幕坐标），由 drawPauseMenu 填充，onMouseDown 命中检测 */
   pauseMenuAreas: { idx: number; x: number; y: number; w: number; h: number }[] = [];
 
   // ── 微动效状态 ──
   /** HUD 首次进入战斗时的淡入起点（ms） */
-  private hudFadeStart: number = performance.now();
-  /** 径向菜单当前展开的节点 id（用于检测切换） */
-  private radialForNodeId: number | null = null;
-  /** 径向菜单展开动画起始时间（ms） */
-  private radialAnimStart: number = 0;
   /** 通用面板淡入淡出进度（0..1） */
   private techFade = 0;
   private achievementFade = 0;
@@ -98,19 +115,52 @@ export class UI {
   private synergyFade = 0;
   /** 上次 render 时间（用于面板 fade dt） */
   private lastFadeTick = performance.now();
+  private frameSeconds = 1 / 60;
 
   constructor(ctx: CanvasRenderingContext2D) {
     this.ctx = ctx;
   }
 
+  resetSession(): void {
+    this.buildMode = null;
+    this.buildPlacement = null;
+    this.objectiveCollapsed=false;
+    this.toasts = [];
+    this.loreToasts = [];
+    this.synergyToasts = [];
+    this.newSynergiesThisRun = [];
+    this.showAchievementPanel = false;
+    this.showKnowledgePanel = false;
+    this.showKeybindPanel = false;
+    this.showSynergyPanel = false;
+    this.pauseMenuOpen = false;
+    this.pauseMenuIndex = 0;
+    this.techFade = 0;
+    this.achievementFade = 0;
+    this.keybindFade = 0;
+    this.synergyFade = 0;
+    this.openPanelRects = [];
+    this.editingAction = null;
+    this.keybindMessage = '';
+    this.keybindAreas = [];
+    this.techScrollOffset =
+      this.knowledgePage =
+      this.achievementScrollOffset =
+      this.synergyScrollOffset =
+        0;
+    this.knowledgePages = 1;
+  }
+
   render(state: GameState): void {
     this.nodeButtons = [];
     this.openPanelRects = []; // V1.6.1：每帧重置
+    this.hudRects = [];
 
     // 更新各面板 fade 进度（180ms 全程）
     const now = performance.now();
     const dt = Math.min(0.05, (now - this.lastFadeTick) / 1000);
     this.lastFadeTick = now;
+    this.frameSeconds = dt;
     const FADE_RATE = 1 / 0.18; // 1/秒
     const step = (cur: number, target: number): number => {
       const d = target - cur;
@@ -145,26 +195,28 @@ export class UI {
       this.drawTutorial(state);
     }
 
-    if (state.paused && !this.techState?.showPanel && !isTutorialActive() && !this.pauseMenuOpen) {
-      this.drawPaused(state);
-    }
-
     // V1.1.0 暂停菜单
     if (this.pauseMenuOpen) {
       this.drawPauseMenu(state);
     }
 
-    // 节点环形菜单（绘制在暂停遮罩之上）
-    if (state.selectedNodeId && !state.gameOver && !state.levelWon) {
-      this.drawRadialMenu(state);
+    // 选中设施详情
+    if (
+      state.selectedNodeId &&
+      !this.hasOpenSubPanel() &&
+      !this.pauseMenuOpen &&
+      !state.gameOver &&
+      !state.levelWon
+    ) {
+      this.drawInspector(state);
     }
 
     if (state.gameOver) {
-      this.drawGameOver(state);
+      this.drawResult(state, false);
     }
 
     if (state.levelWon) {
-      this.drawLevelWon(state);
+      this.drawResult(state, true);
     }
 
     // 成就面板（带淡入淡出）
@@ -199,12 +251,12 @@ export class UI {
       ctx.restore();
     }
 
-    // 成就通知 Toast
-    this.updateToasts(state);
-
-    // V1.2.1：联动首次发现 Toast
-    this.updateSynergyToasts(state);
-    this.updateLoreToasts(state);
+    // 共用通知通道，避免首次发现、知识点与成就互相遮挡设施详情。
+    if(!this.hasOpenSubPanel()&&!this.pauseMenuOpen&&!state.gameOver&&!state.levelWon){
+      if(this.loreToasts.length)this.updateLoreToasts(state);
+      else if(this.synergyToasts.length)this.updateSynergyToasts(state);
+      else this.updateToasts(state);
+    }
   }
 
   /** 面板淡入淡出曲线 easeOutCubic */
@@ -213,879 +265,243 @@ export class UI {
     return 1 - Math.pow(1 - x, 3);
   }
 
+  hudRects: { x:number; y:number; w:number; h:number }[] = [];
+
   private drawHUD(state: GameState): void {
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.shadowBlur = 0;
-
-    // HUD 进入淡入：easeOut
-    const elapsed = performance.now() - this.hudFadeStart;
-    const fadeDur = ANIM.hudFadeIn;
-    const fadeT = Math.min(1, elapsed / fadeDur);
-    const easedFade = 1 - Math.pow(1 - fadeT, 3);
-    ctx.globalAlpha *= easedFade;
-
-    // 顶部信息栏背景
-    ctx.fillStyle = COLORS.bg.overlay;
-    ctx.fillRect(0, 0, state.canvasWidth, 50);
-    ctx.strokeStyle = COLORS.border.cyanFaint;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, 50);
-    ctx.lineTo(state.canvasWidth, 50);
-    ctx.stroke();
-
-    ctx.font = FONT.xl;
-    ctx.textBaseline = 'middle';
-
-    // V1.2.7：根据画布宽度自适应分布——左组（指标）、中右组（按钮）、最右（TICK/SEED）
-    const W = state.canvasWidth;
-    const leftItems: { text: string; color: string }[] = [
-      { text: `⟨ WAVE ${state.wave} ⟩`, color: COLORS.accent.cyan },
-      { text: `★ ${state.score}`, color: COLORS.accent.yellow },
-      { text: `◆ ${Math.floor(state.resources)}`, color: COLORS.accent.green },
-      { text: `✧ ${Math.floor(state.crystals)}`, color: COLORS.accent.crystal },
-      { text: `⚠ ${state.enemies.length}`, color: COLORS.accent.red },
-    ];
-    // 测量每项宽度，统一最小列宽 + 自适应间距
-    let cursorX = 14;
-    ctx.textAlign = 'left';
-    for (const it of leftItems) {
-      ctx.fillStyle = it.color;
-      ctx.fillText(it.text, cursorX, 25);
-      const w = ctx.measureText(it.text).width;
-      cursorX += Math.max(w + 24, 110);
-    }
-
-    // 右侧 TICK + SEED（先布局以便按钮组能据此向左排列）
-    ctx.fillStyle = COLORS.text.faint;
-    ctx.textAlign = 'right';
-    ctx.fillText(`TICK ${state.tick}`, W - 14, 25);
-    const tickW = ctx.measureText(`TICK ${state.tick}`).width;
-    let rightCursor = W - 14 - tickW - 18;
-    const seed = getSeed();
-    if (seed !== 0) {
-      ctx.font = FONT.md;
-      ctx.fillStyle = COLORS.accent.purple;
-      ctx.fillText(`SEED ${seed}`, rightCursor, 25);
-      rightCursor -= ctx.measureText(`SEED ${seed}`).width + 18;
-      ctx.font = FONT.xl;
-    }
-
-    // 中右按钮组：[T]科技树 + 时间加速（带圆角边框，可点击）
-    ctx.textAlign = 'left';
-    const btnH = 32;
-    const btnY = 25 - btnH / 2;
-    const btnGap = 10;
-
-    // 时间加速按钮
-    const tsLabel = state.timeScale > 1 ? `▶▶ ×${state.timeScale}` : `▶ ×1`;
-    const tsTextW = ctx.measureText(tsLabel).width;
-    const tsW = tsTextW + 24;
-    // 科技树按钮
-    const ttLabel = `[T] 科技树`;
-    const ttTextW = ctx.measureText(ttLabel).width;
-    const ttW = ttTextW + 24;
-
-    // 从右往左排：先 ts 再 tt 再 kn
-    const tsX = rightCursor - tsW;
-    const ttX = tsX - btnGap - ttW;
-    // V1.5.1.1：知识库按钮
-    const knLabel = `[H] 知识库`;
-    const knTextW = ctx.measureText(knLabel).width;
-    const knW = knTextW + 24;
-    const knX = ttX - btnGap - knW;
-    // 防止与左侧指标重叠
-    const minBtnX = cursorX + 16;
-    const knXFinal = Math.max(knX, minBtnX);
-    const ttXFinal = knXFinal + knW + btnGap;
-    const tsXFinal = ttXFinal + ttW + btnGap;
-
-    // 知识库按钮（可点击）
-    ctx.fillStyle = 'rgba(168, 220, 255, 0.15)';
-    this.roundRect(ctx, knXFinal, btnY, knW, btnH, 6);
-    ctx.fill();
-    ctx.strokeStyle = '#a8dcff';
-    ctx.lineWidth = 1;
-    this.roundRect(ctx, knXFinal, btnY, knW, btnH, 6);
-    ctx.stroke();
-    ctx.fillStyle = '#a8dcff';
-    ctx.fillText(knLabel, knXFinal + 12, 25);
-    this.nodeButtons.push({ action: 'knowledge', x: knXFinal, y: btnY, w: knW, h: btnH, enabled: true });
-
-    // 科技树按钮（可点击）
-    ctx.fillStyle = 'rgba(160, 100, 220, 0.15)';
-    this.roundRect(ctx, ttXFinal, btnY, ttW, btnH, 6);
-    ctx.fill();
-    ctx.strokeStyle = COLORS.accent.purple;
-    ctx.lineWidth = 1;
-    this.roundRect(ctx, ttXFinal, btnY, ttW, btnH, 6);
-    ctx.stroke();
-    ctx.fillStyle = COLORS.accent.purple;
-    ctx.fillText(ttLabel, ttXFinal + 12, 25);
-    this.nodeButtons.push({ action: 'tech_tree', x: ttXFinal, y: btnY, w: ttW, h: btnH, enabled: true });
-
-    // 时间加速按钮
-    const tsActive = state.timeScale > 1;
-    ctx.fillStyle = tsActive ? 'rgba(255, 220, 80, 0.18)' : 'rgba(120, 120, 120, 0.10)';
-    this.roundRect(ctx, tsXFinal, btnY, tsW, btnH, 6);
-    ctx.fill();
-    ctx.strokeStyle = tsActive ? COLORS.accent.yellowHi : COLORS.border.cyanFaint;
-    ctx.lineWidth = 1;
-    this.roundRect(ctx, tsXFinal, btnY, tsW, btnH, 6);
-    ctx.stroke();
-    ctx.fillStyle = tsActive ? COLORS.accent.yellowHi : COLORS.text.disabled;
-    ctx.fillText(tsLabel, tsXFinal + 12, 25);
-    this.nodeButtons.push({ action: 'time_scale', x: tsXFinal, y: btnY, w: tsW, h: btnH, enabled: true });
-
-    ctx.restore();
+    drawBattleHUD(this.ctx,state,this);
   }
 
-  /** 节点环形菜单（明日方舟风格，在节点周围弹出按钮） */
-  private drawRadialMenu(state: GameState): void {
-    const node = state.nodes.find(n => n.id === state.selectedNodeId);
-    if (!node) { this.nodeButtons = []; this.radialForNodeId = null; return; }
-
-    // 检测选中节点变化 → 重置展开动画
-    if (this.radialForNodeId !== node.id) {
-      this.radialForNodeId = node.id;
-      this.radialAnimStart = performance.now();
-    }
-    // 进入动画：缩放 0.7→1.0 + 透明度 0→1，使用 easeOutBack 微弹
-    const ANIM_DUR = ANIM.radialMenuIn;
-    const t = Math.min(1, (performance.now() - this.radialAnimStart) / ANIM_DUR);
-    // easeOutBack
-    const c1 = 1.70158;
-    const c3 = c1 + 1;
-    const eased = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
-    const animScale = 0.7 + 0.3 * eased;
-    const animAlpha = Math.min(1, t * 1.4); // 透明度比缩放快
-
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.shadowBlur = 0;
-
-    const cfg = NODE_CONFIGS[node.type];
-    const cam = state.camera;
-    // 世界坐标 → 屏幕坐标
-    const cx = (node.x - cam.x) * cam.zoom;
-    const cy = (node.y - cam.y) * cam.zoom;
-
-    // 收集可用操作
-    const actions: { id: string; icon: string; label: string; color: string; enabled: boolean }[] = [];
-
-    if (node.owner === 'neutral') {
-      const recruitCost = NODE_CONFIGS[node.type].cost;
-      const canRecruit = state.resources >= recruitCost;
-      actions.push({ id: 'recruit', icon: '🤝', label: `招募 ${recruitCost}◆`, color: '#44cc88', enabled: canRecruit });
-    }
-
-    if (node.type === 'core' && node.connected && !node.expanded) {
-      const canExpand = state.resources >= EXPAND_COST && state.crystals >= EXPAND_CRYSTAL_COST;
-      actions.push({ id: 'expand', icon: '🔭', label: `扩展 ${EXPAND_COST}◆`, color: COLORS.accent.cyanSoft, enabled: canExpand });
-    }
-
-    if (node.type !== 'core' && node.connected) {
-      if (node.evolved) {
-        actions.push({ id: 'upgrade', icon: '✦', label: '已进化', color: COLORS.text.faint, enabled: false });
-      } else if (node.level >= EVOLUTION_LEVEL && EVOLVABLE_TYPES.has(node.type)) {
-        const evoCost = getEvolutionCost(node.type);
-        const evoCrystal = getEvolutionCrystalCost(node.type);
-        const enabled = state.resources >= evoCost && state.crystals >= evoCrystal;
-        actions.push({ id: 'upgrade', icon: '★', label: `进化 ${evoCost}◆ ${evoCrystal}✧`, color: COLORS.accent.pink, enabled });
-      } else if (node.level >= EVOLUTION_LEVEL) {
-        actions.push({ id: 'upgrade', icon: '✦', label: '已满级', color: COLORS.text.faint, enabled: false });
-      } else {
-        const upgradeCost = 30 * node.level;
-        const enabled = state.resources >= upgradeCost;
-        actions.push({ id: 'upgrade', icon: '⬆', label: `升级 ${upgradeCost}◆`, color: COLORS.accent.cyan, enabled });
-      }
-    }
-
-    if (node.connected) {
-      // 连线按钮
-      const edgeCost = EDGE_CONFIGS[state.selectedEdgeType].cost;
-      const isConnecting = state.draggingFrom === node.id;
-      actions.push({
-        id: 'connect', icon: '🔗',
-        label: isConnecting ? '连线中…' : `连线 ${edgeCost}◆`,
-        color: isConnecting ? COLORS.accent.yellow : '#44aaff',
-        enabled: !isConnecting,
-      });
-
-      const baseCost = NODE_CONFIGS[node.type].cost;
-      let totalInvested = baseCost;
-      for (let lv = 1; lv < node.level; lv++) totalInvested += 30 * lv;
-      if (node.evolved) totalInvested += getEvolutionCost(node.type);
-      const refund = Math.floor(totalInvested * 0.5);
-      let sellEnabled = true;
-      if (node.type === 'core') {
-        const aliveCores = state.nodes.filter(n => n.type === 'core' && n.status !== 'destroyed');
-        sellEnabled = aliveCores.length > 1;
-      }
-      actions.push({ id: 'sell', icon: '✕', label: `出售 +${refund}◆`, color: COLORS.accent.redSoft, enabled: sellEnabled });
-    }
-
-    // 保留 HUD 按钮（时间加速等）
-    this.nodeButtons = this.nodeButtons.filter(b => b.action === 'time_scale');
-
-    if (actions.length === 0) { ctx.restore(); return; }
-
-    // 应用展开动画：以节点为中心做缩放 + 整体透明度
-    ctx.translate(cx, cy);
-    ctx.scale(animScale, animScale);
-    ctx.translate(-cx, -cy);
-    ctx.globalAlpha *= animAlpha;
-    // 动画前 60% 期间禁止点击，避免按钮位置错位导致的误触
-    const hitEnabled = t > 0.6;
-
-    const menuRadius = 85;
-    const btnRadius = 24;
-
-    // 绘制光环指示环
-    ctx.strokeStyle = this.withAlpha(node.glowColor, 0.2);
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([6, 4]);
-    ctx.beginPath();
-    ctx.arc(cx, cy, menuRadius, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // 连接线（中心 → 各按钮）
-    ctx.strokeStyle = this.withAlpha(node.glowColor, 0.1);
-    ctx.lineWidth = 1;
-
-    const startAngle = -Math.PI / 2;
-    const angleStep = (Math.PI * 2) / actions.length;
-
-    for (let i = 0; i < actions.length; i++) {
-      const angle = startAngle + i * angleStep;
-      const bx = cx + Math.cos(angle) * menuRadius;
-      const by = cy + Math.sin(angle) * menuRadius;
-      const action = actions[i];
-
-      // 连接线
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-
-      // 按钮圆形背景
-      ctx.beginPath();
-      ctx.arc(bx, by, btnRadius, 0, Math.PI * 2);
-      ctx.fillStyle = action.enabled ? COLORS.bg.panel : 'rgba(10,10,30,0.65)';
-      ctx.fill();
-      ctx.strokeStyle = action.enabled ? action.color : COLORS.text.border;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-
-      // 启用时添加微弱外发光
-      if (action.enabled) {
-        ctx.save();
-        ctx.shadowBlur = 8;
-        ctx.shadowColor = action.color;
-        ctx.beginPath();
-        ctx.arc(bx, by, btnRadius, 0, Math.PI * 2);
-        ctx.strokeStyle = this.withAlpha(action.color, 0.3);
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      // 图标
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.font = FONT.xxl;
-      ctx.fillStyle = action.enabled ? action.color : COLORS.text.disabled;
-      ctx.fillText(action.icon, bx, by - 1);
-
-      // 标签（按钮外侧）
-      const labelDist = menuRadius + btnRadius + 14;
-      const lx = cx + Math.cos(angle) * labelDist;
-      const ly = cy + Math.sin(angle) * labelDist;
-      ctx.font = FONT.md;
-      ctx.fillStyle = action.enabled ? COLORS.text.high : COLORS.text.disabled;
-      // 根据角度调整文本对齐
-      if (Math.abs(Math.cos(angle)) < 0.3) {
-        ctx.textAlign = 'center';
-      } else if (Math.cos(angle) > 0) {
-        ctx.textAlign = 'left';
-      } else {
-        ctx.textAlign = 'right';
-      }
-      ctx.textBaseline = 'middle';
-      ctx.fillText(action.label, lx, ly);
-
-      // 命中区域
-      this.nodeButtons.push({
-        action: action.id,
-        x: bx - btnRadius,
-        y: by - btnRadius,
-        w: btnRadius * 2,
-        h: btnRadius * 2,
-        enabled: hitEnabled && action.enabled,
-      });
-    }
-
-    // ── 节点信息卡片 ──
-    const cardW = 220;
-    const cardH = 76;
-    const cardX = cx - cardW / 2;
-    // 默认在环上方，太靠近顶部则放到下方
-    let cardY = cy - menuRadius - btnRadius - cardH - 8;
-    if (cardY < 4) cardY = cy + menuRadius + btnRadius + 8;
-
-    ctx.fillStyle = COLORS.bg.card;
-    ctx.strokeStyle = this.withAlpha(node.glowColor, 0.5);
-    ctx.lineWidth = 1;
-    // 圆角矩形
-    this.roundRect(ctx, cardX, cardY, cardW, cardH, 6);
-    ctx.fill();
-    this.roundRect(ctx, cardX, cardY, cardW, cardH, 6);
-    ctx.stroke();
-
-    // 名称 + 等级
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.font = 'bold 16px monospace';
-    ctx.fillStyle = node.glowColor;
-    const desc = node.evolved && EVOLUTION_NAMES[node.type]
-      ? `★ ${EVOLUTION_NAMES[node.type]}` : cfg.description;
-    ctx.fillText(`${desc} Lv.${node.level}`, cx, cardY + 5);
-
-    // HP 条
-    const barX = cardX + 8;
-    const barW = cardW - 16;
-    const barH = 7;
-    const barY = cardY + 22;
-    const hpRatio = node.hp / node.maxHp;
-    const hpColor = hpRatio > 0.5 ? COLORS.accent.green : hpRatio > 0.25 ? COLORS.accent.yellow : COLORS.accent.red;
-    ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillRect(barX, barY, barW, barH);
-    ctx.fillStyle = hpColor;
-    ctx.fillRect(barX, barY, barW * hpRatio, barH);
-    ctx.font = FONT.xs;
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = COLORS.text.primary;
-    ctx.fillText(`HP ${Math.floor(node.hp)}/${node.maxHp}`, cx, barY + barH / 2);
-
-    // 能量条
-    const eBarY = barY + barH + 4;
-    const energyRatio = node.currentEnergy / node.maxEnergy;
-    ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillRect(barX, eBarY, barW, barH);
-    ctx.fillStyle = '#00aaff';
-    ctx.fillRect(barX, eBarY, barW * energyRatio, barH);
-    ctx.font = FONT.xs;
-    ctx.fillStyle = COLORS.text.primary;
-    ctx.fillText(`⚡ ${Math.floor(node.currentEnergy)}/${node.maxEnergy}`, cx, eBarY + barH / 2);
-
-    // 状态指示（未连接 / 中立 / 超载）
-    if (node.owner === 'neutral' || !node.connected || isOvercharged(node)) {
-      const tagY = eBarY + barH + 3;
-      ctx.font = FONT.sm;
-      ctx.textBaseline = 'top';
-      if (node.owner === 'neutral') {
-        ctx.fillStyle = '#88aacc';
-        ctx.fillText('☆ 中立', cx, tagY);
-      } else if (!node.connected) {
-        ctx.fillStyle = COLORS.accent.red;
-        ctx.fillText('⊘ 断连', cx, tagY);
-      } else if (isOvercharged(node)) {
-        ctx.fillStyle = COLORS.accent.yellowHi;
-        ctx.fillText('⚡ 超载', cx, tagY);
-      }
-    }
-
-    ctx.restore();
+  private drawInspector(state: GameState): void {
+    drawInspector(this.ctx,state,this);
   }
 
-  /** 辅助：绘制圆角矩形路径 */
-  private roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
-  }
-
-  /** 批量操作面板（框选后显示） */
-  private drawBatchPanel(state: GameState): void {
-    const ids = state.selectedNodeIds;
-    if (ids.length === 0) { this.nodeButtons = []; return; }
-
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.shadowBlur = 0;
-
-    const panelW = 230;
-    const panelX = state.canvasWidth - panelW - 10;
-    const panelY = 60;
-    const btnW = panelW - 20;
-    const btnH = 24;
-    const panelH = 10 + 20 + 12 + (btnH + 6) * 3 + 10;
-    this.nodeButtons = [];
-
-    // 面板背景
-    ctx.fillStyle = 'rgba(0,0,0,0.85)';
-    ctx.strokeStyle = 'rgba(0,255,136,0.5)';
-    ctx.lineWidth = 1;
-    ctx.fillRect(panelX, panelY, panelW, panelH);
-    ctx.strokeRect(panelX, panelY, panelW, panelH);
-
-    ctx.font = FONT.lg;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-
-    let y = panelY + 10;
-    const x = panelX + 10;
-
-    // 标题
-    ctx.fillStyle = COLORS.accent.green;
-    ctx.fillText(`已选中 ${ids.length} 个节点`, x, y);
-    y += 20 + 6;
-
-    // 全部升级
-    const upgradeColor = COLORS.accent.cyan;
-    this.drawButton(x, y, btnW, btnH, `⬆ 全部升级 (${ids.length})`, upgradeColor, true);
-    this.nodeButtons.push({ action: 'batch_upgrade', x, y, w: btnW, h: btnH, enabled: true });
-    y += btnH + 6;
-
-    // 全部出售
-    const sellColor = COLORS.accent.redSoft;
-    this.drawButton(x, y, btnW, btnH, `✕ 全部出售 (${ids.length})`, sellColor, true);
-    this.nodeButtons.push({ action: 'batch_sell', x, y, w: btnW, h: btnH, enabled: true });
-    y += btnH + 6;
-
-    // 取消选择
-    const clearColor = COLORS.text.muted;
-    this.drawButton(x, y, btnW, btnH, '✕ 取消选择', clearColor, true);
-    this.nodeButtons.push({ action: 'batch_clear', x, y, w: btnW, h: btnH, enabled: true });
-
-    ctx.restore();
-  }
-
-  /** 绘制一个可点击按钮 */
-  private drawButton(x: number, y: number, w: number, h: number, label: string, color: string, enabled: boolean): void {
-    const ctx = this.ctx;
-    // 按钮背景
-    ctx.fillStyle = enabled ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.02)';
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = this.withAlpha(color, enabled ? 0.6 : 0.2);
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x, y, w, h);
-
-    // 按钮文本
-    ctx.fillStyle = color;
-    ctx.font = FONT.base;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(label, x + w / 2, y + h / 2);
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-  }
+  private drawBatchPanel(state:GameState):void {drawBatchInspector(this.ctx,state,this);}
 
   drawBuildPanel(state: GameState): void {
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.shadowBlur = 0;
-
-    const panelH = 64;
-    const panelY = state.canvasHeight - panelH;
-    ctx.fillStyle = COLORS.bg.overlay;
-    ctx.fillRect(0, panelY, state.canvasWidth, panelH);
-    ctx.strokeStyle = COLORS.border.cyanFaint;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, panelY);
-    ctx.lineTo(state.canvasWidth, panelY);
-    ctx.stroke();
-
-    // 静态表：仅作为未限制节点选择场景下的退回（如 bench / 调试）
-    const fallbackBuildTypes: { key: string; type: NodeType; label: string }[] = [
-      { key: '1', type: 'energy', label: '能量站' },
-      { key: '2', type: 'turret', label: '炮塔' },
-      { key: '3', type: 'mine', label: '矿机' },
-      { key: '4', type: 'shield', label: '护盾' },
-      { key: '5', type: 'relay', label: '中继器' },
-      { key: '6', type: 'tesla', label: '连锁塔' },
-      { key: '7', type: 'core', label: '核心' },
-      { key: '8', type: 'beacon', label: '信标' },
-      { key: '9', type: 'factory', label: '工厂' },
-      { key: '0', type: 'magnet', label: '磁力塔' },
-      { key: '-', type: 'trap', label: '陷阱' },
-      { key: '=', type: 'repair', label: '维修站' },
-      { key: '\\', type: 'sniper', label: '狙击手' },
-      { key: ']', type: 'buffer', label: '缓冲器' },
-      { key: '[', type: 'collector', label: '采集器' },
-      { key: "'", type: 'interceptor', label: '拦截器' },
-      { key: ';', type: 'radar', label: '雷达' },
-      { key: '`', type: 'portal', label: '传送门' },
-      { key: '.', type: 'blackhole', label: '黑洞' },
-      { key: '/', type: 'echo', label: '回声塔' },
-      { key: ',', type: 'toxin', label: '毒雾' },
-      { key: 'Q', type: 'arc', label: '电弧链' },
-      { key: 'E', type: 'kamikaze', label: '自爆' },
-    ];
-
-    // V1.0.5：有 allowedNodeTypes 时按玩家选择顺序绑定数字键 1..9,0
-    const NUM_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
-    const NODE_LABELS: Partial<Record<NodeType, string>> = Object.fromEntries(
-      fallbackBuildTypes.map(bt => [bt.type, bt.label]),
-    ) as Partial<Record<NodeType, string>>;
-
-    let buildTypes: { key: string; type: NodeType; label: string }[];
-    if (this.allowedNodeTypes && this.allowedNodeTypes.length > 0) {
-      buildTypes = this.allowedNodeTypes.slice(0, NUM_KEYS.length).map((type, i) => ({
-        key: NUM_KEYS[i],
-        type,
-        label: NODE_LABELS[type] ?? type,
-      }));
-    } else {
-      buildTypes = fallbackBuildTypes;
-    }
-
-    const startX = 10;
-    ctx.font = FONT.md;
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
-
-    // V1.2.7：动态列宽——按当前节点选择数量与可用宽度自适应
-    const half = Math.ceil(buildTypes.length / 2);
-    const row1 = buildTypes.slice(0, half);
-    const row2 = buildTypes.slice(half);
-    // 右侧帮助文字预留宽度
-    const rightReserve = 660;
-    const availW = Math.max(200, state.canvasWidth - rightReserve - startX);
-    const colW = Math.max(110, Math.min(140, Math.floor(availW / Math.max(1, half))));
-
-    for (let i = 0; i < row1.length; i++) {
-      const bt = row1[i];
-      const cfg = NODE_CONFIGS[bt.type];
-      const bx = startX + i * colW;
-      ctx.fillStyle = state.resources >= cfg.cost ? cfg.glowColor : COLORS.text.border;
-      ctx.fillText(`[${bt.key}]${bt.label}(${cfg.cost}◆)`, bx, panelY + 20);
-    }
-    for (let i = 0; i < row2.length; i++) {
-      const bt = row2[i];
-      const cfg = NODE_CONFIGS[bt.type];
-      const bx = startX + i * colW;
-      ctx.fillStyle = state.resources >= cfg.cost ? cfg.glowColor : COLORS.text.border;
-      ctx.fillText(`[${bt.key}]${bt.label}(${cfg.cost}◆)`, bx, panelY + 44);
-    }
-
-    // 操作提示
-    ctx.textAlign = 'right';
-    ctx.fillStyle = COLORS.text.disabled;
-    ctx.font = FONT.md;
-    ctx.fillText(`[${getKey('upgrade').toUpperCase()}]升级 | [${getKey('sell').toUpperCase()}]出售 | [${getKey('pause').toUpperCase()}]暂停 | [${getKey('achievements').toUpperCase()}]成就 | [${getKey('synergy').toUpperCase()}]图鉴 | [K]按键 | [${getKey('mute').toUpperCase()}]${isMuted() ? '🔇' : '🔊'}`, state.canvasWidth - 10, panelY + 20);
-
-    // 连线类型选择器
-    const ecfg = EDGE_CONFIGS[this.selectedEdgeType];
-    const etColor = ecfg.color || COLORS.accent.cyan;
-    ctx.fillStyle = etColor;
-    ctx.textAlign = 'right';
-    ctx.fillText(`[Tab]连线: ${ecfg.name}(${ecfg.cost}◆${ecfg.crystalCost ? ' ' + ecfg.crystalCost + '✧' : ''}) ${ecfg.description}`, state.canvasWidth - 200, panelY + 44);
-
-    ctx.fillStyle = COLORS.text.disabled;
-    ctx.fillText('Ctrl+左键平移 | 滚轮缩放', state.canvasWidth - 10, panelY + 44);
-
-    ctx.restore();
+    drawBuildDock(this.ctx,state,this);
   }
 
   private drawTutorial(state: GameState): void {
     const step = getCurrentStep();
     if (!step) return;
-
-    const ctx = this.ctx;
+    const objective = objectiveRect(state, this.objectiveCollapsed);
+    const ctx = this.ctx,
+      x = 22,
+      y = objective.y + objective.h + 8,
+      w = 340,
+      h = 204;
     ctx.save();
-
-    const cx = state.canvasWidth / 2;
-    const lineH = 20;
-    const padding = 16;
-    const boxW = 480;
-    const boxH = padding * 2 + step.lines.length * lineH + 40;
-
-    // 位置
-    let boxY: number;
-    if (step.highlight === 'bottom') {
-      boxY = state.canvasHeight - boxH - 60;
-    } else if (step.highlight === 'top') {
-      boxY = 50;
-    } else {
-      boxY = (state.canvasHeight - boxH) / 2;
-    }
-    const boxX = cx - boxW / 2;
-
-    // 半透明遮罩
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    // 面板
-    ctx.fillStyle = 'rgba(5,5,25,0.95)';
-    ctx.strokeStyle = '#00ffcc';
-    ctx.lineWidth = 2;
-    ctx.fillRect(boxX, boxY, boxW, boxH);
-    ctx.strokeRect(boxX, boxY, boxW, boxH);
-
-    // 进度指示
-    ctx.textAlign = 'right';
+    ctx.shadowBlur = 0;
+    panel(ctx, x, y, w, h, '#102737f5', '#8bcbc88c', 8);
+    this.hudRects.push({x,y,w,h});
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.font = FONT.md;
-    ctx.fillStyle = COLORS.text.disabled;
-    ctx.fillText(`${getProgress()}  [Esc] 跳过`, boxX + boxW - 10, boxY + 8);
-
-    // 标题
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = 'bold 24px monospace';
-    ctx.fillStyle = '#00ffcc';
-    ctx.fillText(step.title, cx, boxY + padding + 12);
-
-    // 内容行
-    ctx.font = FONT.xl;
-    ctx.fillStyle = COLORS.text.high;
-    const contentStartY = boxY + padding + 40;
-    for (let i = 0; i < step.lines.length; i++) {
-      const line = step.lines[i];
-      ctx.fillStyle = line.startsWith('提示') ? COLORS.accent.yellow : COLORS.text.high;
-      ctx.fillText(line, cx, contentStartY + i * lineH);
+    ctx.fillStyle = '#77b9b4';
+    ctx.font = `12px ${MONO_FONT}`;
+    ctx.fillText(`FLIGHT TRAINING / ${getProgress()}`, x + 18, y + 17);
+    ctx.fillStyle = '#def2ef';
+    ctx.font = `500 17px ${UI_FONT}`;
+    ctx.fillText(step.title.replace(/[⟨⟩〈〉]/g, ''), x + 18, y + 41, w - 36);
+    ctx.fillStyle = '#a7c0cc';
+    ctx.font = `13px ${UI_FONT}`;
+    const description = step.lines
+      .filter((line) => line && !line.includes('空格') && !line.includes('自动继续'))
+      .join(String.fromCharCode(10))
+      .replace('[U]', `[${getKey('upgrade').toUpperCase()}]`)
+      .replace('[T]', `[${getKey('techTree').toUpperCase()}]`)
+      .replace('[P]', `[${getKey('pause').toUpperCase()}]`);
+    wrappedText(ctx, description, x + 18, y + 76, w - 36, 22, 4);
+    ctx.fillStyle = '#87c9bf';
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.fillText(step.manual ? '空格 · 继续' : '完成操作后自动继续', x + 18, y + h - 33);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#6e91a4';
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.fillText('Esc 跳过', x + w - 18, y + h - 31);
+    if (step.id === 'connect') {
+      const core = state.nodes.find((n) => n.type === 'core'),
+        energy = state.nodes.find((n) => n.type === 'energy' && n.owner === 'player');
+      if (core && energy) {
+        const cam = state.camera;
+        const a = { x: (core.x - cam.x) * cam.zoom, y: (core.y - cam.y) * cam.zoom },
+          b = { x: (energy.x - cam.x) * cam.zoom, y: (energy.y - cam.y) * cam.zoom };
+        ctx.strokeStyle = '#a0e8d5';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 7]);
+        ctx.lineDashOffset = -performance.now() / 70;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        for (const p of [a, b]) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 32 * cam.zoom, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
     }
-
     ctx.restore();
   }
 
   private drawTechPanel(state: GameState): void {
     if (!this.techState) return;
-    const ctx = this.ctx;
-    ctx.save();
-
-    const cx = state.canvasWidth / 2;
-    const cy = state.canvasHeight / 2;
-    const panelW = 600;
-    const headerH = 70;   // 标题 + 资源行
-    const footerH = 18;   // 底部内边距 + 滚动提示
-    const cardH = 75;
-    const cardGap = 15;   // 90 - 75
-    // 按 tier 分组（与下方一致）
-    const treeAll = this.techState.tree;
-    const t1c = treeAll.filter(t => t.requires.length === 0).length;
-    const t2c = treeAll.filter(t => t.requires.length === 1).length;
-    const t3c = treeAll.filter(t => t.requires.length >= 2).length;
-    const maxTierCount = Math.max(t1c, t2c, t3c);
-    const contentH = maxTierCount * (cardH + cardGap);
-    const maxPanelH = Math.floor(state.canvasHeight * 0.85);
-    const panelH = Math.min(maxPanelH, headerH + contentH + footerH + 10);
-    const visibleContentH = panelH - headerH - footerH - 10;
-    this.techMaxScroll = Math.max(0, contentH - visibleContentH);
-    if (this.techScrollOffset > this.techMaxScroll) this.techScrollOffset = this.techMaxScroll;
-    if (this.techScrollOffset < 0) this.techScrollOffset = 0;
-
-    const px = cx - panelW / 2;
-    const py = cy - panelH / 2;
-    this.openPanelRects.push({ id: 'tech', x: px, y: py, w: panelW, h: panelH });
-
-    // 半透明遮罩
-    ctx.fillStyle = 'rgba(0,0,0,0.75)';
-    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    // 面板背景
-    ctx.fillStyle = 'rgba(10,10,30,0.95)';
-    ctx.strokeStyle = COLORS.accent.purple;
-    ctx.lineWidth = 2;
-    ctx.fillRect(px, py, panelW, panelH);
-    ctx.strokeRect(px, py, panelW, panelH);
-
-    // 标题
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = 'bold 27px monospace';
-    ctx.fillStyle = COLORS.accent.purple;
-    ctx.fillText('⟨ 科 技 树 ⟩', cx, py + 25);
-
-    ctx.font = FONT.base;
-    ctx.fillStyle = COLORS.text.faint;
-    const hint = this.techMaxScroll > 0 ? '  ·  滚轮翻页' : '';
-    ctx.fillText(`◆ ${Math.floor(state.resources)} 可用资源  ·  鼠标点击 / 数字键研究 (1-9, 0)  ·  [Esc] 关闭${hint}`, cx, py + 46);
-
-    // 重置点击区【V1.0.6】
+    const ctx = this.ctx,
+      w = Math.min(980, state.canvasWidth - 48),
+      h = Math.min(650, state.canvasHeight - 54);
+    const x = (state.canvasWidth - w) / 2,
+      y = (state.canvasHeight - h) / 2,
+      padding = 24,
+      header = 112,
+      footer = 34;
+    const cols = w >= 880 ? 3 : w >= 560 ? 2 : 1,
+      gap = 14,
+      cw = (w - padding * 2 - gap * (cols - 1)) / cols,
+      ch = 116;
+    const tree = this.techState.tree,
+      contentHeight = Math.ceil(tree.length / cols) * (ch + gap);
+    const viewport = h - header - footer;
+    this.techMaxScroll = Math.max(0, contentHeight - viewport);
+    this.techScrollOffset = Math.max(0, Math.min(this.techMaxScroll, this.techScrollOffset));
+    this.openPanelRects.push({ id: 'tech', x, y, w, h });
     this.techCardAreas = [];
-
-    // 绘制各科技节点
-    const tree = this.techState.tree;
-    const colW = panelW / 3;
-    const startY = py + headerH;
-
-    // 按 tier 分组
-    const tier1 = tree.filter(t => t.requires.length === 0);
-    const tier2 = tree.filter(t => t.requires.length === 1);
-    const tier3 = tree.filter(t => t.requires.length >= 2);
-    const tiers = [tier1, tier2, tier3];
-    const tierLabels = ['基 础', '进 阶', '高 级'];
-
-    // Tier 标签（不参与滚动）
-    for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
-      const tierX = px + tierIdx * colW;
-      const tierCx = tierX + colW / 2;
-      ctx.fillStyle = COLORS.text.border;
-      ctx.font = FONT.md;
-      ctx.textAlign = 'center';
-      ctx.fillText(tierLabels[tierIdx], tierCx, startY - 8);
-    }
-
-    // 卡片区裁剪 + 滚动
-    const clipY = startY + 4;
-    const clipH = visibleContentH;
+    ctx.save();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#020b16c9';
+    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
+    panel(ctx, x, y, w, h, '#0b1e2efc', '#90bfcb66', 10);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#83b5bc';
+    ctx.font = `10px ${MONO_FONT}`;
+    ctx.fillText('RESEARCH / NETWORK DEVELOPMENT', x + padding, y + 25);
+    ctx.fillStyle = '#e2eef1';
+    ctx.font = `500 25px ${UI_FONT}`;
+    ctx.fillText('研究与升级', x + padding, y + 56);
+    ctx.fillStyle = '#94afbd';
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.fillText('本次航行生效 · 点击卡片研究，也可使用数字键 1–9、0', x + padding, y + 86);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#a2dfcb';
+    ctx.font = `16px ${MONO_FONT}`;
+    ctx.fillText(`${Math.floor(state.resources)} ◆`, x + w - padding - 48, y + 54);
+    panel(ctx, x + w - 54, y + 18, 32, 32, '#173044', '#87abba55', 5);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#adc8d3';
+    ctx.font = `20px ${UI_FONT}`;
+    ctx.fillText('×', x + w - 38, y + 35);
+    this.nodeButtons.push({
+      action: 'close_panel',
+      x: x + w - 54,
+      y: y + 18,
+      w: 32,
+      h: 32,
+      enabled: true,
+    });
     ctx.save();
     ctx.beginPath();
-    ctx.rect(px, clipY, panelW, clipH);
+    ctx.rect(x + padding - 2, y + header, w - padding * 2 + 4, viewport);
     ctx.clip();
-
-    for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
-      const tier = tiers[tierIdx];
-      const tierX = px + tierIdx * colW;
-      const tierCx = tierX + colW / 2;
-
-      for (let i = 0; i < tier.length; i++) {
-        const tech = tier[i];
-        const ty = startY + 10 + i * (cardH + cardGap) - this.techScrollOffset;
-        const cardW = colW - 20;
-        const cardX = tierCx - cardW / 2;
-
-        // 视口剔除（不影响命中区，命中区也用滚动后坐标即可）
-        if (ty + cardH < clipY || ty > clipY + clipH) {
-          // 仍然不记录命中区（不可见就别点）
-          continue;
-        }
-
-        const available = canResearch(tech, this.techState, state.resources);
-
-        // 卡片背景
-        ctx.fillStyle = tech.unlocked
-          ? 'rgba(0,255,100,0.1)'
-          : available
-          ? 'rgba(170,68,255,0.15)'
-          : 'rgba(30,30,50,0.8)';
-        ctx.strokeStyle = tech.unlocked
-          ? COLORS.accent.green
-          : available
-          ? COLORS.accent.purple
-          : COLORS.text.borderFaint;
-        ctx.lineWidth = 1;
-        ctx.fillRect(cardX, ty, cardW, cardH);
-        ctx.strokeRect(cardX, ty, cardW, cardH);
-
-        // 记录点击区（V1.0.6：全部记录，点击时依赖 available 判断是否生效）
-        const techIdx = tree.indexOf(tech);
-        this.techCardAreas.push({
-          idx: techIdx,
-          techId: tech.id,
-          x: cardX, y: ty, w: cardW, h: cardH,
-          available, unlocked: tech.unlocked,
-        });
-
-        // 图标
-        ctx.font = FONT.xxl;
-        ctx.fillStyle = tech.unlocked ? tech.color : available ? tech.color : COLORS.text.disabled;
-        ctx.textAlign = 'left';
-        ctx.fillText(tech.icon, cardX + 8, ty + 18);
-
-        // 名称
-        ctx.font = 'bold 16px monospace';
-        ctx.fillText(tech.name, cardX + 30, ty + 18);
-
-        // 描述
-        ctx.font = FONT.md;
-        ctx.fillStyle = tech.unlocked ? COLORS.text.body : '#777777';
-        ctx.fillText(tech.description, cardX + 8, ty + 38);
-
-        // 状态/费用
-        ctx.font = FONT.md;
-        if (tech.unlocked) {
-          ctx.fillStyle = COLORS.accent.green;
-          ctx.fillText('✓ 已研究', cardX + 8, ty + 58);
-        } else {
-          ctx.fillStyle = available ? COLORS.accent.yellow : COLORS.text.disabled;
-          ctx.fillText(`费用: ${tech.cost}◆`, cardX + 8, ty + 58);
-          if (tech.requires.length > 0) {
-            const reqNames = tech.requires.map(id => {
-              const req = this.techState!.tree.find(t => t.id === id);
-              return req ? (req.unlocked ? '' : '❌' + req.name) : '';
-            }).filter(s => s).join(' ');
-            if (reqNames) {
-              ctx.fillStyle = COLORS.accent.redSoft;
-              ctx.font = FONT.sm;
-              ctx.fillText(`需要: ${reqNames}`, cardX + 8, ty + 70);
-            }
-          }
-        }
-
-        // 快捷键提示（V1.0.6：第10个科技用键 0，仅可研究状态显示）
-        if (available) {
-          const keyIdx = tree.indexOf(tech);
-          const slotKey = keyIdx < 9 ? String(keyIdx + 1) : '0';
-          ctx.fillStyle = COLORS.accent.purple;
-          ctx.font = 'bold 18px monospace';
-          ctx.textAlign = 'right';
-          ctx.fillText(`[${slotKey}]`, cardX + cardW - 8, ty + 18);
-          ctx.textAlign = 'left';
-        }
-      }
-
-      // 绘制 tier 之间的连接线（也在裁剪区内随滚动）
-      if (tierIdx < tiers.length - 1) {
-        ctx.strokeStyle = COLORS.text.borderFaint;
-        ctx.lineWidth = 0.5;
-        ctx.setLineDash([3, 3]);
-        const lineX = tierX + colW;
-        ctx.beginPath();
-        ctx.moveTo(lineX, clipY);
-        ctx.lineTo(lineX, clipY + clipH);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
+    tree.forEach((tech, i) => {
+      const tx = x + padding + (i % cols) * (cw + gap),
+        ty = y + header + Math.floor(i / cols) * (ch + gap) - this.techScrollOffset;
+      if (ty + ch < y + header || ty > y + h - footer) return;
+      const available = canResearch(tech, this.techState!, state.resources);
+      panel(
+        ctx,
+        tx,
+        ty,
+        cw,
+        ch,
+        tech.unlocked ? '#143631' : available ? '#163246' : '#122535',
+        tech.unlocked ? '#72c2a76b' : available ? '#86bcc25e' : '#64829835',
+        6,
+      );
+      ctx.textAlign = 'left';
+      ctx.fillStyle = tech.unlocked ? '#a2dfc4' : '#d0e1e8';
+      ctx.font = `500 15px ${UI_FONT}`;
+      ctx.fillText(tech.name, tx + 15, ty + 24, cw - 76);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#7093a4';
+      ctx.font = `11px ${MONO_FONT}`;
+      ctx.fillText(`[${(i + 1) % 10}]`, tx + cw - 14, ty + 24);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#8da9b9';
+      ctx.font = `12px ${UI_FONT}`;
+      wrappedText(ctx, tech.description.replaceAll('Tick', '步'), tx + 15, ty + 49, cw - 30, 18, 2);
+      ctx.fillStyle = tech.unlocked ? '#8fd2b7' : available ? '#d9c18b' : '#8094a4';
+      ctx.font = `11px ${UI_FONT}`;
+      const requirements = tech.requires
+        .filter((id) => !this.techState!.tree.find((t) => t.id === id)?.unlocked)
+        .map((id) => tree.find((t) => t.id === id)?.name ?? id);
+      const status = tech.unlocked
+        ? '✓ 已完成研究'
+        : requirements.length
+          ? `前置：${requirements.join('、')}`
+          : `${tech.cost} ◆  /  ${available ? '可研究' : '资源不足'}`;
+      wrappedText(ctx, status, tx + 15, ty + 91, cw - 30, 16, 1);
+      this.techCardAreas.push({
+        idx: i,
+        techId: tech.id,
+        x: tx,
+        y: Math.max(ty, y + header),
+        w: cw,
+        h: Math.min(ty + ch, y + h - footer) - Math.max(ty, y + header),
+        available,
+        unlocked: tech.unlocked,
+      });
+    });
+    ctx.restore();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#7093a6';
+    ctx.font = `11px ${UI_FONT}`;
+    ctx.fillText(
+      this.techMaxScroll
+        ? '滚轮浏览更多研究 · Esc 返回星域'
+        : '研究会消耗本次航行资源 · Esc 返回星域',
+      state.canvasWidth / 2,
+      y + h - 17,
+    );
+    if (this.techMaxScroll) {
+      const barH = viewport * (viewport / contentHeight),
+        by = y + header + ((viewport - barH) * this.techScrollOffset) / this.techMaxScroll;
+      ctx.fillStyle = '#83b8bd66';
+      ctx.beginPath();
+      ctx.roundRect(x + w - 11, by, 3, barH, 2);
+      ctx.fill();
     }
-
-    ctx.restore(); // 解除裁剪
-
-    // 滚动条（仅当可滚动时）
-    if (this.techMaxScroll > 0) {
-      const sbX = px + panelW - 6;
-      const sbY = clipY;
-      const sbH = clipH;
-      ctx.fillStyle = 'rgba(170,68,255,0.15)';
-      ctx.fillRect(sbX, sbY, 4, sbH);
-      const thumbH = Math.max(20, sbH * (clipH / contentH));
-      const thumbY = sbY + (sbH - thumbH) * (this.techScrollOffset / this.techMaxScroll);
-      ctx.fillStyle = COLORS.accent.purple;
-      ctx.fillRect(sbX, thumbY, 4, thumbH);
-    }
-
     ctx.restore();
   }
 
-  /** V1.2.4：滚动科技树面板，由 input wheel 调用。delta 为像素，正值向下。 */
   scrollTechPanel(delta: number): void {
     if (!this.techState || !this.techState.showPanel) return;
-    this.techScrollOffset = Math.max(0, Math.min(this.techMaxScroll, this.techScrollOffset + delta));
+    this.techScrollOffset = Math.max(
+      0,
+      Math.min(this.techMaxScroll, this.techScrollOffset + delta),
+    );
   }
 
-  /** V1.5.11：滚动知识库面板 */
+  /** 手册以整页阅读，滚轮不再滚动被裁切的卡片。 */
   scrollKnowledgePanel(delta: number): void {
     if (!this.showKnowledgePanel) return;
-    this.knowledgeScrollOffset = Math.max(0, Math.min(this.knowledgeMaxScroll, this.knowledgeScrollOffset + delta));
+    this.knowledgePage = Math.max(0, Math.min(this.knowledgePages - 1, this.knowledgePage + Math.sign(delta)));
   }
 
   /** V1.6.1：滚动成就面板 */
   scrollAchievementPanel(delta: number): void {
     if (!this.showAchievementPanel) return;
-    this.achievementScrollOffset = Math.max(0, Math.min(this.achievementMaxScroll, this.achievementScrollOffset + delta));
+    this.achievementScrollOffset = Math.max(
+      0,
+      Math.min(this.achievementMaxScroll, this.achievementScrollOffset + delta),
+    );
+  }
+
+  scrollSynergyPanel(delta: number): void {
+    if (this.showSynergyPanel)
+      this.synergyScrollOffset = Math.max(
+        0,
+        Math.min(this.synergyMaxScroll, this.synergyScrollOffset + delta),
+      );
   }
 
   /** V1.6.1：是否有任意子面板正在显示 */
@@ -1099,16 +515,6 @@ export class UI {
     );
   }
 
-  /** V1.6.1：关闭最顶层（最近打开的）子面板，返回是否关闭了一个。tech 关闭时同时取消暂停。 */
-  closeTopSubPanel(): boolean {
-    if (this.showKeybindPanel) { this.showKeybindPanel = false; this.editingAction = null; return true; }
-    if (this.showKnowledgePanel) { this.showKnowledgePanel = false; return true; }
-    if (this.showAchievementPanel) { this.showAchievementPanel = false; return true; }
-    if (this.showSynergyPanel) { this.showSynergyPanel = false; return true; }
-    if (this.techState && this.techState.showPanel) { this.techState.showPanel = false; return true; }
-    return false;
-  }
-
   /** V1.6.1：屏幕坐标 (sx,sy) 是否落在任意已打开子面板矩形内 */
   isPointInOpenPanel(sx: number, sy: number): boolean {
     for (const r of this.openPanelRects) {
@@ -1117,201 +523,166 @@ export class UI {
     return false;
   }
 
-  private drawGameOver(state: GameState): void {
-    const ctx = this.ctx;
+  private drawResult(state: GameState, won: boolean): void {
+    this.nodeButtons=[];
+    const ctx = this.ctx,
+      w = Math.min(640, state.canvasWidth - 48),
+      h = 410,
+      x = (state.canvasWidth - w) / 2,
+      y = (state.canvasHeight - h) / 2;
+    const accent = won ? '#a1dfc7' : '#e4af99';
     ctx.save();
-
-    ctx.fillStyle = COLORS.bg.overlay;
-    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
-    ctx.shadowBlur = 20;
-    ctx.shadowColor = '#ff0000';
-    ctx.fillStyle = COLORS.accent.red;
-    ctx.font = 'bold 72px monospace';
-    ctx.fillText('CORE DESTROYED', state.canvasWidth / 2, state.canvasHeight / 2 - 40);
-
     ctx.shadowBlur = 0;
-    ctx.fillStyle = COLORS.accent.yellow;
-    ctx.font = '36px monospace';
-    ctx.fillText(`SCORE: ${state.score}`, state.canvasWidth / 2, state.canvasHeight / 2 + 20);
-
-    ctx.fillStyle = COLORS.accent.cyan;
-    ctx.font = FONT.xxl;
-    ctx.fillText(`WAVE REACHED: ${state.wave}`, state.canvasWidth / 2, state.canvasHeight / 2 + 55);
-
-    ctx.fillStyle = COLORS.text.muted;
-    ctx.font = '21px monospace';
-    ctx.fillText('[R] 重新开始', state.canvasWidth / 2, state.canvasHeight / 2 + 90);
-
-    // V1.2.0：本局首次发现的联动
-    this.drawNewSynergiesBlock(state, state.canvasHeight / 2 + 130);
-
-    ctx.restore();
-  }
-
-  private drawLevelWon(state: GameState): void {
-    const ctx = this.ctx;
-    ctx.save();
-
-    ctx.fillStyle = COLORS.bg.overlay;
+    ctx.fillStyle = '#020a15c9';
     ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    ctx.textAlign = 'center';
+    panel(ctx, x, y, w, h, '#0b1f2ff8', won ? '#86c9b384' : '#b88c7780', 10);
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-
-    ctx.shadowBlur = 20;
-    ctx.shadowColor = COLORS.accent.green;
-    ctx.fillStyle = COLORS.accent.green;
-    ctx.font = 'bold 72px monospace';
-    ctx.fillText('★ VICTORY ★', state.canvasWidth / 2, state.canvasHeight / 2 - 40);
-
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = COLORS.accent.yellow;
-    ctx.font = '36px monospace';
-    ctx.fillText(`SCORE: ${state.score}  |  WAVE: ${state.wave}`, state.canvasWidth / 2, state.canvasHeight / 2 + 20);
-
-    if (this.levelObjectiveText) {
-      ctx.fillStyle = COLORS.accent.cyan;
-      ctx.font = FONT.xxl;
-      ctx.fillText(this.levelObjectiveText, state.canvasWidth / 2, state.canvasHeight / 2 + 55);
-    }
-
-    ctx.fillStyle = COLORS.text.muted;
-    ctx.font = '21px monospace';
-    ctx.fillText('即将返回关卡选择...', state.canvasWidth / 2, state.canvasHeight / 2 + 90);
-
-    // V1.2.0：本局首次发现的联动
-    this.drawNewSynergiesBlock(state, state.canvasHeight / 2 + 130);
-
+    ctx.fillStyle = accent;
+    ctx.font = `10px ${MONO_FONT}`;
+    ctx.fillText(won ? 'EXPEDITION COMPLETE' : 'SIGNAL LOST', x + 30, y + 30);
+    ctx.fillStyle = '#e5f0f3';
+    ctx.font = `500 32px ${UI_FONT}`;
+    ctx.fillText(won ? (state.frontier?'行动已完成。':'航线已守住。') : '核心失去响应。', x + 30, y + 77);
+    ctx.fillStyle = '#95b0c0';
+    ctx.font = `13px ${UI_FONT}`;
+    wrappedText(
+      ctx,
+      won
+        ? `${this.levelTitle}的网络保持了运转。你已经完成这段航线。`
+        : '调整供能、火力与侦察布局，再带着新的方案出发。',
+      x + 30,
+      y + 118,
+      w - 60,
+      22,
+      2,
+    );
+    const metrics = state.frontier ? [
+      ['行动用时',`${Math.floor(state.elapsedSeconds/60)}:${String(Math.floor(state.elapsedSeconds%60)).padStart(2,'0')}`],
+      ['净资源投入',Math.floor(state.resourcesSpent-state.frontier.recovered)],
+      ['在役设施',state.nodes.filter(n=>n.owner==='player'&&n.status!=='destroyed').length],
+    ] : [ ['航行得分',state.score],['抵达波次',state.wave],['有效击杀',state.enemiesKilled] ];
+    metrics.forEach(([label, value], i) => {
+      const xx = x + 30 + (i * (w - 60)) / 3;
+      ctx.fillStyle = '#7594a7';
+      ctx.font = `11px ${UI_FONT}`;
+      ctx.fillText(String(label), xx, y + 181);
+      ctx.fillStyle = accent;
+      ctx.font = `500 26px ${MONO_FONT}`;
+      ctx.fillText(String(value), xx, y + 216);
+    });
+    ctx.strokeStyle = '#89acbe26';
+    ctx.beginPath();
+    ctx.moveTo(x + 30, y + 249);
+    ctx.lineTo(x + w - 30, y + 249);
+    ctx.stroke();
+    ctx.fillStyle = '#8aa7b8';
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.fillText(
+      `本次建造 ${state.nodesBuilt} 座设施 · 发现 ${this.newSynergiesThisRun.length} 组新联动`,
+      x + 30,
+      y + 279,
+    );
+    this.drawNewSynergiesBlock(state, y + 305);
+    const gap = 12,
+      bw = (w - 60 - gap) / 2,
+      by = y + h - 83;
+    panel(ctx, x + 30, by, bw, 47, won ? '#8fd8c8' : '#dfb59b', accent, 5);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#0c2330';
+    ctx.font = `500 14px ${UI_FONT}`;
+    ctx.fillText(won ? '返回行动列表  ↗' : '重新出发  ↗', x + 30 + bw / 2, by + 24);
+    panel(ctx, x + 30 + bw + gap, by, bw, 47, '#163145', '#789dad55', 5);
+    ctx.fillStyle = '#bdd3dd';
+    ctx.fillText(won ? '再试一次' : '返回航线', x + 30 + bw + gap + bw / 2, by + 24);
+    this.nodeButtons.push(
+      { action: won ? 'continue' : 'quick_restart', x: x + 30, y: by, w: bw, h: 47, enabled: true },
+      {
+        action: won ? 'quick_restart' : 'continue',
+        x: x + 30 + bw + gap,
+        y: by,
+        w: bw,
+        h: 47,
+        enabled: true,
+      },
+    );
+    ctx.fillStyle = '#688b9f';
+    ctx.font = `10px ${UI_FONT}`;
+    ctx.fillText(
+      `Enter 返回航线 · ${getKey('restart').toUpperCase()} 快速重开`,
+      state.canvasWidth / 2,
+      y + h - 17,
+    );
     ctx.restore();
   }
 
   /** V1.2.0：在结算面板下方展示「本局首次发现的联动」 */
   private drawNewSynergiesBlock(state: GameState, baseY: number): void {
-    const list = this.newSynergiesThisRun;
-    if (!list || list.length === 0) return;
+    if (!this.newSynergiesThisRun.length) return;
+    const names = this.newSynergiesThisRun
+      .map((id) => this.SYNERGIES.find((s) => s.id === id)?.name)
+      .filter(Boolean)
+      .slice(0, 2);
     const ctx = this.ctx;
-    const cx = state.canvasWidth / 2;
-
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = 'bold 22px monospace';
-    ctx.fillStyle = COLORS.accent.yellowHi;
-    ctx.fillText(`★ 本局首次发现 ${list.length} 对联动`, cx, baseY);
-
-    ctx.font = FONT.base;
-    ctx.fillStyle = COLORS.text.high;
-    let y = baseY + 28;
-    for (const id of list) {
-      const s = this.SYNERGIES.find(x => x.id === id);
-      if (!s) continue;
-      ctx.fillStyle = s.color;
-      ctx.fillText(`【${s.mode}】 ${s.name}  ·  ${s.pair}`, cx, y);
-      y += 22;
-    }
-    ctx.fillStyle = COLORS.text.muted;
-    ctx.font = FONT.sm;
-    ctx.fillText(`按 [${(getKey('synergy') || 'y').toUpperCase()}] 查看图鉴`, cx, y + 6);
+    ctx.fillStyle = '#b9caa9';
+    ctx.font = `11px ${UI_FONT}`;
+    ctx.fillText(
+      `新发现：${names.join(' · ')}`,
+      state.canvasWidth / 2,
+      baseY,
+      state.canvasWidth - 100,
+    );
   }
 
-  private drawPaused(state: GameState): void {
-    const ctx = this.ctx;
-    ctx.save();
-
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.shadowBlur = 15;
-    ctx.shadowColor = COLORS.accent.cyan;
-    ctx.fillStyle = COLORS.accent.cyan;
-    ctx.font = 'bold 54px monospace';
-    ctx.fillText('⏸ PAUSED', state.canvasWidth / 2, state.canvasHeight / 2);
-
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = COLORS.text.muted;
-    ctx.font = '21px monospace';
-    ctx.fillText('[P] 继续', state.canvasWidth / 2, state.canvasHeight / 2 + 40);
-
-    ctx.restore();
-  }
-
-  /** V1.1.0 暂停菜单：ESC 唤起的居中弹层 */
   private drawPauseMenu(state: GameState): void {
-    const ctx = this.ctx;
+    const ctx = this.ctx,
+      w = Math.min(420, state.canvasWidth - 48),
+      h = 370,
+      x = (state.canvasWidth - w) / 2,
+      y = (state.canvasHeight - h) / 2;
     ctx.save();
-
-    // 半透明遮罩
-    ctx.fillStyle = 'rgba(0,0,0,0.65)';
-    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    const cx = state.canvasWidth / 2;
-    const cy = state.canvasHeight / 2;
-    const itemW = 320;
-    const itemH = 56;
-    const gap = 12;
-    const titleH = 80;
-    const totalH = titleH + this.pauseMenuItems.length * (itemH + gap) - gap + 60;
-    const top = cy - totalH / 2;
-
-    // 标题
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.shadowBlur = 15;
-    ctx.shadowColor = COLORS.accent.cyan;
-    ctx.fillStyle = COLORS.accent.cyan;
-    ctx.font = 'bold 42px monospace';
-    ctx.fillText('⏸ 暂停', cx, top + 30);
     ctx.shadowBlur = 0;
-
-    // 菜单项
+    ctx.fillStyle = '#020b16b8';
+    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
+    panel(ctx, x, y, w, h, '#0d2435f7', '#8ab7c263', 9);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#729cae';
+    ctx.font = `10px ${MONO_FONT}`;
+    ctx.fillText('EXPEDITION / PAUSED', x + 26, y + 26);
+    ctx.fillStyle = '#dbecef';
+    ctx.font = `500 25px ${UI_FONT}`;
+    ctx.fillText('航行已暂停', x + 26, y + 62);
     this.pauseMenuAreas = [];
-    const startY = top + titleH;
-    for (let i = 0; i < this.pauseMenuItems.length; i++) {
-      const item = this.pauseMenuItems[i];
-      const y = startY + i * (itemH + gap);
-      const x = cx - itemW / 2;
-      const isHover = this.pauseMenuIndex === i;
-
-      // 卡片背景
-      ctx.fillStyle = isHover ? 'rgba(0,200,220,0.18)' : 'rgba(20,30,40,0.85)';
-      ctx.strokeStyle = isHover ? COLORS.accent.cyan : COLORS.border.cyanFaint;
-      ctx.lineWidth = isHover ? 2 : 1;
-      ctx.fillRect(x, y, itemW, itemH);
-      ctx.strokeRect(x, y, itemW, itemH);
-
-      // 文字
-      ctx.fillStyle = isHover ? COLORS.accent.cyan : COLORS.text.muted;
-      ctx.font = isHover ? 'bold 22px monospace' : '20px monospace';
-      ctx.fillText(item.label, cx, y + itemH / 2);
-
-      // 数字快捷键
-      ctx.fillStyle = COLORS.text.faint;
-      ctx.font = '14px monospace';
+    this.pauseMenuItems.forEach((item, i) => {
+      const yy = y + 102 + i * 53,
+        selected = i === this.pauseMenuIndex;
+      panel(
+        ctx,
+        x + 24,
+        yy,
+        w - 48,
+        43,
+        selected ? '#25505a' : '#132c3e',
+        selected ? '#8bc4be88' : '#648a9d35',
+        5,
+      );
+      ctx.fillStyle = selected ? '#d3ede7' : '#a2bdcc';
+      ctx.font = `14px ${UI_FONT}`;
+      ctx.fillText(item.label, x + 42, yy + 22);
       ctx.textAlign = 'right';
-      ctx.fillText(`[${i + 1}]`, x + itemW - 12, y + 14);
-      ctx.textAlign = 'center';
-
-      this.pauseMenuAreas.push({ idx: i, x, y, w: itemW, h: itemH });
-    }
-
-    // 提示
-    ctx.fillStyle = COLORS.text.faint;
-    ctx.font = '14px monospace';
-    ctx.fillText('↑↓ 切换  ·  Enter 确认  ·  鼠标点击  ·  数字键 1-4  ·  Esc 继续', cx, startY + this.pauseMenuItems.length * (itemH + gap) + 16);
-
+      ctx.fillStyle = '#668c9b';
+      ctx.font = `11px ${MONO_FONT}`;
+      ctx.fillText(String(i + 1), x + w - 42, yy + 22);
+      ctx.textAlign = 'left';
+      this.pauseMenuAreas.push({ idx: i, x: x + 24, y: yy, w: w - 48, h: 43 });
+    });
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#698a9e';
+    ctx.font = `10px ${UI_FONT}`;
+    ctx.fillText('方向键选择 · Enter 确认 · Esc 返回', state.canvasWidth / 2, y + h - 20);
     ctx.restore();
-  }
-
-  private withAlpha(hex: string, alpha: number): string {
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    return `rgba(${r},${g},${b},${alpha})`;
   }
 
   // ───── 成就 Toast 通知 ─────
@@ -1333,12 +704,11 @@ export class UI {
 
     const toastW = 280;
     const toastH = 50;
-    const marginRight = 10;
-    const startY = 60; // 顶栏下方
+    const startY = 94;
 
     for (let i = this.toasts.length - 1; i >= 0; i--) {
       const toast = this.toasts[i];
-      toast.timer -= 1 / 60; // ~60fps
+      toast.timer -= this.frameSeconds; // ~60fps
       if (toast.timer <= 0) {
         this.toasts.splice(i, 1);
         continue;
@@ -1346,8 +716,9 @@ export class UI {
 
       const alpha = Math.min(1, toast.timer);
       const idx = this.toasts.length - 1 - i;
-      const tx = state.canvasWidth - toastW - marginRight;
+      const tx = (state.canvasWidth - toastW) / 2;
       const ty = startY + idx * (toastH + 6);
+      this.hudRects.push({x:tx,y:ty,w:toastW,h:toastH});
 
       // 背景
       ctx.fillStyle = `rgba(20,10,40,${0.9 * alpha})`;
@@ -1358,14 +729,14 @@ export class UI {
 
       // 图标
       ctx.globalAlpha = alpha;
-      ctx.font = '30px monospace';
+      ctx.font = '30px "Segoe UI", "Microsoft YaHei UI", sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillStyle = COLORS.accent.yellowHi;
       ctx.fillText(toast.def.icon, tx + 10, ty + toastH / 2);
 
       // 标题
-      ctx.font = 'bold 18px monospace';
+      ctx.font = 'bold 18px "Segoe UI", "Microsoft YaHei UI", sans-serif';
       ctx.fillStyle = COLORS.accent.yellowHi;
       ctx.fillText(`成就解锁: ${toast.def.name}`, tx + 40, ty + 16);
 
@@ -1383,7 +754,7 @@ export class UI {
   /** V1.2.1：由 Game 在 tick 后调用，把首次发现的联动加入世界 toast 队列 */
   pushSynergyToast(id: string): void {
     // 避免重复（同一 id 短时间内多次 push）
-    if (this.synergyToasts.some(t => t.id === id)) return;
+    if (this.synergyToasts.some((t) => t.id === id)) return;
     this.synergyToasts.push({ id, timer: 4 });
     if (this.synergyToasts.length > 3) this.synergyToasts = this.synergyToasts.slice(-3);
     sfxAchievement(); // 复用成就音效，给玩家明确反馈
@@ -1392,7 +763,7 @@ export class UI {
   /** V1.5.0：弹出地形/虫洞知识点 toast（id 来自 LORE_TIPS） */
   pushLoreToast(id: string): void {
     if (!LORE_TIPS[id]) return;
-    if (this.loreToasts.some(t => t.id === id)) return;
+    if (this.loreToasts.some((t) => t.id === id)) return;
     this.loreToasts.push({ id, timer: 8 });
     if (this.loreToasts.length > 3) this.loreToasts = this.loreToasts.slice(-3);
     sfxAchievement();
@@ -1400,87 +771,39 @@ export class UI {
 
   /** V1.5.0：渲染 lore toast（位置在 synergy toast 下方，避免冲突） */
   private updateLoreToasts(state: GameState): void {
-    if (this.loreToasts.length === 0) return;
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.shadowBlur = 0;
-
-    const toastW = 440;
-    const lineH = 18;
-    const titleH = 28;
-    const padding = 12;
-    // 起点：避开 synergy toast 区域（startY=70 + 最多 3×62）
-    const startY = 70 + Math.min(this.synergyToasts.length, 3) * 62 + 10;
-    const cx = state.canvasWidth / 2;
-    let yCursor = startY;
-
-    for (let i = 0; i < this.loreToasts.length; i++) {
-      const toast = this.loreToasts[i];
-      toast.timer -= 1 / 60;
-      if (toast.timer <= 0) {
-        this.loreToasts.splice(i, 1);
-        i--;
-        continue;
-      }
-      const tip = LORE_TIPS[toast.id];
-      if (!tip) continue;
-
-      const toastH = titleH + tip.lines.length * lineH + padding * 2;
-      const inT = Math.min(1, (8 - toast.timer) / 0.3);
-      const eased = 1 - Math.pow(1 - inT, 3);
-      const alpha = Math.min(1, toast.timer);
-      const tx = cx - toastW / 2;
-      const ty = yCursor - (1 - eased) * 14;
-
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = 'rgba(8,12,28,0.94)';
-      ctx.strokeStyle = tip.color;
-      ctx.lineWidth = 2;
-      ctx.fillRect(tx, ty, toastW, toastH);
-      ctx.strokeRect(tx, ty, toastW, toastH);
-
-      // 左侧装饰条
-      ctx.fillStyle = tip.color;
-      ctx.fillRect(tx, ty, 4, toastH);
-
-      // V1.5.7：根据 toast 类型加左侧分类徽章 + 右上角小图标
-      let category = '知识';
-      let icon = '◆';
-      if (toast.id.startsWith('challenge_')) {
-        if (toast.id.endsWith('_done')) { category = '完成'; icon = '✓'; }
-        else { category = '任务'; icon = '⚑'; }
-      }
-
-      // 标题（左侧加 icon）
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.font = 'bold 16px monospace';
-      ctx.fillStyle = tip.color;
-      ctx.fillText(`${icon} ${tip.title.replace(/^★\s*/, '')}`, tx + padding + 6, ty + padding);
-
-      // 右上角分类徽章
-      ctx.font = FONT.base;
-      ctx.textAlign = 'right';
-      ctx.fillStyle = tip.color;
-      ctx.globalAlpha = alpha * 0.7;
-      ctx.fillText(`[${category}]`, tx + toastW - padding, ty + padding + 2);
-      ctx.globalAlpha = alpha;
-      ctx.textAlign = 'left';
-
-      // 正文
-      ctx.font = FONT.base;
-      ctx.fillStyle = COLORS.text.high;
-      for (let li = 0; li < tip.lines.length; li++) {
-        ctx.fillText(tip.lines[li], tx + padding + 6, ty + padding + titleH + li * lineH);
-      }
-
-      ctx.globalAlpha = 1;
-      yCursor += toastH + 8;
+    const toast = this.loreToasts[0];
+    if (!toast || isTutorialActive()) return;
+    toast.timer -= this.frameSeconds;
+    if (toast.timer <= 0) {
+      this.loreToasts.shift();
+      return;
     }
+    const tip = LORE_TIPS[toast.id];
+    if (!tip) return;
+    const ctx = this.ctx,
+      w = Math.min(360, state.canvasWidth - 48),
+      x = (state.canvasWidth - w) / 2,
+      y = 94,
+      h = 164;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, toast.timer);
+    ctx.shadowBlur = 0;
+    panel(ctx, x, y, w, h, '#102637f5', '#94b9ca66', 7);
+    this.hudRects.push({x,y,w,h});
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#9bbdca';
+    ctx.font = `500 15px ${UI_FONT}`;
+    ctx.fillText(tip.title.replace(/^★\s*/, ''), x + 17, y + 17, w - 34);
+    ctx.fillStyle = '#9ab3c2';
+    ctx.font = `12px ${UI_FONT}`;
+    wrappedText(ctx, tip.lines.join(' '), x + 17, y + 52, w - 34, 21, 4);
+    ctx.fillStyle = '#63899c';
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.fillText('H · 在作战手册中查看详情', x + 17, y + h - 23);
     ctx.restore();
   }
 
-  /** V1.2.1：渲染并衰减联动首次发现 Toast，位置在屏幕中央上方，避免与右侧成就 toast 抢位 */
   private updateSynergyToasts(state: GameState): void {
     if (this.synergyToasts.length === 0) return;
     const ctx = this.ctx;
@@ -1489,17 +812,17 @@ export class UI {
 
     const toastW = 360;
     const toastH = 56;
-    const startY = 70;
+    const startY = 94;
     const cx = state.canvasWidth / 2;
 
     for (let i = this.synergyToasts.length - 1; i >= 0; i--) {
       const toast = this.synergyToasts[i];
-      toast.timer -= 1 / 60;
+      toast.timer -= this.frameSeconds;
       if (toast.timer <= 0) {
         this.synergyToasts.splice(i, 1);
         continue;
       }
-      const s = this.SYNERGIES.find(x => x.id === toast.id);
+      const s = this.SYNERGIES.find((x) => x.id === toast.id);
       if (!s) continue;
 
       // 入场上滑动 + 出场渐隐
@@ -1509,6 +832,7 @@ export class UI {
       const idx = this.synergyToasts.length - 1 - i;
       const tx = cx - toastW / 2;
       const ty = startY + idx * (toastH + 6) - (1 - eased) * 10;
+      this.hudRects.push({x:tx,y:ty,w:toastW,h:toastH});
 
       ctx.globalAlpha = alpha;
       // 背景：使用联动主题色边框
@@ -1525,14 +849,14 @@ export class UI {
       // 标题
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.font = 'bold 16px monospace';
+      ctx.font = 'bold 16px "Segoe UI", "Microsoft YaHei UI", sans-serif';
       ctx.fillStyle = s.color;
       ctx.fillText(`★ 首次发现联动`, tx + 14, ty + 16);
 
       // 名称 + 模式
       ctx.font = FONT.md;
       ctx.fillStyle = COLORS.text.high;
-      ctx.fillText(`【${s.mode}】 ${s.name}  ·  ${s.pair}`, tx + 14, ty + 38);
+      ctx.fillText(`${s.name} · ${s.pair}`, tx + 14, ty + 38, toastW - 28);
 
       ctx.globalAlpha = 1;
     }
@@ -1541,593 +865,480 @@ export class UI {
 
   // ───── V1.5.1 知识库面板 ─────
   private drawKnowledgePanel(state: GameState): void {
-    const ctx = this.ctx;
+    const ctx = this.ctx,
+      w = Math.min(900, state.canvasWidth - 48),
+      h = Math.min(710, state.canvasHeight - 48),
+      x = (state.canvasWidth - w) / 2,
+      y = (state.canvasHeight - h) / 2;
+    const padding = 24,
+      header = 110,
+      footer = 60,
+      viewport = h - header - footer,
+      cols = w >= 650 ? 2 : 1,
+      gap = 14,
+      cw = (w - padding * 2 - gap * (cols - 1)) / cols;
+    const taskIds = Object.keys(LORE_TIPS).filter(
+      (id) => id.startsWith('challenge_') && !id.endsWith('_done'),
+    );
+    const completed = taskIds.filter((id) => isLoreSeen(`${id}_done`)).length;
+    const cards: [string, string, boolean | null][] = [
+      [
+        '连接与扩张',
+        '点击底部卡片，再在已探索区域建造。拖拽两个己方节点建立链路。中立设施需要先招募；断开的设施可以重新连接或回收。',
+        null,
+      ],
+      [
+        '规划与成长',
+        `${getKey('pause').toUpperCase()} 暂停后仍可布置设施；选中设施按 ${getKey('upgrade').toUpperCase()} 升级。能量站升级提高产能，研究「高效链路」提高带宽。`,
+        null,
+      ],
+      [
+        '支援单位',
+        '十字标记的治疗者会周期性恢复同伴生命；菱形护盾者会降低附近敌人所受伤害。观察支援范围，调整火力与阵地。',
+        null,
+      ],
+      [
+        '侦察与干扰',
+        '隐匿者需要信标或雷达侦测；干扰者会使接近的链路断流。让前线保持视野，并为关键设施保留备用供电路径。',
+        null,
+      ],
+      ...['terrain_nebula', 'terrain_asteroid', 'terrain_wormhole'].map(
+        (id) =>
+          [LORE_TIPS[id].title.replace(/^★\s*/, ''), LORE_TIPS[id].lines.join(' '), null] as [
+            string,
+            string,
+            boolean | null,
+          ],
+      ),
+      ...taskIds.map(
+        (id) =>
+          [
+            LORE_TIPS[id].title.replace(/^★\s*/, ''),
+            LORE_TIPS[id].lines.join(' '),
+            isLoreSeen(`${id}_done`),
+          ] as [string, string, boolean | null],
+      ),
+    ];
+    const missionH = state.mission ? 102 : 0, ch = viewport - missionH - 4;
+    const page = pageWindow(cards.length, cols, this.knowledgePage);
+    this.knowledgePage = page.page;
+    this.knowledgePages = page.pages;
+    this.openPanelRects.push({ id: 'knowledge', x, y, w, h });
     ctx.save();
-
-    const cx = state.canvasWidth / 2;
-    const cy = state.canvasHeight / 2;
-    const panelW = 580;
-    // V1.5.5\uff1a\u672a\u5b8c\u6210\u7684 _done \u5361\u9690\u85cf\uff08\u907f\u514d\u9762\u677f\u8fc7\u9ad8 + \u4fdd\u62a4\u60ca\u559c\u611f\uff09
-    const tipIds = Object.keys(LORE_TIPS).filter(id => {
-      if (id.endsWith('_done') && id.startsWith('challenge_')) return isLoreSeen(id);
-      return true;
-    });
-    const lineH = 18;
-    const titleH = 32;
-    const tipPad = 14;
-    const tipGap = 12;
-    const sectionHeaderH = 22;
-    const sectionGap = 8;
-    // V1.5.6：分组——地形知识 / 任务进度
-    const knowledgeIds = tipIds.filter(id => id.startsWith('terrain_'));
-    const challengeIds = tipIds.filter(id => id.startsWith('challenge_'));
-    // V1.5.9：总进度计算——以 全部任务 done id 为分母
-    const allDoneIds = Object.keys(LORE_TIPS).filter(id => id.endsWith('_done') && id.startsWith('challenge_'));
-    const completedCount = allDoneIds.filter(id => isLoreSeen(id)).length;
-    const totalCount = allDoneIds.length;
-    const progressBarH = 24;
-    let totalH = 60; // 头部
-    totalH += progressBarH + 10; // V1.5.9 进度条
-    for (const id of tipIds) {
-      const tip = LORE_TIPS[id];
-      totalH += titleH + tip.lines.length * lineH + tipPad * 2 + tipGap;
-    }
-    totalH += 30; // 底部按键提示
-    const panelH = Math.min(totalH, state.canvasHeight - 60);
-    const px = cx - panelW / 2;
-    const py = cy - panelH / 2;
-    this.openPanelRects.push({ id: 'knowledge', x: px, y: py, w: panelW, h: panelH });
-
-    // 遮罩
-    ctx.fillStyle = 'rgba(0,0,0,0.78)';
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#020b16c9';
     ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    // 面板背景
-    ctx.fillStyle = 'rgba(10,12,30,0.96)';
-    ctx.strokeStyle = '#a8dcff';
-    ctx.lineWidth = 2;
-    ctx.fillRect(px, py, panelW, panelH);
-    ctx.strokeRect(px, py, panelW, panelH);
-
-    // 标题
-    ctx.textAlign = 'center';
+    panel(ctx, x, y, w, h, '#0b1f30fc', '#91bcca66', 9);
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.font = 'bold 24px monospace';
-    ctx.fillStyle = '#a8dcff';
-    ctx.fillText('⟨ 星 域 知 识 库 ⟩', cx, py + 22);
-    ctx.font = FONT.base;
-    ctx.fillStyle = COLORS.text.muted;
-    ctx.fillText('地形与虫洞协同 · [H] 关闭', cx, py + 46);
-
-    // V1.5.9：总进度条
-    {
-      const barX = px + 18;
-      const barY = py + 64;
-      const barW = panelW - 36;
-      const ratio = totalCount > 0 ? completedCount / totalCount : 0;
-      // 背景槽
-      ctx.fillStyle = 'rgba(40,48,80,0.85)';
-      ctx.fillRect(barX, barY + 8, barW, 8);
-      // 填充
-      ctx.fillStyle = ratio >= 1 ? '#7dffb0' : '#a8dcff';
-      ctx.fillRect(barX, barY + 8, barW * ratio, 8);
-      // 边框
-      ctx.strokeStyle = 'rgba(168,220,255,0.4)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(barX, barY + 8, barW, 8);
-      // 文本
-      ctx.font = FONT.base;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.fillStyle = COLORS.text.muted;
-      ctx.fillText(`任务总进度`, barX, barY - 6);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = ratio >= 1 ? '#7dffb0' : COLORS.text.high;
-      ctx.fillText(`${completedCount} / ${totalCount}`, barX + barW, barY - 6);
-    }
-
-    // V1.5.11：可滚动内容区裁剪
-    const contentTop = py + 64 + progressBarH + 10;
-    const contentBottom = py + panelH - 30; // 留底部按键提示
-    const viewportH = contentBottom - contentTop;
+    ctx.fillStyle = '#739faf';
+    ctx.font = `12px ${MONO_FONT}`;
+    ctx.fillText('FIELD MANUAL / NETWORK TACTICS', x + padding, y + 25);
+    ctx.fillStyle = '#e0edf0';
+    ctx.font = `500 25px ${UI_FONT}`;
+    ctx.fillText('作战手册', x + padding, y + 57);
+    ctx.fillStyle = '#91adbb';
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.fillText(
+      `协同实践 ${completed} / ${taskIds.length} 已完成 · 所有规则均在局内生效`,
+      x + padding,
+      y + 86,
+    );
+    panel(ctx, x + w - 55, y + 18, 32, 32, '#173246', '#7ea6b34a', 5);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#adc7d0';
+    ctx.font = `20px ${UI_FONT}`;
+    ctx.fillText('×', x + w - 39, y + 35);
+    this.nodeButtons.push({
+      action: 'close_panel',
+      x: x + w - 55,
+      y: y + 18,
+      w: 32,
+      h: 32,
+      enabled: true,
+    });
     ctx.save();
-    ctx.beginPath();
-    ctx.rect(px + 8, contentTop, panelW - 16, viewportH);
-    ctx.clip();
-
-    // V1.5.6：分组渲染（V1.5.11 加入滚动偏移）
-    const contentStartY = contentTop - this.knowledgeScrollOffset;
-    let yCursor = contentStartY;
-
-    const drawSection = (sectionTitle: string, ids: string[]) => {
-      if (ids.length === 0) return;
-      // 分组标题
+    const top = y + header;
+    if (state.mission) {
+      panel(ctx, x + padding, top, w - padding * 2, 88, '#173342', '#87b2b340', 6);
       ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.font = 'bold 14px monospace';
-      ctx.fillStyle = COLORS.text.muted;
-      ctx.fillText(sectionTitle, px + 18, yCursor + sectionHeaderH / 2);
-      // 一条中心分隔线
-      const titleW = ctx.measureText(sectionTitle).width;
-      ctx.strokeStyle = 'rgba(168,220,255,0.25)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(px + 18 + titleW + 10, yCursor + sectionHeaderH / 2);
-      ctx.lineTo(px + panelW - 18, yCursor + sectionHeaderH / 2);
-      ctx.stroke();
-      yCursor += sectionHeaderH + sectionGap;
-
-      for (const id of ids) {
-        const tip = LORE_TIPS[id];
-        const blockH = titleH + tip.lines.length * lineH + tipPad * 2;
-        const tx = px + 16;
-        const ty = yCursor;
-        const tw = panelW - 32;
-
-        ctx.fillStyle = 'rgba(20,28,52,0.85)';
-        ctx.strokeStyle = tip.color;
-        ctx.lineWidth = 1.5;
-        ctx.fillRect(tx, ty, tw, blockH);
-        ctx.strokeRect(tx, ty, tw, blockH);
-        ctx.fillStyle = tip.color;
-        ctx.fillRect(tx, ty, 4, blockH);
-
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        ctx.font = 'bold 16px monospace';
-        ctx.fillStyle = tip.color;
-        ctx.fillText(tip.title, tx + tipPad + 6, ty + tipPad);
-
-        // V1.5.5：任务卡右上角状态徽章
-        if (id.startsWith('challenge_')) {
-          const isDone = id.endsWith('_done');
-          const seen = isLoreSeen(id);
-          let badgeText = '';
-          let badgeColor = COLORS.text.muted;
-          if (isDone) {
-            badgeText = seen ? '✓ 已完成' : '○ 未完成';
-            badgeColor = seen ? '#7dffb0' : COLORS.text.muted;
-          } else {
-            const doneId = id + '_done';
-            const doneSeen = isLoreSeen(doneId);
-            badgeText = doneSeen ? '✓ 已完成' : (seen ? '▶ 进行中' : '○ 未启动');
-            badgeColor = doneSeen ? '#7dffb0' : (seen ? '#ffd060' : COLORS.text.muted);
-          }
-          ctx.font = FONT.base;
-          ctx.textAlign = 'right';
-          ctx.fillStyle = badgeColor;
-          ctx.fillText(badgeText, tx + tw - tipPad, ty + tipPad + 2);
-          ctx.textAlign = 'left';
-        }
-
-        ctx.font = FONT.base;
-        ctx.fillStyle = COLORS.text.high;
-        for (let li = 0; li < tip.lines.length; li++) {
-          ctx.fillText(tip.lines[li], tx + tipPad + 6, ty + tipPad + titleH + li * lineH);
-        }
-
-        yCursor += blockH + tipGap;
+      ctx.fillStyle = '#bed9d9';
+      ctx.font = `500 13px ${UI_FONT}`;
+      ctx.fillText(`当前航线 · ${this.levelTitle}`, x + padding + 16, top + 23);
+      ctx.fillStyle = '#90adbd';
+      ctx.font = `12px ${UI_FONT}`;
+      wrappedText(
+        ctx,
+        state.mission.challenge,
+        x + padding + 16,
+        top + 49,
+        w - padding * 2 - 32,
+        20,
+        2,
+      );
+    }
+    cards.slice(page.start, page.end).forEach(([title, body, done], i) => {
+      const xx = x + padding + (i % cols) * (cw + gap),
+        yy = top + missionH;
+      panel(ctx, xx, yy, cw, ch, done ? '#13312f' : '#112a3c', done ? '#8ec1aa4d' : '#7399ae33', 6);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = done ? '#b0d6bc' : '#c2dbe1';
+      ctx.font = `500 16px ${UI_FONT}`;
+      ctx.fillText(title, xx + 15, yy + 24);
+      if (done !== null) {
+        ctx.textAlign = 'right';
+        ctx.fillStyle = done ? '#8ec7a8' : '#708e9e';
+        ctx.font = `12px ${UI_FONT}`;
+        ctx.fillText(done ? '✓ 已完成' : '待实践', xx + cw - 14, yy + 24);
       }
-    };
-
-    drawSection('◆ 地形知识', knowledgeIds);
-    drawSection('◆ 任务进度', challengeIds);
-
-    ctx.restore(); // 结束裁剪
-
-    // V1.5.11：内容总高度（绝对坐标 yCursor 减去 contentStartY 即为已绘制高度）
-    const contentH = yCursor - contentStartY;
-    this.knowledgeMaxScroll = Math.max(0, contentH - viewportH);
-    if (this.knowledgeScrollOffset > this.knowledgeMaxScroll) {
-      this.knowledgeScrollOffset = this.knowledgeMaxScroll;
-    }
-
-    // V1.5.11：滚动条
-    if (this.knowledgeMaxScroll > 0) {
-      const sbX = px + panelW - 8;
-      const sbY = contentTop;
-      const sbH = viewportH;
-      ctx.fillStyle = 'rgba(168,220,255,0.12)';
-      ctx.fillRect(sbX, sbY, 4, sbH);
-      const thumbH = Math.max(20, sbH * (viewportH / contentH));
-      const thumbY = sbY + (sbH - thumbH) * (this.knowledgeScrollOffset / this.knowledgeMaxScroll);
-      ctx.fillStyle = '#a8dcff';
-      ctx.fillRect(sbX, thumbY, 4, thumbH);
-    }
-
-    // V1.5.11：底部按键提示
-    ctx.font = FONT.base;
-    ctx.fillStyle = COLORS.text.muted;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#8da9b9';
+      ctx.font = `14px ${UI_FONT}`;
+      wrappedText(ctx, body, xx + 15, yy + 55, cw - 30, 22, Math.floor((ch - 70) / 22));
+    });
+    ctx.restore();
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('滚轮滚动 · [H] 关闭', cx, py + panelH - 16);
-
+    ctx.fillStyle = '#a3bdcc';
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.fillText(`${page.page + 1} / ${page.pages} 页 · 滚轮翻页 · H 或 Esc 返回`, state.canvasWidth / 2, y + h - 28);
+    for (const [action,label,xx,enabled] of [
+      ['knowledge_prev','← 上一页',x+padding,page.page>0],
+      ['knowledge_next','下一页 →',x+w-padding-110,page.page+1<page.pages],
+    ] as const) {
+      panel(ctx,xx,y+h-44,110,32,'#183547','#8aaeb64a',5);
+      ctx.fillStyle=enabled?'#d5e8eb':'#668595';ctx.fillText(label,xx+55,y+h-28);
+      this.nodeButtons.push({action,x:xx,y:y+h-44,w:110,h:32,enabled});
+    }
     ctx.restore();
   }
 
-  // ───── 成就面板 ─────
+  private drawArchiveFrame(
+    state: GameState,
+    id: 'achievement' | 'synergy' | 'keybind',
+    title: string,
+    eyebrow: string,
+    subtitle: string,
+    maxWidth = 840,
+  ): { x: number; y: number; w: number; h: number } {
+    const ctx = this.ctx,
+      w = Math.min(maxWidth, state.canvasWidth - 48),
+      h = Math.min(680, state.canvasHeight - 48),
+      x = (state.canvasWidth - w) / 2,
+      y = (state.canvasHeight - h) / 2;
+    this.openPanelRects.push({ id, x, y, w, h });
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#020b15cc';
+    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
+    panel(ctx, x, y, w, h, '#0b2030f5', '#7199ac66', 9);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#719eae';
+    ctx.font = '10px ' + MONO_FONT;
+    ctx.fillText(eyebrow, x + 24, y + 25);
+    ctx.fillStyle = '#e0edf0';
+    ctx.font = '500 25px ' + UI_FONT;
+    ctx.fillText(title, x + 24, y + 57);
+    ctx.fillStyle = '#91adbb';
+    ctx.font = '12px ' + UI_FONT;
+    ctx.fillText(subtitle, x + 24, y + 86, w - 48);
+    panel(ctx, x + w - 55, y + 18, 32, 32, '#173246', '#7ea6b34a', 5);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#adc7d0';
+    ctx.font = '20px ' + UI_FONT;
+    ctx.fillText('×', x + w - 39, y + 35);
+    this.nodeButtons.push({
+      action: 'close_panel',
+      x: x + w - 55,
+      y: y + 18,
+      w: 32,
+      h: 32,
+      enabled: true,
+    });
+    return { x, y, w, h };
+  }
 
   private drawAchievementPanel(state: GameState): void {
-    const ctx = this.ctx;
+    const ctx = this.ctx,
+      unlocked = this.unlockedAchievements;
+    const count = ACHIEVEMENTS.filter((a) => unlocked.includes(a.id)).length;
     ctx.save();
-
-    const cx = state.canvasWidth / 2;
-    const cy = state.canvasHeight / 2;
-    const panelW = 520;
-    const panelH = 400;
-    const px = cx - panelW / 2;
-    const py = cy - panelH / 2;
-    this.openPanelRects.push({ id: 'achievement', x: px, y: py, w: panelW, h: panelH });
-
-    // 遮罩
-    ctx.fillStyle = 'rgba(0,0,0,0.75)';
-    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    // 面板背景
-    ctx.fillStyle = 'rgba(10,10,30,0.95)';
-    ctx.strokeStyle = COLORS.accent.yellowHi;
-    ctx.lineWidth = 2;
-    ctx.fillRect(px, py, panelW, panelH);
-    ctx.strokeRect(px, py, panelW, panelH);
-
-    // 标题
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = 'bold 27px monospace';
-    ctx.fillStyle = COLORS.accent.yellowHi;
-    ctx.fillText('⟨ 成 就 ⟩', cx, py + 25);
-
-    const unlocked = this.unlockedAchievements;
-    const total = ACHIEVEMENTS.length;
-    const count = unlocked.length;
-    ctx.font = FONT.base;
-    ctx.fillStyle = COLORS.text.muted;
-    ctx.fillText(`${count}/${total} 已解锁  |  [A] 关闭`, cx, py + 46);
-
-    // 成就列表（V1.6.1：可滚动）
-    const startY = py + 65;
-    const rowH = 56;
-    const cols = 2;
-    const colW = (panelW - 20) / cols;
-    const viewportTop = startY;
-    const viewportBottom = py + panelH - 10;
-    const viewportH = viewportBottom - viewportTop;
-    const totalRows = Math.ceil(ACHIEVEMENTS.length / cols);
-    const contentH = totalRows * rowH;
-    this.achievementMaxScroll = Math.max(0, contentH - viewportH);
-    if (this.achievementScrollOffset > this.achievementMaxScroll) {
-      this.achievementScrollOffset = this.achievementMaxScroll;
-    }
-
+    const { x, y, w, h } = this.drawArchiveFrame(
+      state,
+      'achievement',
+      '远征成就',
+      'EXPEDITION / ACHIEVEMENTS',
+      count + ' / ' + ACHIEVEMENTS.length + ' 已达成 · 记录每一次成长',
+    );
+    const cols = w >= 640 ? 2 : 1,
+      gap = 12,
+      cw = (w - 48 - gap * (cols - 1)) / cols,
+      rowH = 104,
+      top = y + 110,
+      viewport = h - 144,
+      content = Math.ceil(ACHIEVEMENTS.length / cols) * (rowH + gap) - gap;
+    this.achievementMaxScroll = Math.max(0, content - viewport);
+    this.achievementScrollOffset = Math.max(
+      0,
+      Math.min(this.achievementMaxScroll, this.achievementScrollOffset),
+    );
     ctx.save();
     ctx.beginPath();
-    ctx.rect(px + 8, viewportTop, panelW - 16, viewportH);
+    ctx.rect(x + 20, top, w - 40, viewport);
     ctx.clip();
-
-    for (let i = 0; i < ACHIEVEMENTS.length; i++) {
-      const ach = ACHIEVEMENTS[i];
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const ax = px + 10 + col * colW;
-      const ay = startY + row * rowH - this.achievementScrollOffset;
-
-      const isUnlocked = unlocked.includes(ach.id);
-
-      // 卡片背景
-      ctx.fillStyle = isUnlocked ? 'rgba(255,200,0,0.08)' : 'rgba(30,30,50,0.6)';
-      ctx.strokeStyle = isUnlocked ? 'rgba(255,200,0,0.4)' : 'rgba(60,60,80,0.4)';
-      ctx.lineWidth = 1;
-      ctx.fillRect(ax, ay, colW - 6, rowH - 8);
-      ctx.strokeRect(ax, ay, colW - 6, rowH - 8);
-
-      // 图标
-      ctx.font = '27px monospace';
+    ACHIEVEMENTS.forEach((achievement, i) => {
+      const xx = x + 24 + (i % cols) * (cw + gap),
+        yy = top + Math.floor(i / cols) * (rowH + gap) - this.achievementScrollOffset,
+        done = unlocked.includes(achievement.id);
+      panel(
+        ctx,
+        xx,
+        yy,
+        cw,
+        rowH,
+        done ? '#15382f' : '#112a3c',
+        done ? '#8ec6a851' : '#7399ae33',
+        6,
+      );
       ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = isUnlocked ? COLORS.accent.yellowHi : COLORS.text.border;
-      ctx.fillText(isUnlocked ? ach.icon : '🔒', ax + 8, ay + (rowH - 8) / 2 - 6);
-
-      // 名称
-      ctx.font = 'bold 16px monospace';
-      ctx.fillStyle = isUnlocked ? COLORS.accent.yellowHi : COLORS.text.faint;
-      ctx.fillText(ach.name, ax + 34, ay + 16);
-
-      // 描述
-      ctx.font = FONT.md;
-      ctx.fillStyle = isUnlocked ? COLORS.text.body : COLORS.text.disabled;
-      ctx.fillText(ach.description, ax + 34, ay + 34);
-    }
-
-    ctx.restore(); // 结束滚动裁剪
-
-    // V1.6.1：滚动条
+      ctx.fillStyle = done ? '#acd5b6' : '#a9c4d0';
+      ctx.font = '500 15px ' + UI_FONT;
+      ctx.fillText(achievement.name, xx + 16, yy + 25, cw - 100);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = done ? '#9ad2ae' : '#7291a1';
+      ctx.font = '10px ' + UI_FONT;
+      ctx.fillText(done ? '✓ 已达成' : '待达成', xx + cw - 16, yy + 25);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#8ca9b9';
+      ctx.font = '12px ' + UI_FONT;
+      wrappedText(ctx, achievement.description, xx + 16, yy + 56, cw - 32, 21, 2);
+    });
+    ctx.restore();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#6c8e9f';
+    ctx.font = '11px ' + UI_FONT;
+    ctx.fillText(
+      '滚轮浏览 · ' + getKey('achievements').toUpperCase() + ' 或 Esc 返回星域',
+      state.canvasWidth / 2,
+      y + h - 17,
+    );
     if (this.achievementMaxScroll > 0) {
-      const sbX = px + panelW - 8;
-      const sbY = viewportTop;
-      const sbH = viewportH;
-      ctx.fillStyle = 'rgba(255,200,0,0.12)';
-      ctx.fillRect(sbX, sbY, 4, sbH);
-      const thumbH = Math.max(20, sbH * (viewportH / contentH));
-      const thumbY = sbY + (sbH - thumbH) * (this.achievementScrollOffset / this.achievementMaxScroll);
-      ctx.fillStyle = COLORS.accent.yellowHi;
-      ctx.fillRect(sbX, thumbY, 4, thumbH);
+      const bh = (viewport * viewport) / content,
+        by = top + ((viewport - bh) * this.achievementScrollOffset) / this.achievementMaxScroll;
+      ctx.fillStyle = '#80aaa666';
+      ctx.fillRect(x + w - 11, by, 3, bh);
     }
-
     ctx.restore();
   }
-
   // ───── 联动图鉴面板（V1.1.6） ─────
 
   /** 静态联动配置（与 graph.ts / entities.ts / renderer.ts 中实现保持一致） */
-  private readonly SYNERGIES: { id: string; pair: string; name: string; mode: string; effect: string; unlock: string; color: string }[] = [
+  private readonly SYNERGIES: {
+    id: string;
+    pair: string;
+    name: string;
+    effect: string;
+    hint: string;
+    color: string;
+  }[] = [
     {
       id: 'tesla-relay',
-      pair: 'tesla × relay',
+      pair: '连锁塔 × 中继器',
       name: '链式电网',
-      mode: '扩展',
-      effect: 'Tesla 借道相连 Relay 的其它边再延伸一跳，伤害 ×0.6',
-      unlock: '第 2 关「关键防线」',
+      effect: `连锁塔借助直连中继器的其他边延伸一跳，伤害 ×${COMBAT.tesla.synergyRelayDamageRatio}。`,
+      hint: '连接连锁塔与中继器，再让中继器连接前线设施，观察电网覆盖的变化。',
       color: 'rgba(120, 220, 255, 0.85)',
     },
     {
       id: 'buffer-collector',
-      pair: 'buffer × collector',
+      pair: '缓冲器 × 采集器',
       name: '经济共振',
-      mode: '加成',
-      effect: 'Collector 直连任一同方 Buffer：产出 ×1.25；进化形态晶体阈值-1 / Buffer',
-      unlock: '第 3 关「迷雾深处」',
+      effect: `采集器直连缓冲器，产出 ×${1 + COMBAT.collector.synergyBufferBonus}；每个相连缓冲器使进化晶体阈值降低 ${COMBAT.collector.synergyCrystalThresholdReduce}。`,
+      hint: '让缓冲器直连采集器，在敌人接近时观察资源产出。',
       color: 'rgba(255, 215, 96, 0.85)',
     },
     {
       id: 'portal-interceptor',
-      pair: 'portal × interceptor',
+      pair: '传送门 × 拦截器',
       name: '出门一炮',
-      mode: '事件',
-      effect: 'Portal 传送敌人时，每个相连同方 Interceptor 立即对该敌人发射一次追踪射击',
-      unlock: '第 3 关「迷雾深处」',
+      effect: '传送门转移敌人时，直连的己方拦截器各追加一次追踪射击。',
+      hint: '把传送门与拦截器直接连接，让敌人进入传送范围。',
       color: 'rgba(255, 170, 255, 0.85)',
     },
     {
       id: 'shield-repair',
-      pair: 'shield × repair',
+      pair: '护盾 × 维修站',
       name: '再生护甲',
-      mode: '减免',
-      effect: 'Shield 直连同方 Repair 时，自身受到的伤害 ×0.8',
-      unlock: '第 3 关「迷雾深处」',
+      effect: `护盾直连维修站时，自身受到的伤害降低 ${Math.round(COMBAT.shield.synergyRepairDamageReduce * 100)}%。`,
+      hint: '让护盾与维修站直接连接，在承受攻击时观察这组组合。',
       color: 'rgba(140, 255, 180, 0.85)',
     },
     {
       id: 'energy-buffer',
-      pair: 'energy × buffer',
+      pair: '能量站 × 缓冲器',
       name: '能量共振',
-      mode: '加成',
-      effect: 'Buffer 直连任一同方 Energy 时，每 tick 范围内充能 ×1.30',
-      unlock: '第 2 关「关键防线」',
+      effect: `缓冲器直连能量站，范围充能 ×${COMBAT.buffer.synergyEnergyBoostMult}。`,
+      hint: '将能量站和缓冲器直接连接，让周围设施接受充能。',
       color: 'rgba(200, 130, 255, 0.85)',
     },
     {
       id: 'relay-energy',
-      pair: 'energy × relay',
+      pair: '能量站 × 中继器',
       name: '能量网络',
-      mode: '结构',
-      effect: 'Energy 经由 Relay 把每 tick 充能扩散给二跳同方邻居（+1.5/tick）',
-      unlock: '第 2 关「关键防线」',
+      effect: `能量站经中继器给二跳己方邻居额外补充 ${(COMBAT.energy.synergyRelayNetworkBoost * 1000) / TICK_INTERVAL} 能量/秒。`,
+      hint: '以能量站—中继器—前线节点组成一条支路，观察末端供能。',
       color: 'rgba(120, 200, 255, 0.85)',
     },
     {
       id: 'magnet-radar',
-      pair: 'magnet × radar',
+      pair: '磁力塔 × 雷达',
       name: '重力扫描',
-      mode: '扩展',
-      effect: 'Radar 直连同方 Magnet 时，检测范围 +30%',
-      unlock: '第 3 关「迷雾深处」',
+      effect: `雷达直连磁力塔时，锁定攻击范围增加 ${Math.round(COMBAT.radar.synergyMagnetRangeBoost * 100)}%。`,
+      hint: '让雷达与磁力塔直连，再观察敌人进入锁定范围后的反馈。',
       color: 'rgba(208, 156, 255, 0.85)',
     },
     {
       id: 'buffer-wormhole',
-      pair: 'buffer × wormhole',
+      pair: '缓冲器 × 双端虫洞',
       name: '虫洞共振',
-      mode: '扩展',
-      effect: '同方 Buffer 分别身处一对虫洞两端：两个 Buffer 互互接管对端范围充能（几乎等于双端 Buffer 同时覆盖）',
-      unlock: '第 5 关「虫洞市」',
+      effect: '己方缓冲器分别位于一对虫洞中时，可为另一端周围的设施提供范围充能。',
+      hint: '在同一对虫洞的两端各部署并供电一座缓冲器，连接彼岸的设施。',
       color: 'rgba(168, 220, 255, 0.85)',
     },
   ];
 
   private drawSynergyPanel(state: GameState): void {
-    const ctx = this.ctx;
+    const ctx = this.ctx,
+      discovered = new Set([...this.discoveredSynergies, ...state.discoveredSynergies]);
+    const count = this.SYNERGIES.filter((s) => discovered.has(s.id)).length;
     ctx.save();
-
-    const cx = state.canvasWidth / 2;
-    const cy = state.canvasHeight / 2;
-    const panelW = 600;
-    const panelH = 670;
-    const px = cx - panelW / 2;
-    const py = cy - panelH / 2;
-    this.openPanelRects.push({ id: 'synergy', x: px, y: py, w: panelW, h: panelH });
-
-    ctx.fillStyle = 'rgba(0,0,0,0.75)';
-    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    ctx.fillStyle = 'rgba(10,10,30,0.95)';
-    ctx.strokeStyle = COLORS.accent.cyan;
-    ctx.lineWidth = 2;
-    ctx.fillRect(px, py, panelW, panelH);
-    ctx.strokeRect(px, py, panelW, panelH);
-
+    const { x, y, w, h } = this.drawArchiveFrame(
+      state,
+      'synergy',
+      '网络联动',
+      'NETWORK / SYNERGY ATLAS',
+      count + ' / ' + this.SYNERGIES.length + ' 已发现 · 在连接中寻找新的可能',
+    );
+    const cols = w >= 680 ? 2 : 1,
+      gap = 14,
+      cw = (w - 48 - gap * (cols - 1)) / cols,
+      rowH = 160,
+      top = y + 110,
+      viewport = h - 144,
+      content = Math.ceil(this.SYNERGIES.length / cols) * (rowH + gap) - gap;
+    this.synergyMaxScroll = Math.max(0, content - viewport);
+    this.synergyScrollOffset = Math.max(
+      0,
+      Math.min(this.synergyMaxScroll, this.synergyScrollOffset),
+    );
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 20, top, w - 40, viewport);
+    ctx.clip();
+    this.SYNERGIES.forEach((synergy, i) => {
+      const xx = x + 24 + (i % cols) * (cw + gap),
+        yy = top + Math.floor(i / cols) * (rowH + gap) - this.synergyScrollOffset,
+        found = discovered.has(synergy.id);
+      panel(
+        ctx,
+        xx,
+        yy,
+        cw,
+        rowH,
+        found ? '#153430' : '#112a3c',
+        found ? '#91c7b15c' : '#7399ae33',
+        6,
+      );
+      ctx.textAlign = 'left';
+      ctx.fillStyle = found ? '#add6c1' : '#afc9d3';
+      ctx.font = '500 15px ' + UI_FONT;
+      ctx.fillText(synergy.name, xx + 16, yy + 25, cw - 100);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = found ? '#9ac8b1' : '#7291a1';
+      ctx.font = '10px ' + UI_FONT;
+      ctx.fillText(found ? '✓ 已发现' : '待实践', xx + cw - 16, yy + 25);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#95b9c5';
+      ctx.font = '11px ' + UI_FONT;
+      ctx.fillText(synergy.pair, xx + 16, yy + 52, cw - 32);
+      ctx.fillStyle = '#8ca9b9';
+      ctx.font = '12px ' + UI_FONT;
+      wrappedText(ctx, found ? synergy.effect : synergy.hint, xx + 16, yy + 79, cw - 32, 21, 3);
+    });
+    ctx.restore();
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = 'bold 27px monospace';
-    ctx.fillStyle = COLORS.accent.cyan;
-    ctx.fillText('⟨ 联 动 图 鉴 ⟩', cx, py + 26);
-
-    ctx.font = FONT.base;
-    ctx.fillStyle = COLORS.text.muted;
-    const closeKey = (getKey('synergy') || 'y').toUpperCase();
-    ctx.fillText(`节点之间的隐藏组合  |  [${closeKey}] 关闭`, cx, py + 50);
-
-    const startY = py + 78;
-    const rowH = 80;
-    const innerW = panelW - 28;
-
-    // 合并：本局发现 + 存档已发现
-    const discovered = new Set<string>(this.discoveredSynergies);
-    for (const id of state.discoveredSynergies) discovered.add(id);
-
-    // 进度副标题
-    ctx.font = FONT.sm;
-    ctx.fillStyle = COLORS.text.faint;
-    let foundCount = 0;
-    for (const s of this.SYNERGIES) if (discovered.has(s.id)) foundCount++;
-    ctx.fillText(`已发现 ${foundCount} / ${this.SYNERGIES.length}`, cx, py + 66);
-
-    ctx.textAlign = 'left';
-    for (let i = 0; i < this.SYNERGIES.length; i++) {
-      const s = this.SYNERGIES[i];
-      const ax = px + 14;
-      const ay = startY + i * rowH;
-      const found = discovered.has(s.id);
-
-      // 卡片背景
-      ctx.fillStyle = found ? 'rgba(30,30,50,0.6)' : 'rgba(20,20,30,0.6)';
-      ctx.strokeStyle = found ? s.color : 'rgba(80,80,90,0.4)';
-      ctx.lineWidth = 1.5;
-      ctx.fillRect(ax, ay, innerW, rowH - 10);
-      ctx.strokeRect(ax, ay, innerW, rowH - 10);
-
-      // 左侧颜色色块（identity bar）
-      ctx.fillStyle = found ? s.color : 'rgba(80,80,90,0.5)';
-      ctx.fillRect(ax, ay, 4, rowH - 10);
-
-      if (found) {
-        // 标题：name + mode + pair
-        ctx.font = 'bold 18px monospace';
-        ctx.fillStyle = s.color;
-        ctx.fillText(s.name, ax + 14, ay + 18);
-
-        ctx.font = FONT.md;
-        ctx.fillStyle = COLORS.text.muted;
-        ctx.fillText(`【${s.mode}】 ${s.pair}`, ax + 14 + ctx.measureText(s.name).width + 12, ay + 19);
-
-        // 描述
-        ctx.font = FONT.md;
-        ctx.fillStyle = COLORS.text.body;
-        ctx.fillText(s.effect, ax + 14, ay + 42);
-
-        // 解锁
-        ctx.font = FONT.sm;
-        ctx.fillStyle = COLORS.text.faint;
-        ctx.fillText(`解锁：${s.unlock}`, ax + 14, ay + 60);
-      } else {
-        // 未发现：仅显示锁 + 模式 + 解锁关
-        ctx.font = 'bold 18px monospace';
-        ctx.fillStyle = COLORS.text.disabled;
-        ctx.fillText('🔒 ???', ax + 14, ay + 18);
-
-        ctx.font = FONT.md;
-        ctx.fillStyle = COLORS.text.disabled;
-        ctx.fillText(`【${s.mode}】  ?? × ??`, ax + 14 + ctx.measureText('🔒 ???').width + 12, ay + 19);
-
-        ctx.font = FONT.md;
-        ctx.fillStyle = COLORS.text.disabled;
-        ctx.fillText('在战斗中触发后揭示完整机制', ax + 14, ay + 42);
-
-        ctx.font = FONT.sm;
-        ctx.fillStyle = COLORS.text.faint;
-        ctx.fillText(`解锁：${s.unlock}`, ax + 14, ay + 60);
-      }
+    ctx.fillStyle = '#6c8e9f';
+    ctx.font = '11px ' + UI_FONT;
+    ctx.fillText(
+      '滚轮浏览 · ' + getKey('synergy').toUpperCase() + ' 或 Esc 返回星域',
+      state.canvasWidth / 2,
+      y + h - 17,
+    );
+    if (this.synergyMaxScroll > 0) {
+      const bh = (viewport * viewport) / content,
+        by = top + ((viewport - bh) * this.synergyScrollOffset) / this.synergyMaxScroll;
+      ctx.fillStyle = '#80aaa666';
+      ctx.fillRect(x + w - 11, by, 3, bh);
     }
-
     ctx.restore();
   }
-
 
   private drawKeybindPanel(state: GameState): void {
-    const ctx = this.ctx;
+    const ctx = this.ctx,
+      bindings = getAllBindings();
     ctx.save();
-
-    const cx = state.canvasWidth / 2;
-    const cy = state.canvasHeight / 2;
-    const bindings = getAllBindings();
-    const panelW = 400;
-    const rowH = 38;
-    const panelH = 80 + bindings.length * rowH + 40;
-    const px = cx - panelW / 2;
-    const py = cy - panelH / 2;
-    this.openPanelRects.push({ id: 'keybind', x: px, y: py, w: panelW, h: panelH });
-
-    // 遮罩
-    ctx.fillStyle = 'rgba(0,0,0,0.75)';
-    ctx.fillRect(0, 0, state.canvasWidth, state.canvasHeight);
-
-    // 面板背景
-    ctx.fillStyle = 'rgba(10,10,30,0.95)';
-    ctx.strokeStyle = COLORS.accent.cyanSoft;
-    ctx.lineWidth = 2;
-    ctx.fillRect(px, py, panelW, panelH);
-    ctx.strokeRect(px, py, panelW, panelH);
-
-    // 标题
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = 'bold 27px monospace';
-    ctx.fillStyle = COLORS.accent.cyanSoft;
-    ctx.fillText('⟨ 快捷键设置 ⟩', cx, py + 25);
-
-    ctx.font = FONT.base;
-    ctx.fillStyle = COLORS.text.muted;
-    ctx.fillText('[K] 关闭  |  [Backspace] 恢复默认', cx, py + 46);
-
-    // 按键列表
-    const startY = py + 70;
-    for (let i = 0; i < bindings.length; i++) {
-      const b = bindings[i];
-      const ry = startY + i * rowH;
-      const isEditing = this.editingAction === b.action;
-
-      // 行背景
-      ctx.fillStyle = isEditing ? 'rgba(0,200,255,0.12)' : (i % 2 === 0 ? 'rgba(30,30,50,0.4)' : 'rgba(20,20,40,0.4)');
-      ctx.fillRect(px + 10, ry, panelW - 20, rowH - 4);
-
-      if (isEditing) {
-        ctx.strokeStyle = COLORS.accent.cyanSoft;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(px + 10, ry, panelW - 20, rowH - 4);
-      }
-
-      // 操作名称
+    const { x, y, w, h } = this.drawArchiveFrame(
+      state,
+      'keybind',
+      '快捷键设置',
+      'CONTROLS / YOUR COMMANDS',
+      '点击一行或按数字 1–9 选择，再按新的按键',
+      680,
+    );
+    const top = y + 110,
+      rowH = Math.min(48, (h - 154) / bindings.length);
+    this.keybindAreas = [];
+    bindings.forEach((binding, i) => {
+      const yy = top + i * rowH,
+        editing = this.editingAction === binding.action;
+      panel(
+        ctx,
+        x + 24,
+        yy,
+        w - 48,
+        rowH - 5,
+        editing ? '#20483f' : '#112a3c',
+        editing ? '#96d3ba99' : '#7399ae22',
+        5,
+      );
+      this.keybindAreas.push({ action: binding.action, x: x + 24, y: yy, w: w - 48, h: rowH - 5 });
       ctx.textAlign = 'left';
-      ctx.font = FONT.xl;
-      ctx.fillStyle = COLORS.text.high;
-      ctx.fillText(b.label, px + 24, ry + rowH / 2 - 2);
-
-      // 当前按键
+      ctx.fillStyle = '#6a92a3';
+      ctx.font = '11px ' + MONO_FONT;
+      ctx.fillText(String(i + 1).padStart(2, '0'), x + 38, yy + (rowH - 5) / 2);
+      ctx.fillStyle = '#bed5df';
+      ctx.font = '13px ' + UI_FONT;
+      ctx.fillText(binding.label, x + 76, yy + (rowH - 5) / 2);
       ctx.textAlign = 'right';
-      ctx.font = 'bold 21px monospace';
-      if (isEditing) {
-        ctx.fillStyle = COLORS.accent.cyanSoft;
-        ctx.fillText('按下新键...', px + panelW - 24, ry + rowH / 2 - 2);
-      } else {
-        ctx.fillStyle = COLORS.accent.yellow;
-        ctx.fillText(`[ ${b.key.toUpperCase()} ]`, px + panelW - 24, ry + rowH / 2 - 2);
-      }
-
-      // 编号提示
-      ctx.textAlign = 'left';
-      ctx.font = FONT.md;
-      ctx.fillStyle = COLORS.text.disabled;
-      ctx.fillText(`${i + 1}`, px + 12, ry + rowH / 2 - 2);
-    }
-
-    // 底部提示
+      ctx.fillStyle = editing ? '#b0e4cc' : '#c5bc96';
+      ctx.font = '500 13px ' + MONO_FONT;
+      ctx.fillText(
+        editing ? '按下新键 · Esc 取消' : binding.key.toUpperCase(),
+        x + w - 40,
+        yy + (rowH - 5) / 2,
+        w - 250,
+      );
+    });
     ctx.textAlign = 'center';
-    ctx.font = FONT.md;
-    ctx.fillStyle = COLORS.text.faint;
-    ctx.fillText('按数字键选择要修改的项目，然后按下新的按键', cx, startY + bindings.length * rowH + 12);
-
+    ctx.fillStyle = this.keybindMessage ? '#d6ba8c' : '#6c8e9f';
+    ctx.font = '11px ' + UI_FONT;
+    ctx.fillText(
+      this.keybindMessage || 'Backspace 恢复默认 · K 或 Esc 返回星域',
+      state.canvasWidth / 2,
+      y + h - 17,
+      w - 40,
+    );
     ctx.restore();
   }
-
   /** 处理快捷键设置面板中的按键输入，返回 true 表示已消费 */
   handleKeybindInput(key: string): boolean {
     if (!this.showKeybindPanel) return false;
@@ -2139,9 +1350,9 @@ export class UI {
         return true;
       }
       const ok = setKey(this.editingAction, key);
-      if (!ok) {
-        // 冲突，忽略（用户会看到没变化）
-      }
+      this.keybindMessage = ok
+        ? '按键已保存'
+        : '无法使用这个按键 · 请避开已有绑定与 H / K / 数字等保留键';
       this.editingAction = null;
       return true;
     }
@@ -2149,12 +1360,7 @@ export class UI {
     // 恢复默认
     if (key === 'backspace') {
       resetKeybinds();
-      return true;
-    }
-
-    // 关闭面板
-    if (key === 'k' || key === 'escape') {
-      this.showKeybindPanel = false;
+      this.keybindMessage = '已恢复默认按键';
       return true;
     }
 

@@ -1,3 +1,10 @@
+import { secondaryObjectiveStatus } from './mission-objectives';
+import { pilotStep } from './benchmark-pilot';
+import { isFrontierStrategy, frontierPilotBlock } from './frontier-pilot';
+import { frontierStatus } from './frontier';
+import type { BenchStrategy } from './benchmark-pilot';
+import { upgradeNode } from './construction';
+import type { TechState } from './tech';
 // ===== Benchmark Headless Runner（Phase B-2） =====
 // 用法：?bench=1&seed=12345&level=1&waves=10&speed=4[&nodes=energy,turret,mine,shield,relay]
 //
@@ -10,12 +17,11 @@
 // 5) seed=0 时 rand() 自动回退 Math.random，结果不可复现，但仍可作为压测
 
 import { Game } from './game';
-import { LEVELS } from './levels';
+import { LEVELS, recommendedLoadout } from './levels';
 import type { LevelConfig } from './levels';
 import type { GameNode, NodeType } from './types';
 import type { SaveProfile } from './save';
-import { ECONOMY, NODE_CONFIGS } from './data';
-import { EVOLUTION_LEVEL, EVOLVABLE_TYPES, getEvolutionCost, getEvolutionCrystalCost } from './data/evolution';
+import { NODE_CONFIGS } from './data';
 
 export interface BenchParams {
   enabled: boolean;
@@ -26,6 +32,7 @@ export interface BenchParams {
   nodes: NodeType[];
   /** §27：bench 启用 auto-upgrade 策略，每 60 tick 把资源花在升级最低 level 的连接 turret/shield 上 */
   autoUpgrade: boolean;
+  strategy: BenchStrategy;
 }
 
 export interface BenchWaveSample {
@@ -40,16 +47,30 @@ export interface BenchWaveSample {
   /** 抓样时刻的敌人数 */
   enemyCount: number;
   /** 抓样时刻距 benchmark 启动的实际毫秒 */
-  elapsedMs: number;  /** §25 instrumentation：局内累计击杀数 */
+  elapsedMs: number; /** §25 instrumentation：局内累计击杀数 */
   kills: number;
   /** §25 instrumentation：局内累计玩家建造节点数 */
   built: number;
   /** §25 instrumentation：局内累计资源花费 */
-  spent: number;  /** 样本类型：wave_end = 上一波结束瞬间；final = 局终（含 won/gameover/reached_target） */
+  spent: number; /** 样本类型：wave_end = 上一波结束瞬间；final = 局终（含 won/gameover/reached_target） */
   kind: 'wave_end' | 'final';
 }
 
 export interface BenchResult {
+  strategy?: BenchStrategy;
+  frontier?: {
+    completionSeconds:number;
+    progress:number;
+    harvested:number;
+    stations:Record<string,number>;
+    netSpend:number;
+    turretCount:number;
+    minCoreIntegrity:number;
+    linkLength:number;
+    powerWaitTicks:number;
+    workingTicks:number;
+    pilotBlock:string;
+  };
   seed: number;
   levelId: number;
   targetWaves: number;
@@ -59,6 +80,21 @@ export interface BenchResult {
   totalTicks: number;
   finalNodeCount: number;
   finalEnemyCount: number;
+  network?: {
+    owned: number;
+    connected: number;
+    underpowered: number;
+    liveCores: number;
+    secondaryComplete: boolean;
+    secondaryReached: boolean;
+    resourcesRemaining: number;
+  };
+  performance?: {
+    frames: number;
+    averageSimulationMs: number;
+    averageRenderMs: number;
+    longFrames: number;
+  };
   outcome: 'won' | 'gameover' | 'reached_target';
   elapsedMs: number;
   /** §32 instrumentation：终局节点统计（level 分布 + evolved 计数） */
@@ -84,7 +120,16 @@ const DEFAULT_NODES: NodeType[] = ['energy', 'turret', 'mine', 'shield', 'relay'
 
 export function parseBenchParams(): BenchParams {
   if (typeof window === 'undefined') {
-    return { enabled: false, seed: 0, levelId: 1, targetWaves: 10, speed: 4, nodes: DEFAULT_NODES, autoUpgrade: false };
+    return {
+      enabled: false,
+      seed: 0,
+      levelId: 1,
+      targetWaves: 10,
+      speed: 4,
+      nodes: DEFAULT_NODES,
+      autoUpgrade: false,
+      strategy: 'idle',
+    };
   }
   const sp = new URLSearchParams(window.location.search);
   const enabled = sp.get('bench') === '1';
@@ -93,12 +138,23 @@ export function parseBenchParams(): BenchParams {
   const targetWaves = parseInt(sp.get('waves') ?? '10', 10) || 10;
   const speed = parseFloat(sp.get('speed') ?? '4') || 4;
   const nodesStr = sp.get('nodes');
-  const nodes: NodeType[] = nodesStr
-    ? (nodesStr.split(',').map(s => s.trim()).filter(Boolean) as NodeType[])
-    : DEFAULT_NODES;
+  const nodes: NodeType[] =
+    nodesStr === 'recommended'
+      ? recommendedLoadout(LEVELS.find((l) => l.id === levelId) ?? LEVELS[0])
+      : nodesStr
+        ? (nodesStr
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean) as NodeType[])
+        : DEFAULT_NODES;
   // §27：默认 off，必须显式 ?autoUpgrade=1 开启；保持旧 sweep 可复现
   const autoUpgrade = sp.get('autoUpgrade') === '1';
-  return { enabled, seed, levelId, targetWaves, speed, nodes, autoUpgrade };
+  if (nodes.some((type) => !Object.hasOwn(NODE_CONFIGS, type)))
+    throw new Error('基准节点池包含未知类型');
+  const requested = sp.get('strategy');
+  const strategy: BenchStrategy =
+    requested === 'defend' || requested === 'scout' || isFrontierStrategy(requested) ? requested : 'idle';
+  return { enabled, seed, levelId, targetWaves, speed, nodes, autoUpgrade, strategy };
 }
 
 /**
@@ -107,49 +163,19 @@ export function parseBenchParams(): BenchParams {
  * 再轮到下一个；避免雨露均沾导致 evolve 池常空。
  * 跨 type 优先级：turret > shield > 其它（core 跳过）。
  */
-function tickAutoUpgrade(state: import('./types').GameState): void {
-  const prio = (t: NodeType): number => (t === 'turret' ? 0 : t === 'shield' ? 1 : 2);
-  // 候选：可升级 OR 已满级未进化的 EVOLVABLE
-  const candidates = state.nodes.filter((n: GameNode) =>
-    n.type !== 'core'
-    && n.connected
-    && n.status !== 'destroyed'
-    && (n.level < EVOLUTION_LEVEL || (!n.evolved && EVOLVABLE_TYPES.has(n.type))),
-  );
-  // 排序：跨 type prio ASC；同 type 内 level DESC（最高级优先冲顶）；稳定 tiebreaker id ASC
-  candidates.sort((a, b) => {
-    const pa = prio(a.type); const pb = prio(b.type);
-    if (pa !== pb) return pa - pb;
-    if (a.level !== b.level) return b.level - a.level;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
-  // 单节点：upgrade 到 L5 → evolve（如果是 EVOLVABLE）→ 下一个
-  for (const node of candidates) {
-    while (node.level < EVOLUTION_LEVEL) {
-      const cost = ECONOMY.upgradeBaseCost * node.level;
-      if (state.resources < cost) break;
-      node.level++;
-      const cfg = NODE_CONFIGS[node.type];
-      node.maxEnergy = Math.floor(cfg.maxEnergy * (1 + node.level * ECONOMY.upgradeEnergyGrowth));
-      node.maxHp = Math.floor(cfg.maxHp * (1 + node.level * ECONOMY.upgradeHpGrowth));
-      node.hp = node.maxHp;
-      state.resources -= cost;
-      state.resourcesSpent += cost;
+function tickAutoUpgrade(state: import('./types').GameState, tech: TechState): void {
+  const nodes = state.nodes
+    .filter(
+      (n) => n.owner === 'player' && n.connected && n.type !== 'core' && n.status !== 'destroyed',
+    )
+    .sort(
+      (a, b) =>
+        (a.type === 'turret' ? -1 : 0) - (b.type === 'turret' ? -1 : 0) || b.level - a.level,
+    );
+  for (const node of nodes)
+    while (upgradeNode(state, node, tech).ok) {
+      /* One canonical upgrade/evolution rule. */
     }
-    if (node.level >= EVOLUTION_LEVEL && !node.evolved && EVOLVABLE_TYPES.has(node.type)) {
-      const cost = getEvolutionCost(node.type);
-      const crystalCost = getEvolutionCrystalCost(node.type);
-      if (state.resources >= cost && state.crystals >= crystalCost) {
-        node.evolved = true;
-        state.resources -= cost;
-        state.crystals -= crystalCost;
-        state.resourcesSpent += cost;
-        node.maxEnergy = Math.floor(node.maxEnergy * ECONOMY.evolutionAttrGrowth);
-        node.maxHp = Math.floor(node.maxHp * ECONOMY.evolutionAttrGrowth);
-        node.hp = node.maxHp;
-      }
-    }
-  }
 }
 
 /** §32 instrumentation：从最终 state.nodes 提取 evolved / level / type 统计 */
@@ -158,7 +184,7 @@ function collectNodeStats(nodes: GameNode[]): NonNullable<BenchResult['nodeStats
   const levelDist: Record<string, number> = {};
   const countByType: Record<string, number> = {};
   for (const n of nodes) {
-    if (n.status === 'destroyed') continue;
+    if (n.status === 'destroyed' || n.owner !== 'player') continue;
     if (n.type === 'core') continue;
     countByType[n.type] = (countByType[n.type] ?? 0) + 1;
     const lk = String(n.level);
@@ -191,27 +217,31 @@ function makeAnonymousProfile(): SaveProfile {
 
 /** 启动 benchmark；调用方须保证 setSeed 已先于本函数执行 */
 export function runBenchmark(canvas: HTMLCanvasElement, params: BenchParams): void {
-  const level: LevelConfig = LEVELS.find(l => l.id === params.levelId) ?? LEVELS[0];
+  const level: LevelConfig = LEVELS.find((l) => l.id === params.levelId) ?? LEVELS[0];
   const profile = makeAnonymousProfile();
 
   // 关 1 首次进入会触发教程并把 state.paused 置 true，benchmark 必须绕开
-  try { localStorage.setItem('starfield_nodes_tutorial_done', '1'); } catch { /* ignore */ }
 
-  console.info(`[bench] start seed=${params.seed} level=${level.id}(${level.name}) waves=${params.targetWaves} speed=${params.speed}× nodes=${params.nodes.join(',')} autoUpgrade=${params.autoUpgrade ? 1 : 0}`);
+  console.info(
+    `[bench] start seed=${params.seed} level=${level.id}(${level.name}) waves=${params.targetWaves} speed=${params.speed}× nodes=${params.nodes.join(',')} autoUpgrade=${params.autoUpgrade ? 1 : 0}`,
+  );
 
   const t0 = performance.now();
   const game = new Game(canvas, profile, level, params.nodes, () => {
     // onLevelEnd 由 game 在 won/lost 时触发；轮询逻辑会在下一帧捕获并 dump
   });
-  game.start();
+  game.start({ audio: false, tutorial: false, pauseOnHidden: false });
   game.state.timeScale = params.speed;
 
   const perWave: BenchWaveSample[] = [];
   let lastWave = game.state.wave;
   let lastUpgradeTick = -1;
+  let lastPilotTick = -2;
+  let secondaryReached = false;
 
   const poll = (): void => {
     const s = game.state;
+    secondaryReached ||= secondaryObjectiveStatus(s)?.complete ?? true;
     // 持续锁定 speed，防止任何 UI 重置
     if (s.timeScale !== params.speed) s.timeScale = params.speed;
     // 防御：若任何 UI 路径把 state.paused 置 true（教程/对话框），强制取消
@@ -219,8 +249,13 @@ export function runBenchmark(canvas: HTMLCanvasElement, params: BenchParams): vo
 
     // §27 auto-upgrade：每 60 tick 触发一次（约 1s @60fps）
     if (params.autoUpgrade && s.tick - lastUpgradeTick >= 60) {
-      tickAutoUpgrade(s);
+      tickAutoUpgrade(s, game.techState);
       lastUpgradeTick = s.tick;
+    }
+
+    if (params.strategy !== 'idle' && s.tick - lastPilotTick >= 2) {
+      pilotStep(s, game.techState, params.nodes, params.strategy);
+      lastPilotTick = s.tick;
     }
 
     // wave 切换瞬间：把"刚刚结束的那一波"打个快照
@@ -260,6 +295,20 @@ export function runBenchmark(canvas: HTMLCanvasElement, params: BenchParams): vo
         kind: 'final',
       });
       const result: BenchResult = {
+        strategy:params.strategy,
+        frontier:s.frontier ? {
+          completionSeconds:s.elapsedSeconds,
+          progress:frontierStatus(s)?.ratio??0,
+          harvested:s.frontier.harvested,
+          stations:{...s.frontier.progress},
+          netSpend:s.resourcesSpent-s.frontier.recovered,
+          turretCount:s.nodes.filter(n=>n.type==='turret'&&n.owner==='player'&&n.status!=='destroyed').length,
+          minCoreIntegrity:Math.min(...s.nodes.filter(n=>n.type==='core'&&n.owner==='player').map(n=>Math.max(0,n.hp/n.maxHp))),
+          linkLength:s.edges.reduce((sum,e)=>{const a=s.nodes.find(n=>n.id===e.sourceId)!,b=s.nodes.find(n=>n.id===e.targetId)!;return sum+Math.hypot(a.x-b.x,a.y-b.y);},0),
+          powerWaitTicks:s.frontier.powerWaitTicks,
+          workingTicks:s.frontier.workingTicks,
+          pilotBlock:frontierPilotBlock(s),
+        } : undefined,
         seed: params.seed,
         levelId: level.id,
         targetWaves: params.targetWaves,
@@ -271,6 +320,29 @@ export function runBenchmark(canvas: HTMLCanvasElement, params: BenchParams): vo
         finalEnemyCount: s.enemies.length,
         outcome,
         elapsedMs,
+        network: {
+          owned: s.nodes.filter((n) => n.owner === 'player' && n.status !== 'destroyed').length,
+          connected: s.nodes.filter(
+            (n) => n.owner === 'player' && n.connected && n.status !== 'destroyed',
+          ).length,
+          underpowered: s.nodes.filter(
+            (n) =>
+              n.owner === 'player' &&
+              n.connected &&
+              n.status !== 'destroyed' &&
+              n.currentEnergy < n.activationThreshold,
+          ).length,
+          liveCores: s.nodes.filter((n) => n.type === 'core' && n.status !== 'destroyed').length,
+          secondaryComplete: secondaryObjectiveStatus(s)?.complete ?? true,
+          secondaryReached,
+          resourcesRemaining: s.resources,
+        },
+        performance: {
+          frames: game.metrics.frames,
+          averageSimulationMs: game.metrics.updateMs / Math.max(1, game.metrics.frames),
+          averageRenderMs: game.metrics.renderMs / Math.max(1, game.metrics.frames),
+          longFrames: game.metrics.longFrames,
+        },
         nodeStats: collectNodeStats(s.nodes),
         perWave,
       };

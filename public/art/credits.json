@@ -1,0 +1,11 @@
+{
+  "asset": "public/art/stellar-atlas.webp",
+  "created_on": "2026-10-18",
+  "tool": "OpenAI 内置 imagegen",
+  "prompt": "Use case: stylized-concept. Asset type: a production background painting for a refined original 2D space strategy game named Starfield Nodes, to sit behind a crisp star-map command interface. Create one wide landscape 16:9 image, no text, no logos, no UI, no borders. A deep midnight blue interstellar expanse, extremely subtle atmospheric blue dust and a fine distant star field, with one slender, graceful silver-blue nebula sweeping from lower center toward the upper right. Tiny restrained amber stars create depth. The left third remains dark and calm negative space for typography. The atmosphere is elegant, quiet, scientific, expansive, premium and tactile, like a beautiful astronomical atlas with cinematic depth, not a noisy neon wallpaper. Rich dark navy and blue-gray values, a little desaturated teal, subtle light scattering, fine film-like grain. No large planets, no spacecraft, no characters, no bright white cores, no magenta, no saturated purple, no excessive glowing effects. Output an actual polished full-bleed background artwork with nuanced clouds, not a screenshot or mockup.",
+  "human_direction": "依据星域策略游戏确定深蓝星图、克制能流、安静留白的视觉方向；筛选生成结果并接入界面。",
+  "processing": "仅转换为 WebP 编码，未改变画面内容。",
+  "sha256": "7bb89a0c50b5a37afb0460788b5149ac8a7bd346b4aa1f88ee44410b006f1c17",
+  "code_assistance": "本轮使用 Codex 辅助代码审视、逻辑与界面实现、回归测试、构建和运行验证。",
+  "contribution_note": "参赛团队应依据实际工作补充成员分工、人工筛选和修改情况。此文件记录工具与素材来源，不代替人员署名和原创贡献说明。"
+}

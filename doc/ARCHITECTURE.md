@@ -1,263 +1,83 @@
-# 架构图
+# 当前架构
 
-> 以下为 [Mermaid](https://mermaid.js.org/) 格式图表，可在 GitHub / VS Code Mermaid 插件中直接渲染。
+更新于2026-10-23。当前验证与复现方式见[DEVELOPMENT.md](DEVELOPMENT.md)，本轮实际操作与截图已交付待独立验收；平衡参数只在代码配置维护。
 
----
-
-## 1. 游戏流程
+## 体验流程
 
 ```mermaid
 flowchart LR
-    A[LoginScreen<br>登录/选档] --> B[LevelSelectScreen<br>选关]
-    B --> C[NodeSelectScreen<br>选卡]
-    C --> D[CutsceneScreen<br>过场动画]
-    D --> E[Game<br>游戏主循环]
-    E -->|胜利/失败| B
+  Title[本机航行档案] --> Missions[前沿三关 / 历史航线]
+  Missions --> Kit[基础设施与战斗配置]
+  Kit --> Field[自由建造 / 侦察 / 接线]
+  Field --> Sites[开采 / 观测 / 阶段充能]
+  Sites --> Result[结算与布局投入]
+  Result --> Missions
+  Result -->|重开| Field
 ```
 
----
+菜单由 Screen 管理 DOM 生命周期；世界、HUD、模态面板采用 Canvas。启动前加载统一设施素材，完成后挂载首屏。设施图同时用于世界、建造栏、配置档案与标题，避免图标与实际单位外观脱节。
 
-## 2. 模块依赖关系
+菜单空间由 screen-layout.ts 计算，Screen 统一设置 CSS 变量并在尺寸变化时重绘；配置、航线和档案通过分页组织，状态仍由各屏幕自身持有。建造的 PlacementStatus 由 construction.ts 定义，Input 取实际位置报价，Game 传给 UI，固定反馈栏和场内预览共用；连线拒绝原因来自 graph.ts 中同一判定，canConnect 保留原布尔接口。航图绘制、点击映射和面板边界使用 canvas-ui.ts 中的公共矩形计算。
 
-```mermaid
-graph TD
-    main["main.ts<br>入口 & 流程编排"]
-    game["game.ts<br>主循环 & Tick"]
-    input["input.ts<br>输入处理"]
-    renderer["renderer.ts<br>世界渲染"]
-    ui["ui.ts<br>HUD & 菜单"]
-    types["types.ts<br>类型 & 常量"]
-    entities["entities.ts<br>实体逻辑"]
-    graphMod["graph.ts<br>图论算法"]
-    particles["particles.ts<br>粒子系统"]
-    audio["audio.ts<br>音效"]
-    fog["fog.ts<br>战争迷雾"]
-    levels["levels.ts<br>关卡配置"]
-    tech["tech.ts<br>科技树"]
-    achievements["achievements.ts<br>成就"]
-    keybinds["keybinds.ts<br>快捷键"]
-    tutorial["tutorial.ts<br>教程"]
-    save["save.ts<br>存档"]
-    login["login.ts<br>登录"]
-    levelsel["level-select.ts<br>选关"]
-    nodesel["node-select.ts<br>选卡"]
-    cutscene["cutscene.ts<br>过场"]
-
-    main --> game
-    main --> login
-    main --> levelsel
-    main --> nodesel
-    main --> cutscene
-    main --> levels
-
-    game --> input
-    game --> renderer
-    game --> ui
-    game --> entities
-    game --> graphMod
-    game --> audio
-    game --> tech
-    game --> achievements
-
-    input --> graphMod
-    input --> audio
-    input --> keybinds
-    input --> tutorial
-
-    ui --> achievements
-    ui --> keybinds
-    ui --> audio
-    ui --> tutorial
-
-    renderer --> fog
-    renderer --> particles
-
-    entities --> particles
-
-    login --> save
-
-    types -.->|被所有模块引用| main
-
-    style types fill:#2a2a4a,stroke:#00ffff,color:#fff
-    style game fill:#1a3a1a,stroke:#00ff88,color:#fff
-    style main fill:#3a1a1a,stroke:#ff8800,color:#fff
-```
-
----
-
-## 3. 游戏主循环 (Game Loop)
+## 数据与命令
 
 ```mermaid
 flowchart TD
-    RAF["requestAnimationFrame"] --> DT["计算 deltaTime"]
-    DT --> ACC["累积器 += deltaTime × timeScale"]
-    ACC --> CHECK{累积器 ≥ 500ms?}
-    CHECK -->|是| TICK["tick()"]
-    TICK --> SUB["累积器 -= 500ms"]
-    SUB --> CHECK
-    CHECK -->|否| RENDER["render(deltaTime)"]
-    RENDER --> RAF
-
-    subgraph "tick() 逻辑更新"
-        T1["能量分配 (BFS)"] --> T2["节点更新"]
-        T2 --> T3["敌人更新"]
-        T3 --> T4["飞弹碰撞"]
-        T4 --> T5["粒子更新"]
-        T5 --> T6["超载检测"]
-        T6 --> T7{"tick ≥ 40?<br>(20s 空窗期)"}
-        T7 -->|是| T8["敌人生成"]
-        T7 -->|否| T9["跳过生成"]
-        T8 --> T10["波次/胜负判定"]
-        T9 --> T10
-    end
-
-    TICK --> T1
+  Config[data/frontier-levels.ts] --> Mission[GameState.mission]
+  Mission --> Rules[frontier.ts]
+  Input[InputManager] --> Commands[construction.ts]
+  Pilot[显式基准布局] --> Commands
+  Commands --> State[GameState]
+  Tech[tech.ts / 核心扩展] --> State
+  Rules --> State
+  State --> HUD[battle-hud / 世界任务标记]
+  Rules --> Outcome[mission-objectives.ts]
 ```
 
----
+GameState.frontier 只保存本局进度、投资回收和必要统计，关卡规则来自唯一配置。旧关卡编号与本机档案保持，新增样板使用独立编号。所有验证布局通过正常收费与侦察限制，不参与普通玩家输入。
 
-## 4. 能量流动系统
+## 模拟与供电
+
+```mermaid
+flowchart TD
+  RAF[requestAnimationFrame] --> Clock[固定 1/60 秒步]
+  Clock --> Tick{500ms Tick}
+  Tick --> Flow[连通 / 稳定输能 / 超载]
+  Flow --> Sense[任务事件 / 共享视野 / 敌方支援]
+  Sense --> Work[节点工作 / 真实任务扣费]
+  Work --> Spawn[波次 / 入侵 / 天气]
+  Clock --> Combat[移动 / 弹丸碰撞 / 死亡结算]
+  Spawn --> Combat
+  Combat --> End[先失败，后完成任务]
+  RAF --> Render[镜头与表现]
+```
+
+连通从己方核心出发，包括有效双端虫洞中继。输能使用同一快照，按谐和容量估计均衡需求，并依据节点耦合强度限步；随后按源储备、目标空间共同分摊。虫洞通道与物理链路共用输能结算，电流表现读取实际流动方向与数值。
+
+节点效果与任务均在 Tick 中结算；渲染不生成货币、不取得观测数据、不触发战斗伤害。保留上一个 Tick 的工作反馈，是为了正确显示已经扣费的持续工作。
+
+## 信息与遮挡
 
 ```mermaid
 flowchart LR
-    CORE["⭐ 核心<br>产出 15 能量/tick"]
-    E1["⚡ 能量站"]
-    E2["⊕ 炮塔"]
-    E3["⛏ 矿机"]
-    R1["◎ 中继器"]
-
-    CORE -->|standard 8/tick| E1
-    CORE -->|fast 14/tick| E2
-    E1 -->|amplify +30%| E3
-    E1 -->|heavy 20/tick| R1
-    R1 -->|standard| E2
-
-    style CORE fill:#ffaa00,stroke:#fff,color:#000
-    style E1 fill:#00aaff,stroke:#fff,color:#fff
+  Power[己方有效供电] --> Vision[visibility.ts]
+  Vision --> Current[当前可见]
+  Current --> Memory[探索记忆]
+  Current --> Enemy[绘制 / 侦测 / 目标查询]
+  Memory --> Planning[允许规划建造]
+  Terrain[同一岩带几何] --> Navigation[A* / 位移碰撞]
+  Terrain --> Rays[weapon-geometry.ts]
+  Rays --> Fire[直射与弹丸]
+  Rays --> Range[有效射界]
 ```
 
----
+迷雾绘制缓存由实际信息变化驱动。任务设施与矿脉位置属于已知战术资料；敌人仅在有效实时侦测下显示。攻击记录驱动短暂命中与无人机光效，装饰随机和模拟随机分离。
 
-## 5. 输入交互状态机
+## 表现与持久化
 
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-
-    Idle --> Panning: Ctrl+左键按下
-    Idle --> NodeClickOrigin: 左键按下节点
-    Idle --> Building: 数字键选择
-    Idle --> BoxSelect: Shift+左键按下空地
-
-    NodeClickOrigin --> DragConnect: 移动超过10px
-    NodeClickOrigin --> RadialMenu: 左键释放(未拖拽)
-
-    DragConnect --> TryConnect: 释放在目标节点上
-    DragConnect --> Cancel: 释放在空白处
-    TryConnect --> Idle
-
-    RadialMenu --> ConnectMode: 点击"连线"按钮
-    RadialMenu --> Upgrade: 点击"升级"
-    RadialMenu --> Sell: 点击"出售"
-    RadialMenu --> Idle: 点击空白关闭
-
-    ConnectMode --> TryConnect: 点击目标节点
-    ConnectMode --> Idle: 右键/Esc取消
-
-    Building --> PlaceNode: 点击有效位置
-    PlaceNode --> Building: 继续建造
-    Building --> Idle: Esc取消
-
-    Panning --> Idle: 释放
-    BoxSelect --> BatchOps: 释放(选中节点)
-    BoxSelect --> Idle: 释放(空选)
-    BatchOps --> Idle
-
-    Cancel --> Idle
-    Upgrade --> Idle
-    Sell --> Idle
-```
-
----
-
-## 6. 敌人生成与AI
-
-```mermaid
-flowchart TD
-    SPAWN["每 N tick 生成一波"]
-    SPAWN --> COUNT["数量 = 1 + floor(wave/3)"]
-    COUNT --> POS["距存活节点 500-800 外随机位置"]
-    POS --> TYPE["按波次解锁类型池随机选取"]
-
-    TYPE --> AI{"敌人类型?"}
-
-    AI -->|scout| NEAR["追踪最近节点"]
-    AI -->|heavy| CORE_T["直扑核心<br>weight: core=0.3"]
-    AI -->|swarm| NEAR
-    AI -->|stealth| SNEAK["偷袭核心/能量站<br>core=0.4, energy=0.7"]
-    AI -->|splitter| SPLIT["死亡分裂 2-3 个小体"]
-    AI -->|disruptor| CUT["切断连线<br>relay=0.3, core=0.9"]
-    AI -->|boss| BOSS["优先核心/炮塔<br>core=0.35, turret=0.7"]
-```
-
----
-
-## 7. 科技树
-
-```mermaid
-graph TD
-    T1A["高效链路<br>150◆ | 边吞吐+4"]
-    T1B["强化结构<br>200◆ | HP+30%"]
-    T1C["核心超频<br>180◆ | 产能+10"]
-
-    T2A["等离子炮塔<br>300◆ | 伤害×1.5"]
-    T2B["量子中继<br>250◆ | 距离+80"]
-    T2C["能量矩阵<br>280◆ | 容量×1.4"]
-    T2D["纳米修复<br>350◆ | HP 自恢复"]
-
-    T3A["经济繁荣<br>500◆ | 成本×0.7"]
-    T3B["狙击协议<br>450◆ | 射程×1.6"]
-
-    T1A --> T2A
-    T1A --> T2B
-    T1C --> T2C
-    T1B --> T2D
-
-    T2A --> T3A
-    T2C --> T3A
-    T2A --> T3B
-    T2B --> T3B
-
-    style T1A fill:#1a3a5a,stroke:#00aaff,color:#fff
-    style T1B fill:#1a3a5a,stroke:#00aaff,color:#fff
-    style T1C fill:#1a3a5a,stroke:#00aaff,color:#fff
-    style T2A fill:#2a1a4a,stroke:#aa55ff,color:#fff
-    style T2B fill:#2a1a4a,stroke:#aa55ff,color:#fff
-    style T2C fill:#2a1a4a,stroke:#aa55ff,color:#fff
-    style T2D fill:#2a1a4a,stroke:#aa55ff,color:#fff
-    style T3A fill:#4a1a1a,stroke:#ff5555,color:#fff
-    style T3B fill:#4a1a1a,stroke:#ff5555,color:#fff
-```
-
----
-
-## 8. 关卡解锁路径
-
-```mermaid
-graph LR
-    L1["1. 初始星域<br>survive W10<br>×0.8"]
-    L2["2. 边境前哨<br>survive W15<br>×1.0"]
-    L3["3. 迷雾深处<br>boss W20<br>×1.2"]
-    L4["4. 闪电突袭<br>timed 180s<br>×1.5"]
-    L5["5. 多核心战役<br>survive W20<br>×1.3"]
-    L6["6. 虫巢终焉<br>boss W25<br>×1.8"]
-
-    L1 --> L2
-    L2 --> L3
-    L2 --> L4
-    L3 --> L5
-    L5 --> L6
-
-    style L1 fill:#0a2a0a,stroke:#00ff88,color:#fff
-    style L6 fill:#3a0a0a,stroke:#ff4444,color:#fff
-```
+- data/facility-art.ts：固定功能色、轮廓、素材地址与 alpha 边界；facility-art.ts：透明素材加载、小尺寸缓存、武器转向与等级标记。图片及生成来源保存在 public/art/facilities/。
+- fleet-art.ts：实际移动朝向的敌军；terrain-art.ts：与碰撞轮廓对应的岩带。
+- world-facilities.ts：状态、矿脉、任务标记与共享射界；renderer.ts：世界合成、视野与航图。
+- battle-hud.ts：目标、常驻建造栏、设施/批量详情；ui.ts：通知、研究、手册、暂停与结算。
+- 设施投资、当前研究、电网、探索与任务进度是本局状态，重开重建；本机档案保留通关、统计、成就及已发现联动。
+- 素材来源记录与构建诊断属于源码资料，不写入玩家档案。

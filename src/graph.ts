@@ -1,20 +1,44 @@
+import type { LevelConfig } from './levels';
+import { buildTerrainPolygon, isPointInAsteroidPolygon } from './terrain-poly';
+import { isPointWalkable, resetNavigation, displaceEnemy } from './navigation';
+import { canDetectEnemy, createVisibility } from './visibility';
+import { damageEnemy } from './enemy-health';
+import { recordMining } from './frontier';
+import { hasFiringLine, turretAttackRange, sniperAttackRange, factoryAttackRange } from './weapon-geometry';
 // ===== 图数据结构 + 算法逻辑 =====
-import type {
-  GameNode, Edge, GameState, NodeType, EdgeType, TerrainZone,
-} from './types';
+import type { GameNode, Edge, GameState, NodeType, EdgeType, TerrainZone } from './types';
 import {
-  MAX_EDGE_LENGTH, CORE_ENERGY_PRODUCTION,
-  TERRITORY_RADIUS, EXPANDED_TERRITORY_RADIUS, TERRITORY_DISCOUNT,
+  MAX_EDGE_LENGTH,
+  CORE_ENERGY_PRODUCTION,
+  TERRITORY_RADIUS,
+  EXPANDED_TERRITORY_RADIUS,
+  TERRITORY_DISCOUNT,
 } from './data/runtime';
 import { NODE_CONFIGS } from './data/nodes';
 import { EDGE_CONFIGS } from './data/edges';
 import { COLORS } from './ui-tokens';
-import { OVERCHARGE, COMBAT, ENERGY_COSTS, ENERGY_GAINS, ECONOMY, TERRAIN_SYNERGY } from './data/balance';
-import { ENEMY_BASE_SPEED, DEFAULT_ENEMY_BASE_SPEED } from './data/enemies';
+import {
+  OVERCHARGE,
+  COMBAT,
+  ENERGY_COSTS,
+  ENERGY_GAINS,
+  ECONOMY,
+  RUNTIME,
+  TERRAIN_SYNERGY,
+  energyStationOutput,
+} from './data/balance';
+import { ENEMY_BASE_STATS, getBossStats } from './data/spawn';
 import { sfxTesla, sfxFactory, sfxTrapExplode, sfxShoot, sfxOvercharge } from './audio';
 import { rand } from './rng';
-import { lineBlockedByAsteroidPolygon, isPointInNebulaPolygon, isNearAsteroidPolygonEdge, isWormholeHubActive, findWormholePolygonAt, pointInPolygon } from './terrain-poly';
-import { emitDestructionParticles } from './particles';
+import {
+  lineBlockedByAsteroidPolygon,
+  isPointInNebulaPolygon,
+  isWormholeHubActive,
+  findWormholePolygonAt,
+  pointInPolygon,
+  wormholeRelayLinks,
+} from './terrain-poly';
+import { emitDestructionParticles, emitStrike } from './particles';
 import { EnemyGrid } from './spatial-grid';
 import type { Enemy } from './types';
 
@@ -27,8 +51,10 @@ let edgeIdCounter = 0;
  */
 const enemyGrid = new EnemyGrid(160);
 let gridReady = false;
-function queryEnemies(x: number, y: number, range: number, all: Enemy[]): Enemy[] {
-  return gridReady ? enemyGrid.query(x, y, range) : all;
+function queryEnemies(state: GameState, x: number, y: number, range: number): Enemy[] {
+  return (gridReady ? enemyGrid.query(x, y, range) : state.enemies).filter((enemy) =>
+    canDetectEnemy(state, enemy),
+  );
 }
 
 /**
@@ -69,8 +95,11 @@ export function createNode(x: number, y: number, type: NodeType): GameNode {
   const cfg = NODE_CONFIGS[type];
   return {
     id: `n_${nodeIdCounter++}`,
-    x, y, type,
+    x,
+    y,
+    type,
     level: 1,
+    investment: cfg.cost,
     currentEnergy: type === 'core' ? cfg.maxEnergy : 0,
     maxEnergy: cfg.maxEnergy,
     status: 'normal',
@@ -79,7 +108,7 @@ export function createNode(x: number, y: number, type: NodeType): GameNode {
     activationThreshold: cfg.activationThreshold,
     radius: cfg.radius,
     glowColor: cfg.glowColor,
-    pulsePhase: rand() * Math.PI * 2,
+    pulsePhase: Math.random() * Math.PI * 2,
     overchargeBuildup: 0,
     overchargeTicks: 0,
     overchargeCooldown: 0,
@@ -100,6 +129,7 @@ export function createEdge(sourceId: string, targetId: string, type: EdgeType = 
     type,
     throughput: cfg.throughput,
     flowProgress: 0,
+    energyFlow: 0,
     active: false,
     disruptedTimer: 0,
   };
@@ -110,7 +140,8 @@ export function getTerritoryDiscount(state: GameState, x: number, y: number): nu
   for (const node of state.nodes) {
     if (node.type !== 'core' || node.status === 'destroyed') continue;
     const r = node.expanded ? EXPANDED_TERRITORY_RADIUS : TERRITORY_RADIUS;
-    const dx = node.x - x, dy = node.y - y;
+    const dx = node.x - x,
+      dy = node.y - y;
     if (dx * dx + dy * dy < r * r) return TERRITORY_DISCOUNT;
   }
   return 0;
@@ -118,16 +149,16 @@ export function getTerritoryDiscount(state: GameState, x: number, y: number): nu
 
 // ===== 泊松圆盘采样 =====
 export function poissonDiskSampling(
-  width: number, height: number,
-  minDist: number, maxAttempts: number = 30,
+  width: number,
+  height: number,
+  minDist: number,
+  maxAttempts: number = 30,
   margin: number = 80,
 ): { x: number; y: number }[] {
   const cellSize = minDist / Math.SQRT2;
   const gridW = Math.ceil((width - 2 * margin) / cellSize);
   const gridH = Math.ceil((height - 2 * margin) / cellSize);
-  const grid: (number | null)[][] = Array.from({ length: gridW }, () =>
-    Array(gridH).fill(null)
-  );
+  const grid: (number | null)[][] = Array.from({ length: gridW }, () => Array(gridH).fill(null));
   const points: { x: number; y: number }[] = [];
   const activeList: number[] = [];
 
@@ -219,7 +250,7 @@ export function findShieldRepairLink(state: GameState, node: GameNode): GameNode
     if (edge.sourceId === node.id) otherId = edge.targetId;
     else if (edge.targetId === node.id) otherId = edge.sourceId;
     if (!otherId) continue;
-    const other = state.nodes.find(n => n.id === otherId);
+    const other = state.nodes.find((n) => n.id === otherId);
     if (!other || other.status === 'destroyed') continue;
     if (other.type !== 'repair') continue;
     if (other.owner !== node.owner) continue;
@@ -229,39 +260,51 @@ export function findShieldRepairLink(state: GameState, node: GameNode): GameNode
 }
 
 // ===== 连线校验 =====
-export function canConnect(state: GameState, sourceId: string, targetId: string): boolean {
-  if (sourceId === targetId) return false;
-  const source = state.nodes.find(n => n.id === sourceId);
-  const target = state.nodes.find(n => n.id === targetId);
-  if (!source || !target) return false;
-  if (source.status === 'destroyed' || target.status === 'destroyed') return false;
-  // 中立节点不能连线
-  if (source.owner === 'neutral' || target.owner === 'neutral') return false;
+export type ConnectionBlockReason = 'same' | 'missing' | 'ownership' | 'destroyed' | 'range' | 'duplicate' | 'terrain';
+
+/** 施工与预览共用连线判定；拒绝原因不改变可连接规则。 */
+export function connectionBlockReason(
+  state: GameState,
+  sourceId: string,
+  targetId: string,
+  maxLength: number = MAX_EDGE_LENGTH,
+): ConnectionBlockReason | null {
+  if (sourceId === targetId) return 'same';
+  const source = state.nodes.find((n) => n.id === sourceId);
+  const target = state.nodes.find((n) => n.id === targetId);
+  if (!source || !target) return 'missing';
+  if (source.owner !== 'player' || target.owner !== 'player') return 'ownership';
+  if (source.status === 'destroyed' || target.status === 'destroyed') return 'destroyed';
 
   // 距离校验
-  if (dist(source, target) > MAX_EDGE_LENGTH) return false;
+  if (dist(source, target) > maxLength) return 'range';
 
   // 重复边校验
   const exists = state.edges.some(
-    e => (e.sourceId === sourceId && e.targetId === targetId) ||
-         (e.sourceId === targetId && e.targetId === sourceId)
+    (e) =>
+      (e.sourceId === sourceId && e.targetId === targetId) ||
+      (e.sourceId === targetId && e.targetId === sourceId),
   );
-  if (exists) return false;
+  if (exists) return 'duplicate';
 
   // 小行星带阻挡连线
   for (const zone of state.terrainZones) {
     if (zone.type === 'asteroid') {
       if (lineIntersectsCircle(source, target, zone, zone.radius)) {
-        return false;
+        return 'terrain';
       }
     }
   }
   // V1.3.1：多边形小行星带阻挡连线
   if (lineBlockedByAsteroidPolygon(state, source.x, source.y, target.x, target.y)) {
-    return false;
+    return 'terrain';
   }
 
-  return true;
+  return null;
+}
+
+export function canConnect(state: GameState, sourceId: string, targetId: string, maxLength: number = MAX_EDGE_LENGTH): boolean {
+  return connectionBlockReason(state, sourceId, targetId, maxLength) === null;
 }
 
 /** 判断线段是否穿过圆形区域 */
@@ -271,7 +314,8 @@ function lineIntersectsCircle(
   center: { x: number; y: number },
   radius: number,
 ): boolean {
-  const dx = b.x - a.x, dy = b.y - a.y;
+  const dx = b.x - a.x,
+    dy = b.y - a.y;
   const lenSq = dx * dx + dy * dy;
   if (lenSq === 0) return dist(a, center) <= radius;
   const t = Math.max(0, Math.min(1, ((center.x - a.x) * dx + (center.y - a.y) * dy) / lenSq));
@@ -282,11 +326,12 @@ function lineIntersectsCircle(
 
 // ===== BFS 连通性检测（从所有核心出发） =====
 export function getConnectedNodes(state: GameState): Set<string> {
-  const cores = state.nodes.filter(n => n.type === 'core' && n.status !== 'destroyed');
+  const cores = state.nodes.filter((n) => n.type === 'core' && n.status !== 'destroyed');
   if (cores.length === 0) return new Set();
 
   const visited = new Set<string>();
   const queue: string[] = [];
+  const nodeIndex = new Map(state.nodes.map((n) => [n.id, n]));
   for (const core of cores) {
     visited.add(core.id);
     queue.push(core.id);
@@ -296,18 +341,29 @@ export function getConnectedNodes(state: GameState): Set<string> {
   const adj = new Map<string, string[]>();
   for (const edge of state.edges) {
     if (edge.disruptedTimer > 0) continue;
+    if (
+      nodeIndex.get(edge.sourceId)?.owner !== 'player' ||
+      nodeIndex.get(edge.targetId)?.owner !== 'player'
+    )
+      continue;
     if (!adj.has(edge.sourceId)) adj.set(edge.sourceId, []);
     if (!adj.has(edge.targetId)) adj.set(edge.targetId, []);
     adj.get(edge.sourceId)!.push(edge.targetId);
     adj.get(edge.targetId)!.push(edge.sourceId);
   }
 
-  while (queue.length > 0) {
-    const current = queue.shift()!;
+  for(const {a,b} of wormholeRelayLinks(state)){
+    if(!adj.has(a.id))adj.set(a.id,[]);
+    if(!adj.has(b.id))adj.set(b.id,[]);
+    adj.get(a.id)!.push(b.id);adj.get(b.id)!.push(a.id);
+  }
+
+  for (let head = 0; head < queue.length; head++) {
+    const current = queue[head];
     const neighbors = adj.get(current) || [];
     for (const nid of neighbors) {
       if (!visited.has(nid)) {
-        const node = state.nodes.find(n => n.id === nid);
+        const node = nodeIndex.get(nid);
         if (node && node.status !== 'destroyed') {
           visited.add(nid);
           queue.push(nid);
@@ -333,69 +389,83 @@ export function updateConnectedStatus(state: GameState): void {
 
 // ===== BFS 能量分发（支持多核心） =====
 export function distributeEnergy(state: GameState): void {
-  // 所有核心节点产能
-  const cores = state.nodes.filter(n => n.type === 'core' && n.status !== 'destroyed');
-  if (cores.length === 0) return;
-
-  for (const core of cores) {
-    core.currentEnergy = Math.min(core.maxEnergy, core.currentEnergy + CORE_ENERGY_PRODUCTION);
-  }
-
-  // 从所有核心开始 BFS 逐层分发
-  const visited = new Set<string>();
-  const queue: string[] = [];
-  for (const core of cores) {
-    visited.add(core.id);
-    queue.push(core.id);
-  }
-
-  // 构建节点索引
-  const nodeMap = new Map<string, GameNode>();
-  for (const n of state.nodes) nodeMap.set(n.id, n);
-
-  // 构建邻接表（包含边信息）
-  const adj = new Map<string, { nodeId: string; edge: Edge }[]>();
-  for (const edge of state.edges) {
-    if (!adj.has(edge.sourceId)) adj.set(edge.sourceId, []);
-    if (!adj.has(edge.targetId)) adj.set(edge.targetId, []);
-    adj.get(edge.sourceId)!.push({ nodeId: edge.targetId, edge });
-    adj.get(edge.targetId)!.push({ nodeId: edge.sourceId, edge });
-  }
-
-  while (queue.length > 0) {
-    const currentId = queue.shift()!;
-    const current = nodeMap.get(currentId)!;
-    const neighbors = adj.get(currentId) || [];
-
-    for (const { nodeId, edge } of neighbors) {
-      if (visited.has(nodeId)) continue;
-      // 被干扰的连线无法传输能量
-      if (edge.disruptedTimer > 0) { edge.active = false; continue; }
-      const target = nodeMap.get(nodeId);
-      if (!target || target.status === 'destroyed') continue;
-
-      visited.add(nodeId);
-      queue.push(nodeId);
-
-      // 根据带宽传输能量
-      const transferAmount = Math.min(edge.throughput, current.currentEnergy * 0.5);
-      if (transferAmount > 0 && target.currentEnergy < target.maxEnergy) {
-        const amplify = EDGE_CONFIGS[edge.type].amplifyBonus;
-        const boosted = transferAmount * (1 + amplify);
-        const actual = Math.min(boosted, target.maxEnergy - target.currentEnergy);
-        current.currentEnergy -= Math.min(transferAmount, actual);
-        target.currentEnergy += actual;
-        edge.active = true;
-      } else {
-        edge.active = false;
-      }
+  for (const node of state.nodes)
+    if (node.type === 'core' && node.status !== 'destroyed') {
+      node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + CORE_ENERGY_PRODUCTION);
     }
+  const connected = getConnectedNodes(state),
+    nodes = new Map(state.nodes.map((n) => [n.id, n]));
+  const outgoing = new Map<string, number>(),
+    incoming = new Map<string, number>();
+  const stiffness = new Map<string,number>();
+  const proposals: {
+    edge: Edge;
+    from: GameNode;
+    to: GameNode;
+    amount: number;
+    gain: number;
+    sign: number;
+    gateGroup?: string;
+  }[] = [];
+  const transit: Edge[] = [];
+  const gateGroups=new Map<Edge,string>();
+  for(const {a,b,group} of wormholeRelayLinks(state)){
+    const edge:Edge={id:`gate:${group}:${a.id}:${b.id}`,sourceId:a.id,targetId:b.id,type:'fast',throughput:RUNTIME.wormholeThroughput,flowProgress:0,energyFlow:0,active:false,disruptedTimer:0};
+    transit.push(edge);gateGroups.set(edge,group);
   }
-
-  // 标记边活跃状态
-  const connectedNodes = getConnectedNodes(state);
-  for (const edge of state.edges) {
-    edge.active = connectedNodes.has(edge.sourceId) && connectedNodes.has(edge.targetId);
+  for (const edge of [...state.edges,...transit]) {
+    edge.active = false;
+    edge.energyFlow = 0;
+    const a = nodes.get(edge.sourceId),
+      b = nodes.get(edge.targetId);
+    if (!a || !b || edge.disruptedTimer > 0 || !connected.has(a.id) || !connected.has(b.id))
+      continue;
+    const difference = a.currentEnergy / a.maxEnergy - b.currentEnergy / b.maxEnergy;
+    if (Math.abs(difference) < 0.005) continue;
+    const from = difference > 0 ? a : b,
+      to = difference > 0 ? b : a,
+      gain = 1 + EDGE_CONFIGS[edge.type].amplifyBonus;
+    const relayLevel=Math.max(a.type==='relay'?a.level:1,b.type==='relay'?b.level:1);
+    const rate=Math.min(1,RUNTIME.energyRelaxation+(relayLevel-1)*RUNTIME.relayConductancePerLevel);
+    const conductance=rate/(1/from.maxEnergy+gain/to.maxEnergy);
+    const amount = Math.min(
+      edge.throughput,
+      Math.abs(difference) * conductance,
+      (to.maxEnergy - to.currentEnergy) / gain,
+    );
+    if (amount <= 0) continue;
+    proposals.push({ edge, from, to, amount, gain, sign: difference > 0 ? 1 : -1,gateGroup:gateGroups.get(edge) });
+    stiffness.set(from.id,(stiffness.get(from.id)??0)+conductance/from.maxEnergy);
+    stiffness.set(to.id,(stiffness.get(to.id)??0)+conductance*gain/to.maxEnergy);
+  }
+  // 谐和容量给出单边均衡量；按节点总耦合强度限步，避免高分支电网来回过冲。
+  const gateTotals=new Map<string,number>();
+  for(const p of proposals){
+    p.amount*=Math.min(1,1/stiffness.get(p.from.id)!,1/stiffness.get(p.to.id)!);
+    if(p.gateGroup)gateTotals.set(p.gateGroup,(gateTotals.get(p.gateGroup)??0)+p.amount);
+  }
+  for(const p of proposals){
+    if(p.gateGroup)p.amount*=Math.min(1,RUNTIME.wormholeThroughput/gateTotals.get(p.gateGroup)!);
+    outgoing.set(p.from.id,(outgoing.get(p.from.id)??0)+p.amount);
+    incoming.set(p.to.id,(incoming.get(p.to.id)??0)+p.amount*p.gain);
+  }
+  // All proposals use the same snapshot: scarce supply and limited headroom are shared fairly.
+  const sourceScale = new Map<string, number>(),
+    targetScale = new Map<string, number>();
+  for (const [id, total] of outgoing) {
+    const n = nodes.get(id)!;
+    sourceScale.set(id, Math.min(1, Math.max(0, n.currentEnergy - n.activationThreshold) / total));
+  }
+  for (const [id, total] of incoming) {
+    const n = nodes.get(id)!;
+    targetScale.set(id, Math.min(1, (n.maxEnergy - n.currentEnergy) / total));
+  }
+  for (const p of proposals) {
+    const amount = p.amount * Math.min(sourceScale.get(p.from.id)!, targetScale.get(p.to.id)!);
+    p.from.currentEnergy -= amount;
+    p.to.currentEnergy += amount * p.gain;
+    p.edge.energyFlow = amount * p.sign;
+    p.edge.active = amount > 0.01;
   }
 }
 
@@ -411,7 +481,13 @@ const OVERCHARGE_BUILDUP = OVERCHARGE.buildup;
 const OVERCHARGE_DURATION = OVERCHARGE.duration;
 const OVERCHARGE_COOLDOWN = OVERCHARGE.cooldown;
 const OVERCHARGEABLE: Set<NodeType> = new Set([
-  'turret', 'mine', 'shield', 'tesla', 'factory', 'magnet', 'energy',
+  'turret',
+  'mine',
+  'shield',
+  'tesla',
+  'factory',
+  'magnet',
+  'energy',
 ]);
 
 export function updateOvercharge(state: GameState): void {
@@ -446,16 +522,17 @@ export function updateOvercharge(state: GameState): void {
         sfxOvercharge();
         // 超载触发粒子爆发
         for (let i = 0; i < 8; i++) {
-          const angle = rand() * Math.PI * 2;
-          const speed = 1 + rand() * 3;
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 1 + Math.random() * 3;
           state.particles.push({
-            x: node.x, y: node.y,
+            x: node.x,
+            y: node.y,
             vx: Math.cos(angle) * speed,
             vy: Math.sin(angle) * speed,
-            life: 0.6 + rand() * 0.4,
+            life: 0.6 + Math.random() * 0.4,
             maxLife: 1.0,
             color: COLORS.text.primary,
-            size: 2 + rand() * 3,
+            size: 2 + Math.random() * 3,
           });
         }
       }
@@ -470,12 +547,29 @@ export function isOvercharged(node: GameNode): boolean {
 }
 
 // ===== 节点效果处理 =====
+export function energyTerrainMultiplier(state:GameState,point:{x:number;y:number}):number {
+  return (isPointInNebulaPolygon(state,point.x,point.y)?TERRAIN_SYNERGY.nebulaEnergyBonus:1)*(isWormholeHubActive(state,point.x,point.y,['energy'])?TERRAIN_SYNERGY.wormholeEnergyHubBonus:1);
+}
+export function energyStationProduction(state:GameState,node:GameNode):number {
+  return energyStationOutput(node.level,node.evolved)*energyTerrainMultiplier(state,node);
+}
 export function processNodeEffects(state: GameState, bonuses?: TechBonuses): void {
   const b = bonuses || { damageMultiplier: 1, rangeMultiplier: 1, coreProduction: 0 };
 
   // V1.2.6：构建本 tick 敌人空间索引
   enemyGrid.build(state.enemies);
   gridReady = true;
+
+  const reservations = new Map<string, number>(),
+    enemyIndex = new Map(state.enemies.map((e) => [e.id, e]));
+  for (const projectile of state.projectiles) {
+    const target = enemyIndex.get(projectile.targetId);
+    if (target)
+      reservations.set(
+        target.id,
+        (reservations.get(target.id) ?? 0) + projectile.damage * (1 - target.damageReduction),
+      );
+  }
 
   // 重置敌人速度（磁力塔每 tick 重新施加减速）
   for (const enemy of state.enemies) {
@@ -491,13 +585,17 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
     const ev = node.evolved;
 
     switch (node.type) {
+      case 'core':
+        node.currentEnergy=Math.min(node.maxEnergy,node.currentEnergy+b.coreProduction);
+        break;
       case 'mine':
-        // 矿机产出资源 — 超载: 3倍 | 进化(精炼厂): +邻居数量奖励 + 产出晶体
+        // 前沿按矿脉效率结算；历史模式保留超载与精炼联动
         {
-          let output = (oc ? ECONOMY.mineOutputOvercharge : ECONOMY.mineOutputBase) * node.level;
-          if (ev) {
+          let output = state.frontier ? recordMining(state,node) : (oc ? ECONOMY.mineOutputOvercharge : ECONOMY.mineOutputBase) * node.level;
+          if (state.frontier && output === 0) break;
+          if (ev && !state.frontier) {
             const neighbors = state.edges.filter(
-              e => e.sourceId === node.id || e.targetId === node.id
+              (e) => e.sourceId === node.id || e.targetId === node.id,
             ).length;
             output += neighbors * node.level;
             // 进化矿机额外产出晶体
@@ -508,20 +606,37 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         node.currentEnergy -= ENERGY_COSTS.mine;
         break;
       case 'turret':
-        // 炮塔 — 进化(狙击炮): 射程翻倍+穿透 | 超载: 双发
-        fireTurret(state, node, b.damageMultiplier, b.rangeMultiplier * (ev ? 2 : 1), ev);
-        if (oc) fireTurret(state, node, b.damageMultiplier, b.rangeMultiplier * (ev ? 2 : 1), ev);
-        node.currentEnergy -= oc ? ENERGY_COSTS.turret.oc : ENERGY_COSTS.turret.n;
+        // 炮塔 — 进化聚能炮进行范围打击；超载双发
+        if (
+          fireTurret(
+            state,
+            node,
+            b.damageMultiplier,
+            b.rangeMultiplier,
+            ev,
+            reservations,
+          )
+        ) {
+          const doubleShot =
+            oc &&
+            fireTurret(
+              state,
+              node,
+              b.damageMultiplier,
+              b.rangeMultiplier,
+              ev,
+              reservations,
+            );
+          node.currentEnergy -= doubleShot ? ENERGY_COSTS.turret.oc : ENERGY_COSTS.turret.n;
+        }
         break;
       case 'energy':
         // 能量站 — 进化(核聚变): 双倍自充+自动充能最低邻居 | 超载: 广播
         {
-          const baseGain = ev ? ENERGY_GAINS.energy.e : ENERGY_GAINS.energy.n;
-          // V1.4.0 星云能量加成
-          const nebulaMult = isPointInNebulaPolygon(state, node.x, node.y) ? TERRAIN_SYNERGY.nebulaEnergyBonus : 1;
-          // V1.4.1 虫洞枢纽：两端虫洞多边形内均有 energy 节点 → 互相 +20%
-          const hubMult = isWormholeHubActive(state, node.x, node.y, ['energy']) ? TERRAIN_SYNERGY.wormholeEnergyHubBonus : 1;
-          node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + baseGain * nebulaMult * hubMult);
+          node.currentEnergy = Math.min(
+            node.maxEnergy,
+            node.currentEnergy + energyStationProduction(state,node),
+          );
         }
         if (ev) evolvedEnergyAssist(state, node);
         if (oc) overchargeEnergyBroadcast(state, node);
@@ -548,8 +663,8 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         {
           const interval = oc ? 2 : 4;
           if (state.tick % interval === 0) {
-            factoryAttack(state, node, b.damageMultiplier, b.rangeMultiplier, ev);
-            node.currentEnergy -= ENERGY_COSTS.factory;
+            if (factoryAttack(state, node, b.damageMultiplier, b.rangeMultiplier, ev))
+              node.currentEnergy -= ENERGY_COSTS.factory;
           }
         }
         break;
@@ -566,6 +681,10 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         }
         break;
       case 'repair':
+        {
+          const range=oc?(ev?COMBAT.repairPulse.range.e:COMBAT.repairPulse.range.n):(ev?COMBAT.repair.range.e:COMBAT.repair.range.n);
+          if(!state.nodes.some(n=>n.id!==node.id&&n.owner===node.owner&&n.status!=='destroyed'&&n.hp<n.maxHp&&dist(n,node)<=range))break;
+        }
         // 维修站 — 进化(纳米工坊): 双倍修复+更大范围 | 超载: 全力修复脉冲
         if (oc) overchargeRepairPulse(state, node, ev);
         else repairNearbyNodes(state, node, ev);
@@ -574,8 +693,18 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
       case 'sniper':
         // 狙击手 — 每3tick开一枪 | 进化(死神): 击杀溅射 | 超载: 3倍暴击
         if (state.tick % 3 === 0) {
-          fireSniper(state, node, b.damageMultiplier, b.rangeMultiplier * (ev ? 1.5 : 1), ev, oc);
-          node.currentEnergy -= oc ? ENERGY_COSTS.sniper.oc : ENERGY_COSTS.sniper.n;
+          if (
+            fireSniper(
+              state,
+              node,
+              b.damageMultiplier,
+              b.rangeMultiplier,
+              ev,
+              oc,
+              reservations,
+            )
+          )
+            node.currentEnergy -= oc ? ENERGY_COSTS.sniper.oc : ENERGY_COSTS.sniper.n;
         }
         break;
       case 'buffer':
@@ -612,7 +741,7 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
         break;
       case 'echo':
         // 回声塔 — 复制相邻节点能力 | 进化(回响核心): 同时复制全部 | 超载: 增强效果
-        echoMimic(state, node, b, ev, oc);
+        echoMimic(state, node, b, ev, oc, reservations);
         node.currentEnergy -= ENERGY_COSTS.echo;
         break;
       case 'toxin':
@@ -638,18 +767,23 @@ export function processNodeEffects(state: GameState, bonuses?: TechBonuses): voi
   gridReady = false;
 }
 
-function fireTurret(state: GameState, turret: GameNode, damageMult: number, rangeMult: number, evolved: boolean = false): void {
-  if (state.enemies.length === 0) return;
+function fireTurret(
+  state: GameState,
+  turret: GameNode,
+  damageMult: number,
+  rangeMult: number,
+  evolved: boolean,
+  reservations: Map<string, number>,
+): boolean {
+  if (state.enemies.length === 0) return false;
 
-  // V1.4.0 靠 asteroid 多边形边缘 → 射程加成
-  const edgeBonus = isNearAsteroidPolygonEdge(state, turret.x, turret.y, TERRAIN_SYNERGY.asteroidEdgeRange)
-    ? TERRAIN_SYNERGY.asteroidTurretRangeBonus : 1;
-  const range = COMBAT.turret.rangeBase * turret.level * rangeMult * edgeBonus;
-  let closest: { enemy: typeof state.enemies[0]; d: number } | null = null;
+  const range = turretAttackRange(state,turret,rangeMult);
+  let closest: { enemy: (typeof state.enemies)[0]; d: number } | null = null;
 
   // V1.2.6：网格查询替代全表扫描
-  const candidates = queryEnemies(turret.x, turret.y, range, state.enemies);
+  const candidates = queryEnemies(state, turret.x, turret.y, range);
   for (const enemy of candidates) {
+    if (enemy.hp <= (reservations.get(enemy.id) ?? 0) || !hasFiringLine(state,turret,enemy)) continue;
     const d = dist(turret, enemy);
     if (d <= range && (!closest || d < closest.d)) {
       closest = { enemy, d };
@@ -657,33 +791,44 @@ function fireTurret(state: GameState, turret: GameNode, damageMult: number, rang
   }
 
   if (closest) {
+    turret.facing = Math.atan2(closest.enemy.y - turret.y, closest.enemy.x - turret.x);
     sfxShoot();
     const damage = COMBAT.turret.damageBase * turret.level * damageMult;
-    // 进化(狙击炮): AoE 穿透，对目标周围 evolvedAoeRadius 内敌人也造成伤害
+    // 进化聚能炮: 范围溅射，对目标周围 evolvedAoeRadius 内敌人也造成伤害
     if (evolved) {
       const aoe = COMBAT.turret.evolvedAoeRadius;
-      const aoeCands = queryEnemies(closest.enemy.x, closest.enemy.y, aoe, state.enemies);
+      const aoeCands = queryEnemies(state, closest.enemy.x, closest.enemy.y, aoe);
       for (const e of aoeCands) {
         if (dist(closest.enemy, e) <= aoe) {
-          e.hp -= damage;
+          damageEnemy(e, damage);
           e.hitFlash = 1;
         }
       }
     }
-    state.projectiles.push({
-      x: turret.x,
-      y: turret.y,
-      targetId: closest.enemy.id,
-      speed: evolved ? 12 : 8,
-      damage: evolved ? 0 : damage, // 进化版伤害已直接结算
-      color: evolved ? '#ff8800' : turret.glowColor,
-    });
+    if (!evolved)
+      reservations.set(
+        closest.enemy.id,
+        (reservations.get(closest.enemy.id) ?? 0) + damage * (1 - closest.enemy.damageReduction),
+      );
+    if (evolved) emitStrike(state, [turret, closest.enemy], '#efb08d', 'beam');
+    else
+      state.projectiles.push({
+        x: turret.x,
+        y: turret.y,
+        targetId: closest.enemy.id,
+        speed: 8,
+        damage,
+        color: turret.glowColor,
+      });
+    return true;
   }
+  return false;
 }
 
 function healNearbyNodes(state: GameState, shield: GameNode, evolved: boolean = false): void {
   const range = evolved ? COMBAT.shield.range.e : COMBAT.shield.range.n;
-  const healAmount = (evolved ? COMBAT.shield.healAmount.e : COMBAT.shield.healAmount.n) * shield.level;
+  const healAmount =
+    (evolved ? COMBAT.shield.healAmount.e : COMBAT.shield.healAmount.n) * shield.level;
   for (const node of state.nodes) {
     if (node.id === shield.id || node.status === 'destroyed') continue;
     if (dist(shield, node) <= range) {
@@ -698,7 +843,8 @@ function healNearbyNodes(state: GameState, shield: GameNode, evolved: boolean = 
 // ===== 维修站修复 =====
 function repairNearbyNodes(state: GameState, repair: GameNode, evolved: boolean = false): void {
   const range = evolved ? COMBAT.repair.range.e : COMBAT.repair.range.n;
-  const healAmount = (evolved ? COMBAT.repair.healAmount.e : COMBAT.repair.healAmount.n) * repair.level;
+  const healAmount =
+    (evolved ? COMBAT.repair.healAmount.e : COMBAT.repair.healAmount.n) * repair.level;
   for (const node of state.nodes) {
     if (node.id === repair.id || node.status === 'destroyed') continue;
     if (dist(repair, node) <= range) {
@@ -713,7 +859,8 @@ function repairNearbyNodes(state: GameState, repair: GameNode, evolved: boolean 
 /** 超载维修站：大范围强力修复脉冲 */
 function overchargeRepairPulse(state: GameState, repair: GameNode, evolved: boolean): void {
   const range = evolved ? COMBAT.repairPulse.range.e : COMBAT.repairPulse.range.n;
-  const healAmount = (evolved ? COMBAT.repairPulse.healAmount.e : COMBAT.repairPulse.healAmount.n) * repair.level;
+  const healAmount =
+    (evolved ? COMBAT.repairPulse.healAmount.e : COMBAT.repairPulse.healAmount.n) * repair.level;
   for (const node of state.nodes) {
     if (node.id === repair.id || node.status === 'destroyed') continue;
     if (dist(repair, node) <= range) {
@@ -725,11 +872,18 @@ function overchargeRepairPulse(state: GameState, repair: GameNode, evolved: bool
   }
 }
 
-
 // ===== 雷达锁定伤害 =====
-function radarLockDamage(state: GameState, radar: GameNode, damageMult: number, evolved: boolean, overcharged: boolean): void {
-  let range = overcharged ? COMBAT.radar.range.oc : (evolved ? COMBAT.radar.range.e : COMBAT.radar.range.n);
-  const baseDmg = (overcharged ? 8 : (evolved ? 5 : 3)) * radar.level * damageMult;
+export function radarField(
+  state: GameState,
+  radar: GameNode,
+  evolved: boolean = radar.evolved,
+  overcharged: boolean = isOvercharged(radar),
+): { range: number; magnetLink: GameNode | undefined } {
+  let range = overcharged
+    ? COMBAT.radar.range.oc
+    : evolved
+      ? COMBAT.radar.range.e
+      : COMBAT.radar.range.n;
 
   // V1.2.3 联动 magnet × radar：直连同方 magnet 时检测范围 +30%
   let magnetLink: GameNode | undefined;
@@ -738,7 +892,7 @@ function radarLockDamage(state: GameState, radar: GameNode, damageMult: number, 
     if (edge.sourceId === radar.id) otherId = edge.targetId;
     else if (edge.targetId === radar.id) otherId = edge.sourceId;
     if (!otherId) continue;
-    const other = state.nodes.find(n => n.id === otherId);
+    const other = state.nodes.find((n) => n.id === otherId);
     if (!other || other.status === 'destroyed') continue;
     if (other.type !== 'magnet') continue;
     if (other.owner !== radar.owner) continue;
@@ -747,34 +901,59 @@ function radarLockDamage(state: GameState, radar: GameNode, damageMult: number, 
   }
   if (magnetLink) {
     range *= 1 + COMBAT.radar.synergyMagnetRangeBoost;
-    markSynergy(state, 'magnet-radar', [radar, magnetLink]);
   }
+  return { range, magnetLink };
+}
+
+function radarLockDamage(
+  state: GameState,
+  radar: GameNode,
+  damageMult: number,
+  evolved: boolean,
+  overcharged: boolean,
+): void {
+  const { range, magnetLink } = radarField(state, radar, evolved, overcharged);
+  if (magnetLink) markSynergy(state, 'magnet-radar', [radar, magnetLink]);
+  const baseDmg =
+    (overcharged
+      ? COMBAT.radar.damage.oc
+      : evolved
+        ? COMBAT.radar.damage.e
+        : COMBAT.radar.damage.n) *
+    radar.level *
+    damageMult;
 
   // V1.2.6：网格查询替代全表扫描
-  const candidates = queryEnemies(radar.x, radar.y, range, state.enemies);
+  const candidates = queryEnemies(state, radar.x, radar.y, range);
   for (const enemy of candidates) {
     if (dist(radar, enemy) > range) continue;
     let dmg = baseDmg;
     // 进化: 隐身敌人受双倍
     if (evolved && enemy.type === 'stealth') dmg *= 2;
-    enemy.hp -= dmg;
+    damageEnemy(enemy, dmg);
   }
 }
 
 // ===== 自爆核爆 =====
-function kamikazeDetonate(state: GameState, node: GameNode, damageMult: number, evolved: boolean): void {
+function kamikazeDetonate(
+  state: GameState,
+  node: GameNode,
+  damageMult: number,
+  evolved: boolean,
+): void {
   const blastRadius = evolved ? COMBAT.kamikaze.blastRadius.e : COMBAT.kamikaze.blastRadius.n;
-  const damage = (evolved ? COMBAT.kamikaze.damage.e : COMBAT.kamikaze.damage.n) * node.level * damageMult;
+  const damage =
+    (evolved ? COMBAT.kamikaze.damage.e : COMBAT.kamikaze.damage.n) * node.level * damageMult;
 
   // V1.2.6：网格查询替代全表扫描
-  const candidates = queryEnemies(node.x, node.y, blastRadius, state.enemies);
+  const candidates = queryEnemies(state, node.x, node.y, blastRadius);
   for (const enemy of candidates) {
     if (enemy.hp <= 0) continue;
     const d = dist(node, enemy);
     if (d <= blastRadius) {
       // 距离越近伤害越高
       const falloff = 1 - (d / blastRadius) * COMBAT.kamikaze.falloffMax;
-      enemy.hp -= damage * falloff;
+      damageEnemy(enemy, damage * falloff);
       enemy.hitFlash = 1;
     }
   }
@@ -792,26 +971,45 @@ function kamikazeDetonate(state: GameState, node: GameNode, damageMult: number, 
   node.currentEnergy = 0;
 
   // 断开所有连线
-  state.edges = state.edges.filter(
-    e => e.sourceId !== node.id && e.targetId !== node.id
-  );
+  state.edges = state.edges.filter((e) => e.sourceId !== node.id && e.targetId !== node.id);
 }
 
 // ===== 电弧链闪电弹跳 =====
-function arcChainLightning(state: GameState, arc: GameNode, damageMult: number, evolved: boolean, overcharged: boolean): void {
+function arcChainLightning(
+  state: GameState,
+  arc: GameNode,
+  damageMult: number,
+  evolved: boolean,
+  overcharged: boolean,
+): void {
   if (state.enemies.length === 0) return;
 
-  const range = overcharged ? COMBAT.arc.range.oc : (evolved ? COMBAT.arc.range.e : COMBAT.arc.range.n);
-  const baseDmg = (overcharged ? COMBAT.arc.damage.oc : (evolved ? COMBAT.arc.damage.e : COMBAT.arc.damage.n)) * arc.level * damageMult;
-  const maxBounces = overcharged ? COMBAT.arc.maxBounces.oc : (evolved ? COMBAT.arc.maxBounces.e : COMBAT.arc.maxBounces.n);
+  const range = overcharged
+    ? COMBAT.arc.range.oc
+    : evolved
+      ? COMBAT.arc.range.e
+      : COMBAT.arc.range.n;
+  const baseDmg =
+    (overcharged ? COMBAT.arc.damage.oc : evolved ? COMBAT.arc.damage.e : COMBAT.arc.damage.n) *
+    arc.level *
+    damageMult;
+  const maxBounces = overcharged
+    ? COMBAT.arc.maxBounces.oc
+    : evolved
+      ? COMBAT.arc.maxBounces.e
+      : COMBAT.arc.maxBounces.n;
   const bounceRange = evolved ? COMBAT.arc.bounceRange.e : COMBAT.arc.bounceRange.n;
-  const decay = overcharged ? COMBAT.arc.decay.oc : (evolved ? COMBAT.arc.decay.e : COMBAT.arc.decay.n);
+  const decay = overcharged
+    ? COMBAT.arc.decay.oc
+    : evolved
+      ? COMBAT.arc.decay.e
+      : COMBAT.arc.decay.n;
 
   // 找第一个目标（范围内最近的）
-  let firstTarget: typeof state.enemies[0] | null = null;
+  let firstTarget: (typeof state.enemies)[0] | null = null;
   let minDist = Infinity;
   // V1.2.6：网格查询替代全表扫描
-  const arcCands = queryEnemies(arc.x, arc.y, range, state.enemies);
+  const arcCands = queryEnemies(state, arc.x, arc.y, range);
   for (const enemy of arcCands) {
     if (enemy.hp <= 0) continue;
     const d = dist(arc, enemy);
@@ -826,18 +1024,20 @@ function arcChainLightning(state: GameState, arc: GameNode, damageMult: number, 
   const hit = new Set<string>();
   let current = firstTarget;
   let dmg = baseDmg;
+  const path = [{ x: arc.x, y: arc.y }];
 
   for (let bounce = 0; bounce <= maxBounces; bounce++) {
-    current.hp -= dmg;
+    path.push({ x: current.x, y: current.y });
+    damageEnemy(current, dmg);
     current.hitFlash = 1;
     hit.add(current.id);
     dmg *= decay;
 
     // 寻找下一个弹跳目标
-    let next: typeof state.enemies[0] | null = null;
+    let next: (typeof state.enemies)[0] | null = null;
     let nextDist = Infinity;
     // V1.2.6：网格查询（bounceRange 半径内候选）
-    const bounceCands = queryEnemies(current.x, current.y, bounceRange, state.enemies);
+    const bounceCands = queryEnemies(state, current.x, current.y, bounceRange);
     for (const enemy of bounceCands) {
       if (enemy.hp <= 0 || hit.has(enemy.id)) continue;
       const d = dist(current, enemy);
@@ -849,32 +1049,54 @@ function arcChainLightning(state: GameState, arc: GameNode, damageMult: number, 
     if (!next) break;
     current = next;
   }
+  emitStrike(state, path, arc.glowColor, 'arc');
 }
 
 // ===== 毒雾区域伤害 =====
-function toxinCloud(state: GameState, toxin: GameNode, damageMult: number, evolved: boolean, overcharged: boolean): void {
+function toxinCloud(
+  state: GameState,
+  toxin: GameNode,
+  damageMult: number,
+  evolved: boolean,
+  overcharged: boolean,
+): void {
   if (state.enemies.length === 0) return;
 
-  const range = overcharged ? COMBAT.toxin.range.oc : (evolved ? COMBAT.toxin.range.e : COMBAT.toxin.range.n);
-  const dmg = (overcharged ? COMBAT.toxin.damage.oc : (evolved ? COMBAT.toxin.damage.e : COMBAT.toxin.damage.n)) * toxin.level * damageMult;
-  const slowFactor = overcharged ? COMBAT.toxin.slowFactor.oc : (evolved ? COMBAT.toxin.slowFactor.e : COMBAT.toxin.slowFactor.n);
+  const range = overcharged
+    ? COMBAT.toxin.range.oc
+    : evolved
+      ? COMBAT.toxin.range.e
+      : COMBAT.toxin.range.n;
+  const dmg =
+    (overcharged
+      ? COMBAT.toxin.damage.oc
+      : evolved
+        ? COMBAT.toxin.damage.e
+        : COMBAT.toxin.damage.n) *
+    toxin.level *
+    damageMult;
+  const slowFactor = overcharged
+    ? COMBAT.toxin.slowFactor.oc
+    : evolved
+      ? COMBAT.toxin.slowFactor.e
+      : COMBAT.toxin.slowFactor.n;
 
   // V1.2.6：网格查询替代全表扫描
-  const candidates = queryEnemies(toxin.x, toxin.y, range, state.enemies);
+  const candidates = queryEnemies(state, toxin.x, toxin.y, range);
   for (const enemy of candidates) {
     if (enemy.hp <= 0) continue;
     if (dist(toxin, enemy) > range) continue;
 
-    enemy.hp -= dmg;
+    damageEnemy(enemy, dmg);
     enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * slowFactor);
 
     // 进化: 中毒的敌人死亡时扩散毒素到 spreadRange 内其他敌人
     if (evolved && enemy.hp <= 0) {
-      const spreadCands = queryEnemies(enemy.x, enemy.y, COMBAT.toxin.spreadRange, state.enemies);
+      const spreadCands = queryEnemies(state, enemy.x, enemy.y, COMBAT.toxin.spreadRange);
       for (const other of spreadCands) {
         if (other === enemy || other.hp <= 0) continue;
         if (dist(enemy, other) <= COMBAT.toxin.spreadRange) {
-          other.hp -= dmg * COMBAT.toxin.spreadDamageRatio;
+          damageEnemy(other, dmg * COMBAT.toxin.spreadDamageRatio);
         }
       }
     }
@@ -882,7 +1104,14 @@ function toxinCloud(state: GameState, toxin: GameNode, damageMult: number, evolv
 }
 
 // ===== 回声塔复制能力 =====
-function echoMimic(state: GameState, echo: GameNode, b: TechBonuses, evolved: boolean, overcharged: boolean): void {
+function echoMimic(
+  state: GameState,
+  echo: GameNode,
+  b: TechBonuses,
+  evolved: boolean,
+  overcharged: boolean,
+  reservations: Map<string, number>,
+): void {
   // 找到相邻节点
   const neighbors: GameNode[] = [];
   const nodeMap = new Map<string, GameNode>();
@@ -895,7 +1124,12 @@ function echoMimic(state: GameState, echo: GameNode, b: TechBonuses, evolved: bo
     else if (edge.targetId === echo.id) neighborId = edge.sourceId;
     if (!neighborId) continue;
     const neighbor = nodeMap.get(neighborId);
-    if (neighbor && neighbor.status !== 'destroyed' && neighbor.type !== 'echo' && neighbor.type !== 'core') {
+    if (
+      neighbor &&
+      neighbor.status !== 'destroyed' &&
+      neighbor.type !== 'echo' &&
+      neighbor.type !== 'core'
+    ) {
       neighbors.push(neighbor);
     }
   }
@@ -917,34 +1151,82 @@ function echoMimic(state: GameState, echo: GameNode, b: TechBonuses, evolved: bo
     };
 
     switch (target.type) {
-      case 'turret': fireTurret(state, proxy, dmg, rng, target.evolved); break;
-      case 'shield': healNearbyNodes(state, proxy, target.evolved); break;
-      case 'tesla': teslaDamageEnemies(state, proxy, dmg, target.evolved); break;
-      case 'repair': repairNearbyNodes(state, proxy, target.evolved); break;
-      case 'sniper': fireSniper(state, proxy, dmg, rng, target.evolved, false); break;
-      case 'buffer': bufferBoostNearby(state, proxy, target.evolved); break;
-      case 'interceptor': fireInterceptor(state, proxy, dmg, target.evolved, false); break;
-      case 'radar': radarLockDamage(state, proxy, dmg, target.evolved, false); break;
-      case 'magnet': magnetSlowEnemies(state, proxy, rng); break;
-      case 'blackhole': blackholeGravity(state, proxy, dmg, target.evolved, false); break;
-      case 'collector': collectorHarvest(state, proxy, target.evolved, false); break;
+      case 'turret':
+        fireTurret(state, proxy, dmg, rng, target.evolved, reservations);
+        break;
+      case 'shield':
+        healNearbyNodes(state, proxy, target.evolved);
+        break;
+      case 'tesla':
+        teslaDamageEnemies(state, proxy, dmg, target.evolved);
+        break;
+      case 'repair':
+        repairNearbyNodes(state, proxy, target.evolved);
+        break;
+      case 'sniper':
+        fireSniper(state, proxy, dmg, rng, target.evolved, false, reservations);
+        break;
+      case 'buffer':
+        bufferBoostNearby(state, proxy, target.evolved);
+        break;
+      case 'interceptor':
+        fireInterceptor(state, proxy, dmg, target.evolved, false);
+        break;
+      case 'radar':
+        radarLockDamage(state, proxy, dmg, target.evolved, false);
+        break;
+      case 'magnet':
+        magnetSlowEnemies(state, proxy, rng);
+        break;
+      case 'blackhole':
+        blackholeGravity(state, proxy, dmg, target.evolved, false);
+        break;
+      case 'collector':
+        collectorHarvest(state, proxy, target.evolved, false);
+        break;
       // portal, mine, trap 等特殊类型不复制
-      default: break;
+      default:
+        break;
     }
   }
 }
 
 // ===== 黑洞引力碾压 =====
-function blackholeGravity(state: GameState, bh: GameNode, damageMult: number, evolved: boolean, overcharged: boolean): void {
+function blackholeGravity(
+  state: GameState,
+  bh: GameNode,
+  damageMult: number,
+  evolved: boolean,
+  overcharged: boolean,
+): void {
   if (state.enemies.length === 0) return;
 
-  const range = overcharged ? COMBAT.blackhole.range.oc : (evolved ? COMBAT.blackhole.range.e : COMBAT.blackhole.range.n);
-  const crushRange = overcharged ? COMBAT.blackhole.crushRange.oc : (evolved ? COMBAT.blackhole.crushRange.e : COMBAT.blackhole.crushRange.n);
-  const pullStr = overcharged ? COMBAT.blackhole.pullStrength.oc : (evolved ? COMBAT.blackhole.pullStrength.e : COMBAT.blackhole.pullStrength.n);
-  const crushDmg = (overcharged ? COMBAT.blackhole.crushDamage.oc : (evolved ? COMBAT.blackhole.crushDamage.e : COMBAT.blackhole.crushDamage.n)) * bh.level * damageMult;
+  const range = overcharged
+    ? COMBAT.blackhole.range.oc
+    : evolved
+      ? COMBAT.blackhole.range.e
+      : COMBAT.blackhole.range.n;
+  const crushRange = overcharged
+    ? COMBAT.blackhole.crushRange.oc
+    : evolved
+      ? COMBAT.blackhole.crushRange.e
+      : COMBAT.blackhole.crushRange.n;
+  const pullStr = overcharged
+    ? COMBAT.blackhole.pullStrength.oc
+    : evolved
+      ? COMBAT.blackhole.pullStrength.e
+      : COMBAT.blackhole.pullStrength.n;
+  const crushDmg =
+    (overcharged
+      ? COMBAT.blackhole.crushDamage.oc
+      : evolved
+        ? COMBAT.blackhole.crushDamage.e
+        : COMBAT.blackhole.crushDamage.n) *
+    bh.level *
+    damageMult;
 
   // V1.2.6：网格查询替代全表扫描
-  const candidates = queryEnemies(bh.x, bh.y, range, state.enemies);
+  const candidates = queryEnemies(state, bh.x, bh.y, range);
   for (const enemy of candidates) {
     if (enemy.hp <= 0) continue;
     const d = dist(bh, enemy);
@@ -954,32 +1236,48 @@ function blackholeGravity(state: GameState, bh: GameNode, damageMult: number, ev
     const dx = bh.x - enemy.x;
     const dy = bh.y - enemy.y;
     const factor = pullStr * (1 - d / range);
-    enemy.x += (dx / d) * factor * 2;
-    enemy.y += (dy / d) * factor * 2;
+    displaceEnemy(state, enemy, (dx / d) * factor * 2, (dy / d) * factor * 2);
 
     // 碾压伤害 — 中心区域
     if (d <= crushRange) {
       let dmg = crushDmg * (1 - d / crushRange); // 越近伤害越高
       // 进化: 极近冗伤害
       if (evolved && d < COMBAT.blackhole.closeDistance) dmg *= COMBAT.blackhole.closeDamageMult;
-      enemy.hp -= dmg;
+      damageEnemy(enemy, dmg);
     }
   }
 }
 
 // ===== 传送门传送 =====
-function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, overcharged: boolean): void {
+function portalTeleport(
+  state: GameState,
+  portal: GameNode,
+  evolved: boolean,
+  overcharged: boolean,
+): void {
   if (state.enemies.length === 0) return;
 
-  const range = overcharged ? COMBAT.portal.range.oc : (evolved ? COMBAT.portal.range.e : COMBAT.portal.range.n);
-  const pushDist = overcharged ? COMBAT.portal.pushDist.oc : (evolved ? COMBAT.portal.pushDist.e : COMBAT.portal.pushDist.n);
-  const maxTargets = overcharged ? COMBAT.portal.maxTargets.oc : (evolved ? COMBAT.portal.maxTargets.e : COMBAT.portal.maxTargets.n);
+  const range = overcharged
+    ? COMBAT.portal.range.oc
+    : evolved
+      ? COMBAT.portal.range.e
+      : COMBAT.portal.range.n;
+  const pushDist = overcharged
+    ? COMBAT.portal.pushDist.oc
+    : evolved
+      ? COMBAT.portal.pushDist.e
+      : COMBAT.portal.pushDist.n;
+  const maxTargets = overcharged
+    ? COMBAT.portal.maxTargets.oc
+    : evolved
+      ? COMBAT.portal.maxTargets.e
+      : COMBAT.portal.maxTargets.n;
 
   // 找范围内可传送的敌人 (排除传送冷却中的)
   // V1.2.6：先网格粗筛再精筛
-  const queryPool = queryEnemies(portal.x, portal.y, range, state.enemies);
+  const queryPool = queryEnemies(state, portal.x, portal.y, range);
   const candidates = queryPool.filter(
-    e => e.hp > 0 && e.teleportCooldown <= 0 && dist(portal, e) <= range
+    (e) => e.hp > 0 && e.teleportCooldown <= 0 && dist(portal, e) <= range,
   );
   if (candidates.length === 0) return;
 
@@ -996,7 +1294,7 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
       if (edge.sourceId === portal.id) otherId = edge.targetId;
       else if (edge.targetId === portal.id) otherId = edge.sourceId;
       if (!otherId) continue;
-      const other = state.nodes.find(n => n.id === otherId);
+      const other = state.nodes.find((n) => n.id === otherId);
       if (!other || other.status === 'destroyed') continue;
       if (other.type !== 'interceptor') continue;
       if (other.owner !== portal.owner) continue;
@@ -1006,13 +1304,18 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
 
   for (const enemy of targets) {
     // 联动射击：在敌人被传送前发射，目标锁定该敌人 id（传送后投射物会追到新位置）
-    if (synergyInterceptors.length > 0) markSynergy(state, 'portal-interceptor', [portal, ...synergyInterceptors]);
+    if (synergyInterceptors.length > 0)
+      markSynergy(state, 'portal-interceptor', [portal, ...synergyInterceptors]);
     for (const inter of synergyInterceptors) {
-      const dmg = COMBAT.interceptor.damage * inter.level * COMBAT.portal.synergyInterceptorDamageMult;
+      const dmg =
+        COMBAT.interceptor.damage * inter.level * COMBAT.portal.synergyInterceptorDamageMult;
       state.projectiles.push({
-        x: inter.x, y: inter.y,
-        targetId: enemy.id, speed: 12,
-        damage: dmg, color: '#ffaaff',
+        x: inter.x,
+        y: inter.y,
+        targetId: enemy.id,
+        speed: 12,
+        damage: dmg,
+        color: '#ffaaff',
       });
     }
 
@@ -1026,12 +1329,20 @@ function portalTeleport(state: GameState, portal: GameNode, evolved: boolean, ov
     enemy.x = Math.max(0, Math.min(state.worldWidth, enemy.x));
     enemy.y = Math.max(0, Math.min(state.worldHeight, enemy.y));
     enemy.targetNodeId = null; // 重新寻路
-    enemy.teleportCooldown = evolved ? COMBAT.portal.teleportCooldown.e : COMBAT.portal.teleportCooldown.n; // 传送免疫冷却
+    enemy.teleportCooldown = evolved
+      ? COMBAT.portal.teleportCooldown.e
+      : COMBAT.portal.teleportCooldown.n; // 传送免疫冷却
   }
 }
 
 // ===== 拦截器点防御 =====
-function fireInterceptor(state: GameState, interceptor: GameNode, damageMult: number, evolved: boolean, overcharged: boolean): void {
+function fireInterceptor(
+  state: GameState,
+  interceptor: GameNode,
+  damageMult: number,
+  evolved: boolean,
+  overcharged: boolean,
+): void {
   if (state.enemies.length === 0) return;
 
   const range = evolved ? COMBAT.interceptor.range.e : COMBAT.interceptor.range.n;
@@ -1040,13 +1351,17 @@ function fireInterceptor(state: GameState, interceptor: GameNode, damageMult: nu
   if (overcharged) {
     // 超载: 攻击范围内所有敌人
     // V1.2.6：网格查询
-    const ocCands = queryEnemies(interceptor.x, interceptor.y, range, state.enemies);
+    const ocCands = queryEnemies(state, interceptor.x, interceptor.y, range);
     for (const enemy of ocCands) {
       if (dist(interceptor, enemy) <= range) {
+        interceptor.facing = Math.atan2(enemy.y - interceptor.y, enemy.x - interceptor.x);
         state.projectiles.push({
-          x: interceptor.x, y: interceptor.y,
-          targetId: enemy.id, speed: 10,
-          damage, color: '#aaccff',
+          x: interceptor.x,
+          y: interceptor.y,
+          targetId: enemy.id,
+          speed: 10,
+          damage,
+          color: '#aaccff',
         });
       }
     }
@@ -1054,11 +1369,11 @@ function fireInterceptor(state: GameState, interceptor: GameNode, damageMult: nu
   }
 
   // 优先攻击离友方节点最近的敌人（保护友军）
-  let bestTarget: typeof state.enemies[0] | null = null;
+  let bestTarget: (typeof state.enemies)[0] | null = null;
   let minDistToNode = Infinity;
 
   // V1.2.6：网格查询
-  const interCands = queryEnemies(interceptor.x, interceptor.y, range, state.enemies);
+  const interCands = queryEnemies(state, interceptor.x, interceptor.y, range);
   for (const enemy of interCands) {
     if (dist(interceptor, enemy) > range) continue;
     for (const node of state.nodes) {
@@ -1072,20 +1387,33 @@ function fireInterceptor(state: GameState, interceptor: GameNode, damageMult: nu
   }
 
   if (bestTarget) {
+    interceptor.facing = Math.atan2(bestTarget.y - interceptor.y, bestTarget.x - interceptor.x);
     state.projectiles.push({
-      x: interceptor.x, y: interceptor.y,
-      targetId: bestTarget.id, speed: 10,
-      damage, color: interceptor.glowColor,
+      x: interceptor.x,
+      y: interceptor.y,
+      targetId: bestTarget.id,
+      speed: 10,
+      damage,
+      color: interceptor.glowColor,
     });
   }
 }
 
 // ===== 采集器收集资源 =====
-function collectorHarvest(state: GameState, collector: GameNode, evolved: boolean, overcharged: boolean): void {
-  const range = overcharged ? COMBAT.collector.range.oc : (evolved ? COMBAT.collector.range.e : COMBAT.collector.range.n);
+function collectorHarvest(
+  state: GameState,
+  collector: GameNode,
+  evolved: boolean,
+  overcharged: boolean,
+): void {
+  const range = overcharged
+    ? COMBAT.collector.range.oc
+    : evolved
+      ? COMBAT.collector.range.e
+      : COMBAT.collector.range.n;
   let nearbyCount = 0;
   // V1.2.6：网格查询
-  const collectCands = queryEnemies(collector.x, collector.y, range, state.enemies);
+  const collectCands = queryEnemies(state, collector.x, collector.y, range);
   for (const enemy of collectCands) {
     if (dist(collector, enemy) <= range) nearbyCount++;
   }
@@ -1099,18 +1427,19 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
     if (edge.sourceId === collector.id) otherId = edge.targetId;
     else if (edge.targetId === collector.id) otherId = edge.sourceId;
     if (!otherId) continue;
-    const other = state.nodes.find(n => n.id === otherId);
+    const other = state.nodes.find((n) => n.id === otherId);
     if (!other || other.status === 'destroyed') continue;
     if (other.type !== 'buffer') continue;
     if (other.owner !== collector.owner) continue;
     bufferLinkCount++;
     linkedBuffers.push(other);
   }
-  const synergyMult = bufferLinkCount > 0 ? (1 + COMBAT.collector.synergyBufferBonus) : 1;
+  const synergyMult = bufferLinkCount > 0 ? 1 + COMBAT.collector.synergyBufferBonus : 1;
   if (bufferLinkCount > 0) markSynergy(state, 'buffer-collector', [collector, ...linkedBuffers]);
 
   const cap = overcharged ? nearbyCount : Math.min(nearbyCount, COMBAT.collector.maxNearbyCap);
-  const output = cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1) * synergyMult;
+  const output =
+    cap * collector.level * (evolved ? COMBAT.collector.evolvedOutputMult : 1) * synergyMult;
   state.resources += Math.floor(output);
 
   // 进化(量子拾荒): crystalThreshold+敌人在范围内时每tick产1晶体
@@ -1127,7 +1456,8 @@ function collectorHarvest(state: GameState, collector: GameNode, evolved: boolea
 // ===== 缓冲器能量增幅 =====
 function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean): void {
   const range = evolved ? COMBAT.buffer.range.e : COMBAT.buffer.range.n;
-  let boost = (evolved ? COMBAT.buffer.boostPerLevel.e : COMBAT.buffer.boostPerLevel.n) * buffer.level;
+  let boost =
+    (evolved ? COMBAT.buffer.boostPerLevel.e : COMBAT.buffer.boostPerLevel.n) * buffer.level;
   // V1.1.8 联动：buffer 直连任一同方 energy 时，boost × synergyEnergyBoostMult
   let energyLinked = false;
   let energyNode: GameNode | undefined;
@@ -1136,7 +1466,7 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
     if (edge.sourceId === buffer.id) otherId = edge.targetId;
     else if (edge.targetId === buffer.id) otherId = edge.sourceId;
     if (!otherId) continue;
-    const other = state.nodes.find(n => n.id === otherId);
+    const other = state.nodes.find((n) => n.id === otherId);
     if (!other || other.status === 'destroyed') continue;
     if (other.type !== 'energy') continue;
     if (other.owner !== buffer.owner) continue;
@@ -1160,7 +1490,9 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
   // → B2 周围同 range 内也获得 boost（互互跨虫洞覆盖）
   const here = findWormholePolygonAt(state, buffer.x, buffer.y);
   if (here && here.linkedId) {
-    const linked = state.terrainPolygons.find(p => p.id === here.linkedId && p.type === 'wormhole');
+    const linked = state.terrainPolygons.find(
+      (p) => p.id === here.linkedId && p.type === 'wormhole',
+    );
     if (linked) {
       const linkedBuffers: GameNode[] = [];
       for (const b2 of state.nodes) {
@@ -1169,7 +1501,15 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
         if (!pointInPolygon(b2.x, b2.y, linked)) continue;
         linkedBuffers.push(b2);
         if (!state.crossWormholeFx) state.crossWormholeFx = [];
-        state.crossWormholeFx.push({ ax: buffer.x, ay: buffer.y, bx: b2.x, by: b2.y, color: '#a8dcff', ttl: 30, kind: 'buffer' });
+        state.crossWormholeFx.push({
+          ax: buffer.x,
+          ay: buffer.y,
+          bx: b2.x,
+          by: b2.y,
+          color: '#a8dcff',
+          ttl: 30,
+          kind: 'buffer',
+        });
         for (const node of state.nodes) {
           if (node.id === buffer.id || node.id === b2.id || node.status === 'destroyed') continue;
           if (node.owner === 'neutral') continue;
@@ -1178,7 +1518,8 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
           }
         }
       }
-      if (linkedBuffers.length > 0) markSynergy(state, 'buffer-wormhole', [buffer, ...linkedBuffers]);
+      if (linkedBuffers.length > 0)
+        markSynergy(state, 'buffer-wormhole', [buffer, ...linkedBuffers]);
     }
   }
 }
@@ -1186,7 +1527,9 @@ function bufferBoostNearby(state: GameState, buffer: GameNode, evolved: boolean)
 /** 超载缓冲器：大范围能量脉冲 + 临时超充 */
 function overchargeBufferPulse(state: GameState, buffer: GameNode, evolved: boolean): void {
   const range = evolved ? COMBAT.bufferPulse.range.e : COMBAT.bufferPulse.range.n;
-  const boost = (evolved ? COMBAT.bufferPulse.boostPerLevel.e : COMBAT.bufferPulse.boostPerLevel.n) * buffer.level;
+  const boost =
+    (evolved ? COMBAT.bufferPulse.boostPerLevel.e : COMBAT.bufferPulse.boostPerLevel.n) *
+    buffer.level;
   for (const node of state.nodes) {
     if (node.id === buffer.id || node.status === 'destroyed') continue;
     if (node.owner === 'neutral') continue;
@@ -1199,18 +1542,24 @@ function overchargeBufferPulse(state: GameState, buffer: GameNode, evolved: bool
 }
 
 // ===== 狙击手远程射击 =====
-function fireSniper(state: GameState, sniper: GameNode, damageMult: number, rangeMult: number, evolved: boolean, overcharged: boolean): void {
-  if (state.enemies.length === 0) return;
+function fireSniper(
+  state: GameState,
+  sniper: GameNode,
+  damageMult: number,
+  rangeMult: number,
+  evolved: boolean,
+  overcharged: boolean,
+  reservations: Map<string, number>,
+): boolean {
+  if (state.enemies.length === 0) return false;
 
-  // V1.4.0 靠 asteroid 多边形边缘 → 射程加成
-  const edgeBonus = isNearAsteroidPolygonEdge(state, sniper.x, sniper.y, TERRAIN_SYNERGY.asteroidEdgeRange)
-    ? TERRAIN_SYNERGY.asteroidTurretRangeBonus : 1;
-  const range = (COMBAT.sniper.rangeBase + sniper.level * COMBAT.sniper.rangePerLevel) * rangeMult * edgeBonus;
-  let target: { enemy: typeof state.enemies[0]; d: number } | null = null;
+  const range = sniperAttackRange(state, sniper, rangeMult);
+  let target: { enemy: (typeof state.enemies)[0]; d: number } | null = null;
 
   // V1.2.6：网格查询替代全表扫描；优先攻击血量最高的敌人（远程狙击策略）
-  const candidates = queryEnemies(sniper.x, sniper.y, range, state.enemies);
+  const candidates = queryEnemies(state, sniper.x, sniper.y, range);
   for (const enemy of candidates) {
+    if (enemy.hp <= (reservations.get(enemy.id) ?? 0) || !hasFiringLine(state,sniper,enemy)) continue;
     const d = dist(sniper, enemy);
     if (d <= range) {
       if (!target || enemy.hp > target.enemy.hp) {
@@ -1219,25 +1568,26 @@ function fireSniper(state: GameState, sniper: GameNode, damageMult: number, rang
     }
   }
 
-  if (!target) return;
+  if (!target) return false;
 
+  sniper.facing = Math.atan2(target.enemy.y - sniper.y, target.enemy.x - sniper.x);
   sfxShoot();
   const baseDamage = COMBAT.sniper.damage * sniper.level * damageMult;
   const damage = overcharged ? baseDamage * COMBAT.sniper.overchargeDamageMult : baseDamage;
 
   // 进化(死神)：击杀时对周围60px内敌人溅射50%伤害
   if (evolved) {
-    target.enemy.hp -= damage;
+    damageEnemy(target.enemy, damage);
     target.enemy.hitFlash = 1;
     if (target.enemy.hp <= 0) {
       // 溅射伤害
       const splashRange = COMBAT.sniper.splashRange;
       const splashDmg = damage * COMBAT.sniper.splashDamageRatio;
-      const splashCands = queryEnemies(target.enemy.x, target.enemy.y, splashRange, state.enemies);
+      const splashCands = queryEnemies(state, target.enemy.x, target.enemy.y, splashRange);
       for (const e of splashCands) {
         if (e.id === target.enemy.id) continue;
         if (dist(target.enemy, e) <= splashRange) {
-          e.hp -= splashDmg;
+          damageEnemy(e, splashDmg);
           e.hitFlash = 0.6;
         }
       }
@@ -1245,21 +1595,35 @@ function fireSniper(state: GameState, sniper: GameNode, damageMult: number, rang
   }
 
   // 发射弹丸
-  state.projectiles.push({
-    x: sniper.x,
-    y: sniper.y,
-    targetId: target.enemy.id,
-    speed: 14,
-    damage: evolved ? 0 : damage,  // 进化版伤害已直接结算
-    color: overcharged ? '#ffcc00' : sniper.glowColor,
-  });
+  if (!evolved)
+    reservations.set(
+      target.enemy.id,
+      (reservations.get(target.enemy.id) ?? 0) + damage * (1 - target.enemy.damageReduction),
+    );
+  if (evolved)
+    emitStrike(state, [sniper, target.enemy], overcharged ? '#e8cc8e' : sniper.glowColor, 'beam');
+  else
+    state.projectiles.push({
+      x: sniper.x,
+      y: sniper.y,
+      targetId: target.enemy.id,
+      speed: 14,
+      damage,
+      color: overcharged ? '#ffcc00' : sniper.glowColor,
+    });
+  return true;
 }
 
 // ===== 连锁塔电网伤害 =====
-function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: number, evolved: boolean = false): void {
+function teslaDamageEnemies(
+  state: GameState,
+  tesla: GameNode,
+  damageMult: number,
+  evolved: boolean = false,
+): void {
   // 查找所有连接到此 tesla 节点的边
   const teslaEdges = state.edges.filter(
-    e => e.sourceId === tesla.id || e.targetId === tesla.id
+    (e) => e.disruptedTimer <= 0 && (e.sourceId === tesla.id || e.targetId === tesla.id),
   );
   if (teslaEdges.length === 0) return;
 
@@ -1274,42 +1638,40 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
   // 收集"二级电弧"段（tesla → relay → relay 的另一邻居）
   type ArcSeg = { a: GameNode; b: GameNode; dmg: number };
   const secondHopSegs: ArcSeg[] = [];
+  const targets = state.enemies.filter((enemy) => enemy.hp > 0 && canDetectEnemy(state, enemy));
 
   for (const edge of teslaEdges) {
     const other = nodeMap.get(edge.sourceId === tesla.id ? edge.targetId : edge.sourceId);
     if (!other || other.status === 'destroyed') continue;
 
-    for (const enemy of state.enemies) {
+    for (const enemy of targets) {
+      if (enemy.hp <= 0) continue;
       const d = pointToSegmentDist(enemy, tesla, other);
       if (d <= hitRange) {
-        enemy.hp -= damage;
+        damageEnemy(enemy, damage);
         enemy.hitFlash = 1;
         hitEnemies.add(enemy.id);
         hitAny = true;
-        if (rand() < 0.3) {
+        if (Math.random() < 0.3) {
           state.particles.push({
-            x: enemy.x + (rand() - 0.5) * 10,
-            y: enemy.y + (rand() - 0.5) * 10,
-            vx: (rand() - 0.5) * 4,
-            vy: (rand() - 0.5) * 4,
-            life: 0.2 + rand() * 0.2,
+            x: enemy.x + (Math.random() - 0.5) * 10,
+            y: enemy.y + (Math.random() - 0.5) * 10,
+            vx: (Math.random() - 0.5) * 4,
+            vy: (Math.random() - 0.5) * 4,
+            life: 0.2 + Math.random() * 0.2,
             maxLife: 0.4,
             color: evolved ? COLORS.text.primary : '#ccff00',
-            size: 2 + rand() * 2,
+            size: 2 + Math.random() * 2,
           });
         }
       }
     }
 
     // 联动：other 是同方 relay → 借道二级延伸
-    if (
-      COMBAT.tesla.synergyRelayHop
-      && other.type === 'relay'
-      && other.owner === tesla.owner
-    ) {
+    if (COMBAT.tesla.synergyRelayHop && other.type === 'relay' && other.owner === tesla.owner) {
       const secondDmg = damage * COMBAT.tesla.synergyRelayDamageRatio;
       for (const e2 of state.edges) {
-        if (e2.id === edge.id) continue;
+        if (e2.id === edge.id || e2.disruptedTimer > 0) continue;
         if (e2.sourceId !== other.id && e2.targetId !== other.id) continue;
         const tip = nodeMap.get(e2.sourceId === other.id ? e2.targetId : e2.sourceId);
         if (!tip || tip.id === tesla.id || tip.status === 'destroyed') continue;
@@ -1325,10 +1687,11 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
     const k = seg.a.id < seg.b.id ? `${seg.a.id}|${seg.b.id}` : `${seg.b.id}|${seg.a.id}`;
     if (seenSegKeys.has(k)) continue;
     seenSegKeys.add(k);
-    for (const enemy of state.enemies) {
+    for (const enemy of targets) {
+      if (enemy.hp <= 0) continue;
       const d = pointToSegmentDist(enemy, seg.a, seg.b);
       if (d <= hitRange) {
-        enemy.hp -= seg.dmg;
+        damageEnemy(enemy, seg.dmg);
         enemy.hitFlash = 1;
         hitAny = true;
       }
@@ -1338,12 +1701,13 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
   // 进化(雷暴): 被击中敌人周围60px内的其他敌人也受到50%伤害
   if (evolved && hitEnemies.size > 0) {
     const chainDamage = damage * COMBAT.tesla.chainRatio;
-    for (const enemy of state.enemies) {
+    for (const enemy of targets) {
+      if (enemy.hp <= 0) continue;
       if (hitEnemies.has(enemy.id)) continue;
       for (const hitId of hitEnemies) {
-        const hitEnemy = state.enemies.find(e => e.id === hitId);
+        const hitEnemy = state.enemies.find((e) => e.id === hitId);
         if (hitEnemy && dist(hitEnemy, enemy) <= 60) {
-          enemy.hp -= chainDamage;
+          damageEnemy(enemy, chainDamage);
           enemy.hitFlash = 1;
           break; // 只连锁一次
         }
@@ -1358,7 +1722,7 @@ function teslaDamageEnemies(state: GameState, tesla: GameNode, damageMult: numbe
 function pointToSegmentDist(
   p: { x: number; y: number },
   a: { x: number; y: number },
-  b: { x: number; y: number }
+  b: { x: number; y: number },
 ): number {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -1372,12 +1736,18 @@ function pointToSegmentDist(
 }
 
 // ===== 工厂无人机攻击（AoE 伤害最近敌人区域） =====
-function factoryAttack(state: GameState, factory: GameNode, damageMult: number, rangeMult: number, evolved: boolean = false): void {
-  const range = COMBAT.antiRepair.rangeBase * rangeMult;
-  let closest: { enemy: typeof state.enemies[0]; d: number } | null = null;
+function factoryAttack(
+  state: GameState,
+  factory: GameNode,
+  damageMult: number,
+  rangeMult: number,
+  evolved: boolean = false,
+): boolean {
+  const range = factoryAttackRange(rangeMult);
+  let closest: { enemy: (typeof state.enemies)[0]; d: number } | null = null;
 
   // V1.2.6：网格查询
-  const facCands = queryEnemies(factory.x, factory.y, range, state.enemies);
+  const facCands = queryEnemies(state, factory.x, factory.y, range);
   for (const enemy of facCands) {
     const d = dist(factory, enemy);
     if (d <= range && (!closest || d < closest.d)) {
@@ -1385,21 +1755,25 @@ function factoryAttack(state: GameState, factory: GameNode, damageMult: number, 
     }
   }
 
-  if (!closest) return;
+  if (!closest) return false;
   sfxFactory();
+  emitStrike(state,[factory,closest.enemy],factory.glowColor,'drone');
 
   const aoeRadius = evolved ? COMBAT.factory.aoeRadius.e : COMBAT.factory.aoeRadius.n;
   const damage = COMBAT.factory.damage * factory.level * damageMult;
 
   // V1.2.6：AoE 中心改用网格查询
-  const aoeCands = queryEnemies(closest.enemy.x, closest.enemy.y, aoeRadius, state.enemies);
+  const aoeCands = queryEnemies(state, closest.enemy.x, closest.enemy.y, aoeRadius);
   for (const enemy of aoeCands) {
     if (dist(closest.enemy, enemy) <= aoeRadius) {
-      enemy.hp -= damage;
+      damageEnemy(enemy, damage);
       enemy.hitFlash = 1;
       // 进化(航母): AoE 附带减速
       if (evolved) {
-        enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * COMBAT.factory.evolvedSlowFactor);
+        enemy.speed = Math.min(
+          enemy.speed,
+          getBaseSpeed(enemy.type) * COMBAT.factory.evolvedSlowFactor,
+        );
       }
     }
   }
@@ -1407,16 +1781,17 @@ function factoryAttack(state: GameState, factory: GameNode, damageMult: number, 
   // 无人机飞行粒子效果
   for (let i = 0; i < 5; i++) {
     state.particles.push({
-      x: factory.x + (rand() - 0.5) * 20,
-      y: factory.y + (rand() - 0.5) * 20,
-      vx: (closest.enemy.x - factory.x) * 0.02 + (rand() - 0.5) * 2,
-      vy: (closest.enemy.y - factory.y) * 0.02 + (rand() - 0.5) * 2,
-      life: 0.4 + rand() * 0.3,
+      x: factory.x + (Math.random() - 0.5) * 20,
+      y: factory.y + (Math.random() - 0.5) * 20,
+      vx: (closest.enemy.x - factory.x) * 0.02 + (Math.random() - 0.5) * 2,
+      vy: (closest.enemy.y - factory.y) * 0.02 + (Math.random() - 0.5) * 2,
+      life: 0.4 + Math.random() * 0.3,
       maxLife: 0.7,
       color: '#ff8800',
-      size: 2 + rand() * 2,
+      size: 2 + Math.random() * 2,
     });
   }
+  return true;
 }
 
 // ===== 磁力塔减速 =====
@@ -1425,7 +1800,7 @@ function magnetSlowEnemies(state: GameState, magnet: GameNode, rangeMult: number
   const slowFactor = COMBAT.magnet.normal.slowFactor;
 
   // V1.2.6：网格查询
-  const cands = queryEnemies(magnet.x, magnet.y, range, state.enemies);
+  const cands = queryEnemies(state, magnet.x, magnet.y, range);
   for (const enemy of cands) {
     if (dist(magnet, enemy) <= range) {
       // 每 tick 重新施加减速（临时效果）
@@ -1445,7 +1820,7 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
     if (edge.sourceId === energyNode.id) relayId = edge.targetId;
     else if (edge.targetId === energyNode.id) relayId = edge.sourceId;
     if (!relayId) continue;
-    const relay = state.nodes.find(n => n.id === relayId);
+    const relay = state.nodes.find((n) => n.id === relayId);
     if (!relay || relay.status === 'destroyed') continue;
     if (relay.type !== 'relay') continue;
     if (relay.owner !== energyNode.owner) continue;
@@ -1459,7 +1834,7 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
       if (e2.sourceId === relay.id) tipId = e2.targetId;
       else if (e2.targetId === relay.id) tipId = e2.sourceId;
       if (!tipId || tipId === energyNode.id) continue;
-      const tip = state.nodes.find(n => n.id === tipId);
+      const tip = state.nodes.find((n) => n.id === tipId);
       if (!tip || tip.status === 'destroyed') continue;
       if (tip.owner !== energyNode.owner) continue;
       tip.currentEnergy = Math.min(tip.maxEnergy, tip.currentEnergy + boost);
@@ -1472,7 +1847,9 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
     // → 虚拟边 relay↔R2，给 R2 本身 + R2 的二跳邻居充能
     const here = findWormholePolygonAt(state, relay.x, relay.y);
     if (here && here.linkedId) {
-      const linked = state.terrainPolygons.find(p => p.id === here.linkedId && p.type === 'wormhole');
+      const linked = state.terrainPolygons.find(
+        (p) => p.id === here.linkedId && p.type === 'wormhole',
+      );
       if (linked) {
         for (const r2 of state.nodes) {
           if (r2.id === relay.id || r2.id === energyNode.id) continue;
@@ -1485,7 +1862,15 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
           involvedRelays.push(r2);
           // V1.4.2 fx：relay 虚拟跨虫洞能量线
           if (!state.crossWormholeFx) state.crossWormholeFx = [];
-          state.crossWormholeFx.push({ ax: relay.x, ay: relay.y, bx: r2.x, by: r2.y, color: '#78c8ff', ttl: 30, kind: 'relay' });
+          state.crossWormholeFx.push({
+            ax: relay.x,
+            ay: relay.y,
+            bx: r2.x,
+            by: r2.y,
+            color: '#78c8ff',
+            ttl: 30,
+            kind: 'relay',
+          });
           // 充 R2 的二跳邻居
           for (const e3 of state.edges) {
             if (e3.disruptedTimer > 0) continue;
@@ -1493,7 +1878,7 @@ function energyRelayNetwork(state: GameState, energyNode: GameNode): void {
             if (e3.sourceId === r2.id) tipId2 = e3.targetId;
             else if (e3.targetId === r2.id) tipId2 = e3.sourceId;
             if (!tipId2 || tipId2 === energyNode.id || tipId2 === relay.id) continue;
-            const tip2 = state.nodes.find(n => n.id === tipId2);
+            const tip2 = state.nodes.find((n) => n.id === tipId2);
             if (!tip2 || tip2.status === 'destroyed') continue;
             if (tip2.owner !== energyNode.owner) continue;
             tip2.currentEnergy = Math.min(tip2.maxEnergy, tip2.currentEnergy + boost);
@@ -1535,8 +1920,14 @@ function overchargeHealPulse(state: GameState, shield: GameNode): void {
     if (node.id === shield.id || node.status === 'destroyed') continue;
     if (dist(shield, node) <= range) {
       node.hp = Math.min(node.maxHp, node.hp + COMBAT.shield.ocPulseHealPerLevel * shield.level);
-      node.currentEnergy = Math.min(node.maxEnergy, node.currentEnergy + COMBAT.shield.ocPulseEnergyHeal);
-      if (node.status === 'damaged' && node.hp > node.maxHp * COMBAT.shield.ocPulseStatusRestoreRatio) {
+      node.currentEnergy = Math.min(
+        node.maxEnergy,
+        node.currentEnergy + COMBAT.shield.ocPulseEnergyHeal,
+      );
+      if (
+        node.status === 'damaged' &&
+        node.hp > node.maxHp * COMBAT.shield.ocPulseStatusRestoreRatio
+      ) {
         node.status = 'normal';
       }
     }
@@ -1549,7 +1940,7 @@ function overchargeMagnetSlow(state: GameState, magnet: GameNode, rangeMult: num
   const slowFactor = COMBAT.magnet.overcharge.slowFactor;
 
   // V1.2.6：网格查询
-  const cands = queryEnemies(magnet.x, magnet.y, range, state.enemies);
+  const cands = queryEnemies(state, magnet.x, magnet.y, range);
   for (const enemy of cands) {
     if (dist(magnet, enemy) <= range) {
       enemy.speed = Math.min(enemy.speed, getBaseSpeed(enemy.type) * slowFactor);
@@ -1585,7 +1976,10 @@ function evolvedEnergyAssist(state: GameState, energyNode: GameNode): void {
 
   if (lowestNeighbor && lowestRatio < COMBAT.energy.evolvedAssistThreshold) {
     const boost = COMBAT.energy.evolvedAssistBoost;
-    lowestNeighbor.currentEnergy = Math.min(lowestNeighbor.maxEnergy, lowestNeighbor.currentEnergy + boost);
+    lowestNeighbor.currentEnergy = Math.min(
+      lowestNeighbor.maxEnergy,
+      lowestNeighbor.currentEnergy + boost,
+    );
   }
 }
 
@@ -1602,13 +1996,23 @@ function evolvedShieldArmor(state: GameState, shield: GameNode): void {
 }
 
 /** 进化磁力塔(黑洞): 拉拽敌人向中心 + 减速 */
-function evolvedMagnetPull(state: GameState, magnet: GameNode, rangeMult: number, overcharged: boolean): void {
-  const range = (overcharged ? COMBAT.magnet.evolved.rangeBaseOc : COMBAT.magnet.evolved.rangeBase) * magnet.level * rangeMult;
-  const slowFactor = overcharged ? COMBAT.magnet.evolved.slowFactorOc : COMBAT.magnet.evolved.slowFactor;
+function evolvedMagnetPull(
+  state: GameState,
+  magnet: GameNode,
+  rangeMult: number,
+  overcharged: boolean,
+): void {
+  const range =
+    (overcharged ? COMBAT.magnet.evolved.rangeBaseOc : COMBAT.magnet.evolved.rangeBase) *
+    magnet.level *
+    rangeMult;
+  const slowFactor = overcharged
+    ? COMBAT.magnet.evolved.slowFactorOc
+    : COMBAT.magnet.evolved.slowFactor;
   const pullStrength = COMBAT.magnet.evolved.pullStrength;
 
   // V1.2.6：网格查询
-  const cands = queryEnemies(magnet.x, magnet.y, range, state.enemies);
+  const cands = queryEnemies(state, magnet.x, magnet.y, range);
   for (const enemy of cands) {
     const d = dist(magnet, enemy);
     if (d <= range && d > COMBAT.magnetEvolved.minPullDist) {
@@ -1616,14 +2020,13 @@ function evolvedMagnetPull(state: GameState, magnet: GameNode, rangeMult: number
       // 拉拽
       const dx = magnet.x - enemy.x;
       const dy = magnet.y - enemy.y;
-      enemy.x += dx / d * pullStrength;
-      enemy.y += dy / d * pullStrength;
+      displaceEnemy(state, enemy, (dx / d) * pullStrength, (dy / d) * pullStrength);
     }
   }
 }
 
-function getBaseSpeed(type: string): number {
-  return ENEMY_BASE_SPEED[type] ?? DEFAULT_ENEMY_BASE_SPEED;
+function getBaseSpeed(type: Enemy['type']): number {
+  return type === 'boss' ? getBossStats(0).speed : ENEMY_BASE_STATS[type].speed;
 }
 
 // ===== 陷阱引爆 =====
@@ -1634,7 +2037,7 @@ function trapDetonate(state: GameState, trap: GameNode, damageMult: number): boo
 
   // 检测范围内是否有敌人
   // V1.2.6：网格查询
-  const detectCands = queryEnemies(trap.x, trap.y, detectRange, state.enemies);
+  const detectCands = queryEnemies(state, trap.x, trap.y, detectRange);
   let hasEnemy = false;
   for (const enemy of detectCands) {
     if (dist(trap, enemy) <= detectRange) {
@@ -1648,27 +2051,27 @@ function trapDetonate(state: GameState, trap: GameNode, damageMult: number): boo
 
   // 爆炸！对范围内所有敌人造成大量伤害
   // V1.2.6：网格查询
-  const blastCands = queryEnemies(trap.x, trap.y, blastRange, state.enemies);
+  const blastCands = queryEnemies(state, trap.x, trap.y, blastRange);
   for (const enemy of blastCands) {
     if (dist(trap, enemy) <= blastRange) {
-      enemy.hp -= damage;
+      damageEnemy(enemy, damage);
       enemy.hitFlash = 1;
     }
   }
 
   // 爆炸粒子
   for (let i = 0; i < 20; i++) {
-    const angle = rand() * Math.PI * 2;
-    const speed = 2 + rand() * 6;
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 6;
     state.particles.push({
       x: trap.x,
       y: trap.y,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
-      life: 0.5 + rand() * 0.5,
+      life: 0.5 + Math.random() * 0.5,
       maxLife: 1,
-      color: rand() < 0.5 ? '#ff2222' : '#ff8800',
-      size: 3 + rand() * 4,
+      color: Math.random() < 0.5 ? '#ff2222' : '#ff8800',
+      size: 3 + Math.random() * 4,
     });
   }
 
@@ -1678,72 +2081,98 @@ function trapDetonate(state: GameState, trap: GameNode, damageMult: number): boo
   trap.currentEnergy = 0;
 
   // 移除连线
-  state.edges = state.edges.filter(
-    e => e.sourceId !== trap.id && e.targetId !== trap.id
-  );
+  state.edges = state.edges.filter((e) => e.sourceId !== trap.id && e.targetId !== trap.id);
 
   return true;
 }
 
 // ===== 初始化游戏地图 =====
-export function initializeMap(state: GameState, nodeCount?: number, terrainConfig?: { nebulaCount?: number; asteroidCount?: number; wormholePairs?: number }): void {
-  const ww = state.worldWidth;
-  const wh = state.worldHeight;
-  const cx = ww / 2;
-  const cy = wh / 2;
-
-  // 创建核心基地
-  const core = createNode(cx, cy, 'core');
-  state.nodes.push(core);
-
-  // 生成地形
-  generateTerrain(state, terrainConfig);
-
-  // 泊松圆盘采样生成中立节点候选位置
-  const points = poissonDiskSampling(
-    ww, wh,
-    90, 30, 60
+export function initializeMap(state: GameState, level?: LevelConfig): void {
+  state.worldWidth = level?.worldWidth ?? state.worldWidth;
+  state.worldHeight = level?.worldHeight ?? state.worldHeight;
+  state.mission = level?.tactics;
+  state.frontier = level?.tactics?.frontier ? { harvested:0,progress:{},mined:{},recovered:0,workingTicks:0,powerWaitTicks:0,lastWorked:{} } : undefined;
+  state.protectedCoreIds=undefined;
+  state.visibility = createVisibility(state.worldWidth, state.worldHeight);
+  nodeIdCounter = 0;
+  edgeIdCounter = 0;
+  state.nodes = [];
+  state.edges = [];
+  state.terrainZones = [];
+  state.terrainPolygons = (level?.terrainPolygons ?? []).map((p, index) =>
+    buildTerrainPolygon({ ...p, id: p.id ?? `terrain_${level?.id ?? 0}_${index}` }),
   );
-
-  // 过滤掉太靠近核心的点，以及在小行星带内的点
-  const filtered = points.filter(p => {
-    if (dist(p, { x: cx, y: cy }) < 80) return false;
-    // 不在小行星带内生成节点
-    for (const zone of state.terrainZones) {
-      if (zone.type === 'asteroid' && dist(p, zone) < zone.radius) return false;
-    }
-    return true;
-  });
-  const shuffled = filtered.sort(() => rand() - 0.5);
-  const count = nodeCount ?? Math.min(shuffled.length, 40 + Math.floor(rand() * 15));
-
-  const types: NodeType[] = ['energy', 'energy', 'turret', 'mine', 'relay', 'relay'];
-  for (let i = 0; i < count; i++) {
-    const type = types[Math.floor(rand() * types.length)];
-    const node = createNode(shuffled[i].x, shuffled[i].y, type);
+  resetNavigation(state);
+  const positions = level?.corePositions ?? [{ x: 0.5, y: 0.5 }];
+  const add = (type: NodeType, x: number, y: number, owner: 'player' | 'neutral') => {
+    if (
+      !isPointWalkable(state, x, y) ||
+      state.nodes.some((n) => dist(n, { x, y }) < n.radius + NODE_CONFIGS[type].radius + 26)
+    )
+      return null;
+    const node = createNode(x, y, type);
+    node.owner = owner;
+    if (state.frontier) node.investment=0;
+    node.connected = type === 'core';
+    if (owner === 'player') node.currentEnergy = node.maxEnergy * 0.7;
     state.nodes.push(node);
-  }
-
-  // 中立节点 — 散布在地图远处，玩家可花费资源招募
-  const neutralTypes: NodeType[] = ['turret', 'mine', 'energy', 'shield', 'tesla'];
-  const neutralCandidates = shuffled.slice(count).filter(p => dist(p, { x: cx, y: cy }) > 350);
-  const neutralCount = Math.min(neutralCandidates.length, 3 + Math.floor(rand() * 3));
-  for (let i = 0; i < neutralCount; i++) {
-    const type = neutralTypes[Math.floor(rand() * neutralTypes.length)];
-    const node = createNode(neutralCandidates[i].x, neutralCandidates[i].y, type);
-    node.owner = 'neutral';
-    node.connected = false;
-    state.nodes.push(node);
-  }
-
-  // 自动连接核心附近的节点（给玩家一个起步基础）
-  for (const node of state.nodes) {
-    if (node.type === 'core') continue;
-    const d = dist(core, node);
-    if (d <= MAX_EDGE_LENGTH && state.edges.length < 3) {
-      state.edges.push(createEdge(core.id, node.id));
+    return node;
+  };
+  for (const position of positions) {
+    const x = position.x * state.worldWidth,
+      y = position.y * state.worldHeight;
+    const core = add('core', x, y, 'player');
+    if (!core) throw new Error(`关卡 ${level?.id} 的核心位置不可通行`);
+    const starter = [
+      add('energy', x - 125, y + 10, 'player'),
+      add('turret', x + 130, y + 10, 'player'),
+      add('mine', x, y + 140, 'player'),
+    ];
+    for (const node of state.frontier ? starter : starter.slice(1))
+      if (node && canConnect(state, core.id, node.id)) {
+        state.edges.push(createEdge(core.id, node.id));
+      }
+    if (!state.frontier) for (const [dx, dy, type] of [
+      [280, -30, 'relay'],
+      [430, -70, 'mine'],
+      [580, -40, 'energy'],
+      [720, -130, 'turret'],
+    ] as const) {
+      add(type, x + dx, y + dy, 'neutral');
     }
   }
+  const objective = level?.tactics?.secondaryObjective;
+  if (objective?.kind === 'observatory') {
+    const observatory = add(
+      'beacon',
+      objective.position.x * state.worldWidth,
+      objective.position.y * state.worldHeight,
+      'neutral',
+    );
+    if (!observatory) throw new Error(`关卡 ${level?.id} 的远端观测点不可建造`);
+  }
+  for (const gate of state.terrainPolygons.filter((p) => p.type === 'wormhole')) {
+    add('relay', gate.centroid.x, gate.centroid.y, 'neutral');
+    add('energy', gate.centroid.x + 110, gate.centroid.y + 100, 'neutral');
+  }
+  if (state.frontier) return;
+  const points = poissonDiskSampling(state.worldWidth, state.worldHeight, 140, 24, 80);
+  for (let i = points.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [points[i], points[j]] = [points[j], points[i]];
+  }
+  const types: NodeType[] = ['relay', 'energy', 'mine', 'relay', 'turret', 'shield'];
+  const targetCount = level?.nodeCount ?? 28;
+  for (const point of points) {
+    if (state.nodes.length >= targetCount) break;
+    if (state.nodes.some((n) => n.type === 'core' && dist(n, point) < 210)) continue;
+    if (isPointInAsteroidPolygon(state, point.x, point.y)) continue;
+    add(types[Math.floor(rand() * types.length)], point.x, point.y, 'neutral');
+  }
+  state.protectedCoreIds =
+    level?.objective === 'protect'
+      ? new Set(state.nodes.filter((n) => n.type === 'core').map((n) => n.id))
+      : undefined;
 }
 
 // ===== 地形生成 =====
@@ -1755,7 +2184,7 @@ export function generateTerrain(
 ): void {
   const ww = state.worldWidth;
   const wh = state.worldHeight;
-  const core = state.nodes.find(n => n.type === 'core');
+  const core = state.nodes.find((n) => n.type === 'core');
   const coreX = core?.x ?? ww / 2;
   const coreY = core?.y ?? wh / 2;
   const zones: TerrainZone[] = [];
@@ -1771,11 +2200,13 @@ export function generateTerrain(
       const y = 150 + rand() * (wh - 300);
       const radius = 120 + rand() * 100;
       if (dist({ x, y }, { x: coreX, y: coreY }) < radius + 120) continue;
-      if (zones.some(z => dist(z, { x, y }) < z.radius + radius * 0.5)) continue;
+      if (zones.some((z) => dist(z, { x, y }) < z.radius + radius * 0.5)) continue;
       zones.push({
         id: `terrain_${terrainIdCounter++}`,
         type: 'nebula',
-        x, y, radius,
+        x,
+        y,
+        radius,
         slowFactor: 0.4 + rand() * 0.2,
       });
       break;
@@ -1789,11 +2220,13 @@ export function generateTerrain(
       const y = 200 + rand() * (wh - 400);
       const radius = 80 + rand() * 70;
       if (dist({ x, y }, { x: coreX, y: coreY }) < radius + 180) continue;
-      if (zones.some(z => dist(z, { x, y }) < z.radius + radius * 0.6)) continue;
+      if (zones.some((z) => dist(z, { x, y }) < z.radius + radius * 0.6)) continue;
       zones.push({
         id: `terrain_${terrainIdCounter++}`,
         type: 'asteroid',
-        x, y, radius,
+        x,
+        y,
+        radius,
       });
       break;
     }
@@ -1810,8 +2243,8 @@ export function generateTerrain(
       if (dist({ x: x1, y: y1 }, { x: x2, y: y2 }) < 400) continue;
       if (dist({ x: x1, y: y1 }, { x: coreX, y: coreY }) < 200) continue;
       if (dist({ x: x2, y: y2 }, { x: coreX, y: coreY }) < 200) continue;
-      if (zones.some(z => dist(z, { x: x1, y: y1 }) < z.radius + r + 30)) continue;
-      if (zones.some(z => dist(z, { x: x2, y: y2 }) < z.radius + r + 30)) continue;
+      if (zones.some((z) => dist(z, { x: x1, y: y1 }) < z.radius + r + 30)) continue;
+      if (zones.some((z) => dist(z, { x: x2, y: y2 }) < z.radius + r + 30)) continue;
       const id1 = `terrain_${terrainIdCounter++}`;
       const id2 = `terrain_${terrainIdCounter++}`;
       zones.push({ id: id1, type: 'wormhole', x: x1, y: y1, radius: r, linkedId: id2 });
@@ -1840,9 +2273,11 @@ export function getNebulaSlowFactor(x: number, y: number, state: GameState): num
     const v = poly.vertices;
     let inside = false;
     for (let i = 0, j = v.length - 1; i < v.length; j = i++) {
-      const xi = v[i].x, yi = v[i].y, xj = v[j].x, yj = v[j].y;
-      const intersect = ((yi > y) !== (yj > y))
-        && (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-9) + xi);
+      const xi = v[i].x,
+        yi = v[i].y,
+        xj = v[j].x,
+        yj = v[j].y;
+      const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi;
       if (intersect) inside = !inside;
     }
     if (inside) factor = Math.min(factor, poly.slowFactor ?? 0.5);

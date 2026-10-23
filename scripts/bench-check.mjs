@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // scripts/bench-check.mjs
-// Phase B-2 第四轮：CI 回归防护网。
+// 固定种子、节点池与目标波次的 CI 回归防护网。
 //
 // 行为：
 //   1) 读 scripts/bench-baseline.json 的 args + expected 数组
-//   2) 调用 scripts/bench-batch.mjs 用相同参数跑（写入 _ci.csv/_ci.json 临时产物）
+//   2) 调用 scripts/bench-batch.mjs 用相同参数跑（写入 bench-ci.csv/.json）
 //   3) 读回 _ci.json，按 seed+levelId 配对，比对 deterministic 字段
 //   4) 任一字段漂移 → 打印 diff 表格 + 退出码 1
 //
@@ -28,27 +28,30 @@ const updateMode = process.argv.includes('--update');
 const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
 const a = baseline.args;
 
-console.log(`[bench-check] baseline: ${baseline.expected.length} runs (seeds=${a.seeds} levels=${a.levels} waves=${a.waves} speed=${a.speed}${a.nodesMatrix ? ' nodes-matrix=' + a.nodesMatrix : ''})`);
+console.log(
+  `[bench-check] baseline: ${baseline.expected.length} runs (seeds=${a.seeds} levels=${a.levels} waves=${a.waves} speed=${a.speed}${a.nodesMatrix ? ' nodes-matrix=' + a.nodesMatrix : ''})`,
+);
 
 // 直接 spawn node scripts/bench-batch.mjs，绕开 npm run 的输出污染
-const isWin = process.platform === 'win32';
 const batchArgs = [
   resolve(scriptsDir, 'bench-batch.mjs'),
-  '--seeds', a.seeds,
-  '--levels', a.levels,
-  '--waves', String(a.waves),
-  '--speed', String(a.speed),
-  '--out', 'bench-ci.csv',
-  '--timeout', '120000',
+  '--seeds',
+  a.seeds,
+  '--levels',
+  a.levels,
+  '--waves',
+  String(a.waves),
+  '--speed',
+  String(a.speed),
+  '--out',
+  'bench-ci.csv',
+  '--timeout',
+  '120000',
 ];
 if (a.nodesMatrix) batchArgs.push('--nodes-matrix', a.nodesMatrix);
 else batchArgs.push('--nodes', a.nodes);
 
-const child = spawn(
-  process.execPath,
-  batchArgs,
-  { cwd: repoRoot, stdio: 'inherit' }
-);
+const child = spawn(process.execPath, batchArgs, { cwd: repoRoot, stdio: 'inherit' });
 
 child.on('exit', (code) => {
   if (code !== 0) {
@@ -57,9 +60,8 @@ child.on('exit', (code) => {
   }
 
   const actual = JSON.parse(readFileSync(ciOutJson, 'utf8'));
-  // 注意：仅比对 RNG/seed 决定的不变量。
-  // finalScore / finalEnemyCount 受 wall-clock dt 影响（loop(timestamp) 在 RAF 时序波动下
-  // 命中/未命中 1 个敌人都会反映在击杀计数上），不放进 CI 卡点，否则误报刷屏。
+  // 模拟已使用固定步长；浏览器轮询可能落在目标波次后的相邻帧。
+  // 此卡点保留宏观快照；逐步数值一致性由 simulation.test.ts 验证。
   const fields = ['outcome', 'reachedWave', 'totalTicks', 'finalNodeCount'];
 
   // 索引 actual: pool|seed|level → run（多节点池矩阵必须包含 poolName）
@@ -70,13 +72,14 @@ child.on('exit', (code) => {
   }
 
   if (updateMode) {
-    const fresh = baseline.expected.map(e => {
+    const fresh = baseline.expected.map((e) => {
       const pool = e.poolName ?? 'default';
       const r = idx.get(`${pool}|${e.seed}|${e.levelId}`);
-      if (!r) return e;
+      if (!r) throw new Error(`Missing baseline run: ${pool}|${e.seed}|${e.levelId}`);
       const out = {};
       if (e.poolName !== undefined) out.poolName = r.poolName ?? pool;
-      out.seed = r.seed; out.levelId = r.levelId;
+      out.seed = r.seed;
+      out.levelId = r.levelId;
       for (const f of fields) out[f] = r[f];
       return out;
     });
@@ -116,7 +119,7 @@ child.on('exit', (code) => {
     console.error('-------------------- ---------------- ---------------- ----------------');
     for (const d of driftRows) {
       console.error(
-        `${d.key.padEnd(20)} ${d.field.padEnd(16)} ${String(d.expected).padEnd(16)} ${String(d.actual).padEnd(16)}`
+        `${d.key.padEnd(20)} ${d.field.padEnd(16)} ${String(d.expected).padEnd(16)} ${String(d.actual).padEnd(16)}`,
       );
     }
     console.error('');
@@ -130,7 +133,11 @@ function cleanup() {
   if (process.env.BENCH_KEEP === '1') return; // CI 想保留产物给后续 step / artifact
   for (const p of [ciOutCsv, ciOutJson]) {
     if (existsSync(p)) {
-      try { unlinkSync(p); } catch { /* ignore */ }
+      try {
+        unlinkSync(p);
+      } catch {
+        /* ignore */
+      }
     }
   }
 }

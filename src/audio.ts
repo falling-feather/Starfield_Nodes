@@ -12,7 +12,14 @@ export function initAudio(): void {
     ctx = new AudioContext();
     masterGain = ctx.createGain();
     masterGain.gain.value = 0.3;
-    masterGain.connect(ctx.destination);
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -16;
+    limiter.knee.value = 12;
+    limiter.ratio.value = 5;
+    limiter.attack.value = 0.005;
+    limiter.release.value = 0.18;
+    masterGain.connect(limiter);
+    limiter.connect(ctx.destination);
     initialized = true;
   } catch {
     // Web Audio 不可用
@@ -37,6 +44,15 @@ function ensureCtx(): AudioContext | null {
   return ctx;
 }
 
+const lastSound = new Map<string, number>();
+/** Many towers can fire on the same tick; one audible cue is enough for that cluster. */
+function soundContext(channel: string, interval: number): AudioContext | null {
+  const ac = ensureCtx();
+  if (!ac || ac.currentTime - (lastSound.get(channel) ?? -Infinity) < interval) return null;
+  lastSound.set(channel, ac.currentTime);
+  return ac;
+}
+
 function makeOsc(
   ac: AudioContext,
   type: OscillatorType,
@@ -50,12 +66,17 @@ function makeOsc(
   osc.type = type;
   osc.frequency.value = freq;
   osc.detune.value = detune;
-  gain.gain.setValueAtTime(volume, ac.currentTime);
+  gain.gain.setValueAtTime(0.001, ac.currentTime);
+  gain.gain.linearRampToValueAtTime(volume, ac.currentTime + 0.004);
   gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + duration);
   osc.connect(gain);
   gain.connect(masterGain!);
   osc.start();
   osc.stop(ac.currentTime + duration);
+  osc.onended = () => {
+    osc.disconnect();
+    gain.disconnect();
+  };
 }
 
 function makeNoise(ac: AudioContext, duration: number, volume: number = 0.1): void {
@@ -70,6 +91,10 @@ function makeNoise(ac: AudioContext, duration: number, volume: number = 0.1): vo
   gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + duration);
   src.connect(gain);
   gain.connect(masterGain!);
+  src.onended = () => {
+    src.disconnect();
+    gain.disconnect();
+  };
   src.start();
   src.stop(ac.currentTime + duration);
 }
@@ -78,15 +103,15 @@ function makeNoise(ac: AudioContext, duration: number, volume: number = 0.1): vo
 
 /** 炮塔射击 */
 export function sfxShoot(): void {
-  const ac = ensureCtx();
+  const ac = soundContext('shot', 0.045);
   if (!ac) return;
-  makeOsc(ac, 'square', 800 + Math.random() * 200, 0.08, 0.15);
-  makeOsc(ac, 'sawtooth', 400, 0.05, 0.08);
+  makeOsc(ac, 'triangle', 680 + Math.random() * 80, 0.07, 0.11);
+  makeOsc(ac, 'sine', 340, 0.045, 0.06);
 }
 
 /** 飞弹命中 */
 export function sfxHit(): void {
-  const ac = ensureCtx();
+  const ac = soundContext('hit', 0.06);
   if (!ac) return;
   makeNoise(ac, 0.1, 0.12);
   makeOsc(ac, 'sine', 300, 0.1, 0.1);
@@ -94,7 +119,7 @@ export function sfxHit(): void {
 
 /** 击杀敌人 */
 export function sfxKill(): void {
-  const ac = ensureCtx();
+  const ac = soundContext('kill', 0.08);
   if (!ac) return;
   makeOsc(ac, 'sine', 600, 0.15, 0.15);
   makeOsc(ac, 'sine', 900, 0.1, 0.1);
@@ -125,7 +150,7 @@ export function sfxConnect(): void {
 
 /** Tesla 电击 */
 export function sfxTesla(): void {
-  const ac = ensureCtx();
+  const ac = soundContext('electric', 0.09);
   if (!ac) return;
   makeNoise(ac, 0.06, 0.08);
   makeOsc(ac, 'sawtooth', 150 + Math.random() * 100, 0.05, 0.06);
@@ -150,7 +175,7 @@ export function sfxFactory(): void {
 
 /** 分裂 */
 export function sfxSplit(): void {
-  const ac = ensureCtx();
+  const ac = soundContext('split', 0.1);
   if (!ac) return;
   makeOsc(ac, 'sawtooth', 200, 0.15, 0.1);
   makeOsc(ac, 'sine', 500, 0.08, 0.08);
@@ -158,7 +183,7 @@ export function sfxSplit(): void {
 
 /** 干扰者中断连线 */
 export function sfxDisrupt(): void {
-  const ac = ensureCtx();
+  const ac = soundContext('disrupt', 0.15);
   if (!ac) return;
   makeOsc(ac, 'square', 120, 0.15, 0.1);
   makeNoise(ac, 0.08, 0.06);
@@ -166,7 +191,7 @@ export function sfxDisrupt(): void {
 
 /** 节点受击 */
 export function sfxNodeHit(): void {
-  const ac = ensureCtx();
+  const ac = soundContext('node-hit', 0.18);
   if (!ac) return;
   makeOsc(ac, 'sine', 200, 0.08, 0.08);
 }
@@ -223,6 +248,10 @@ export function sfxOvercharge(): void {
   g.connect(masterGain!);
   osc.start(ac.currentTime);
   osc.stop(ac.currentTime + 0.25);
+  osc.onended = () => {
+    osc.disconnect();
+    g.disconnect();
+  };
 }
 
 // ─── 背景音乐（低频 drone） ─────────────────
@@ -256,7 +285,12 @@ export function stopBgm(): void {
   try {
     bgOsc1?.stop();
     bgOsc2?.stop();
-  } catch { /* already stopped */ }
+  } catch {
+    /* already stopped */
+  }
+  bgOsc1?.disconnect();
+  bgOsc2?.disconnect();
+  bgGain?.disconnect();
   bgOsc1 = null;
   bgOsc2 = null;
   bgGain = null;

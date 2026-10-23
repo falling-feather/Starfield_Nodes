@@ -1,9 +1,11 @@
 // ===== 粒子特效系统 =====
-import type { GameState, FlowParticle } from './types';
+import type { GameState, Point, StrikeEffect } from './types';
 import { EDGE_CONFIGS } from './data/edges';
-import { rand } from './rng';
+const rand = Math.random; // Visual randomness must not consume the simulation RNG.
 
 export function updateParticles(state: GameState, dt: number): void {
+  for (const strike of state.strikeEffects) strike.life -= dt;
+  state.strikeEffects = state.strikeEffects.filter((strike) => strike.life > 0);
   // 更新通用粒子
   for (const p of state.particles) {
     p.x += p.vx * dt * 60;
@@ -12,28 +14,31 @@ export function updateParticles(state: GameState, dt: number): void {
     p.vx *= 0.96;
     p.vy *= 0.96;
   }
-  state.particles = state.particles.filter(p => p.life > 0);
+  state.particles = state.particles.filter((p) => p.life > 0);
 
   // 更新能量流动粒子
   for (const fp of state.flowParticles) {
     fp.progress += fp.speed * dt;
   }
-  state.flowParticles = state.flowParticles.filter(fp => fp.progress <= 1);
+  state.flowParticles = state.flowParticles.filter((fp) => fp.progress <= 1);
 
   // 为活跃边生成新的流动粒子
   for (const edge of state.edges) {
     if (!edge.active) continue;
 
     // 每条活跃边每帧有概率生成流动粒子
-    if (rand() < 0.15) {
-      const sourceNode = state.nodes.find(n => n.id === edge.sourceId);
+    if (rand() < 0.04 + 0.14 * Math.min(1, Math.abs(edge.energyFlow) / edge.throughput)) {
+      const sourceNode = state.nodes.find((n) => n.id === edge.sourceId);
       if (sourceNode) {
         const cfg = EDGE_CONFIGS[edge.type];
         const baseColor = cfg.color || sourceNode.glowColor;
         state.flowParticles.push({
           edgeId: edge.id,
+          reverse: edge.energyFlow < 0,
           progress: 0,
-          speed: (0.8 + rand() * 0.4) * cfg.flowSpeedMult,
+          speed:
+            (0.45 + Math.min(1, Math.abs(edge.energyFlow) / edge.throughput) * 0.65) *
+            cfg.flowSpeedMult,
           size: edge.type === 'heavy' ? 3 + rand() * 2 : 2 + rand() * 2,
           color: baseColor,
         });
@@ -42,10 +47,31 @@ export function updateParticles(state: GameState, dt: number): void {
   }
 }
 
+/** Preserve a shot's resolved positions even after its targets move or die. */
+export function emitStrike(
+  state: GameState,
+  points: Point[],
+  color: string,
+  kind: StrikeEffect['kind'],
+): void {
+  state.strikeEffects.push({
+    points: points.map((p) => ({ x: p.x, y: p.y })),
+    color,
+    kind,
+    life: kind === 'drone' ? .5 : .18,
+    maxLife: kind === 'drone' ? .5 : .18,
+  });
+}
+
 // 生成节点光晕粒子
 export function emitNodeParticles(state: GameState): void {
   for (const node of state.nodes) {
-    if (node.status === 'destroyed') continue;
+    if (
+      node.status === 'destroyed' ||
+      !node.connected ||
+      node.currentEnergy < node.activationThreshold
+    )
+      continue;
     if (rand() > 0.03) continue;
 
     const angle = rand() * Math.PI * 2;
@@ -64,7 +90,12 @@ export function emitNodeParticles(state: GameState): void {
 }
 
 // 生成敌人销毁粒子（增强版 — 更多粒子+大粒子）
-export function emitDestructionParticles(state: GameState, x: number, y: number, color: string): void {
+export function emitDestructionParticles(
+  state: GameState,
+  x: number,
+  y: number,
+  color: string,
+): void {
   // 核心碎片
   for (let i = 0; i < 20; i++) {
     const angle = rand() * Math.PI * 2;
@@ -84,7 +115,8 @@ export function emitDestructionParticles(state: GameState, x: number, y: number,
   for (let i = 0; i < 5; i++) {
     const angle = rand() * Math.PI * 2;
     state.particles.push({
-      x, y,
+      x,
+      y,
       vx: Math.cos(angle) * 1,
       vy: Math.sin(angle) * 1,
       life: 0.15 + rand() * 0.15,

@@ -1,3 +1,4 @@
+import { ENEMY_SUPPORT } from './data/spawn';
 // ===== 敌人实体系统 =====
 import type { Enemy, GameState } from './types';
 import { ENEMY_COLORS } from './data/enemies';
@@ -19,6 +20,9 @@ import { COMBAT } from './data/balance';
 import { sfxHit, sfxKill, sfxSplit, sfxDisrupt, sfxNodeHit } from './audio';
 import { emitDestructionParticles } from './particles';
 import { rand } from './rng';
+import { moveEnemy, isPointWalkable, invalidateEnemyRoute } from './navigation';
+import { damageEnemy } from './enemy-health';
+import { hasFiringLine } from './weapon-geometry';
 
 let enemyIdCounter = 0;
 
@@ -28,50 +32,59 @@ function pointToSegDist(
   a: { x: number; y: number },
   b: { x: number; y: number },
 ): number {
-  const dx = b.x - a.x, dy = b.y - a.y;
+  const dx = b.x - a.x,
+    dy = b.y - a.y;
   const lenSq = dx * dx + dy * dy;
   if (lenSq === 0) return dist(p, a);
   const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
   return dist(p, { x: a.x + t * dx, y: a.y + t * dy });
 }
 
-export function spawnEnemy(state: GameState, difficultyMult: number = 1): void {
-  const wave = state.wave;
+export function spawnEnemy(
+  state: GameState,
+  difficultyMult: number = 1,
+  forcedType?: Exclude<Enemy['type'], 'boss'>,
+): void {
+  const wave = state.mission?.frontier ? Math.min(8,state.wave) : state.wave;
   const count = 1 + Math.floor(wave / RUNTIME.enemySpawnCountDivisor);
 
   // 找到玩家最前线节点的位置，从附近生成敌人
-  const aliveNodes = state.nodes.filter(n => n.status !== 'destroyed');
+  const aliveNodes = state.nodes.filter((n) => n.status !== 'destroyed' && n.owner === 'player');
   const spawnDist = SPAWN_DIST_MIN + rand() * SPAWN_DIST_RANDOM;
 
   for (let i = 0; i < count; i++) {
-    const enemy = createEnemy(state, wave, aliveNodes, spawnDist, difficultyMult);
+    const enemy = createEnemy(state, wave, aliveNodes, spawnDist, difficultyMult, forcedType);
     state.enemies.push(enemy);
   }
 }
 
 export function spawnBoss(state: GameState, difficultyMult: number = 1): void {
-  const aliveNodes = state.nodes.filter(n => n.status !== 'destroyed');
+  const aliveNodes = state.nodes.filter((n) => n.status !== 'destroyed' && n.owner === 'player');
   const spawnDist = BOSS_SPAWN_DIST;
   const wave = state.wave;
 
+  const front = state.mission?.entryPoints[0];
   let x: number, y: number;
-  if (aliveNodes.length > 0) {
-    const target = aliveNodes[Math.floor(rand() * aliveNodes.length)];
-    const angle = rand() * Math.PI * 2;
-    x = target.x + Math.cos(angle) * spawnDist;
-    y = target.y + Math.sin(angle) * spawnDist;
-    x = Math.max(-20, Math.min(state.worldWidth + 20, x));
-    y = Math.max(-20, Math.min(state.worldHeight + 20, y));
+  if (front) {
+    x = front.x * state.worldWidth;
+    y = front.y * state.worldHeight;
   } else {
-    x = state.worldWidth / 2;
-    y = -50;
+    const target = aliveNodes[0],
+      angle = rand() * Math.PI * 2;
+    x = target
+      ? Math.max(20, Math.min(state.worldWidth - 20, target.x + Math.cos(angle) * spawnDist))
+      : state.worldWidth / 2;
+    y = target
+      ? Math.max(20, Math.min(state.worldHeight - 20, target.y + Math.sin(angle) * spawnDist))
+      : 20;
   }
 
   const stats = getBossStats(wave);
   const hp = stats.hp * difficultyMult;
   const boss: Enemy = {
     id: `enemy_${enemyIdCounter++}`,
-    x, y,
+    x,
+    y,
     hp,
     maxHp: hp,
     speed: stats.speed,
@@ -86,42 +99,67 @@ export function spawnBoss(state: GameState, difficultyMult: number = 1): void {
   state.enemies.push(boss);
 }
 
-function createEnemy(state: GameState, wave: number, aliveNodes: typeof state.nodes, spawnDist: number, difficultyMult: number): Enemy {
-  // 在玩家节点附近的随机方向生成
+function createEnemy(
+  state: GameState,
+  wave: number,
+  aliveNodes: typeof state.nodes,
+  spawnDist: number,
+  difficultyMult: number,
+  forcedType?: Exclude<Enemy['type'], 'boss'>,
+): Enemy {
   let x: number, y: number;
-  if (aliveNodes.length > 0) {
-    const target = aliveNodes[Math.floor(rand() * aliveNodes.length)];
-    const angle = rand() * Math.PI * 2;
-    x = target.x + Math.cos(angle) * spawnDist;
-    y = target.y + Math.sin(angle) * spawnDist;
-    // 限制在世界范围内
-    x = Math.max(-20, Math.min(state.worldWidth + 20, x));
-    y = Math.max(-20, Math.min(state.worldHeight + 20, y));
-  } else {
-    const ww = state.worldWidth;
-    const wh = state.worldHeight;
-    const side = Math.floor(rand() * 4);
-    switch (side) {
-      case 0: x = rand() * ww; y = -20; break;
-      case 1: x = ww + 20; y = rand() * wh; break;
-      case 2: x = rand() * ww; y = wh + 20; break;
-      default: x = -20; y = rand() * wh; break;
+  const entries = state.mission?.entryPoints.filter(
+    (p) => wave >= (p.fromWave ?? 1) && wave <= (p.untilWave ?? Infinity),
+  );
+  if (entries?.length) {
+    const entry = entries[Math.floor(rand() * entries.length)];
+    x = entry.x * state.worldWidth;
+    y = entry.y * state.worldHeight;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const nx = x + (rand() - 0.5) * 100,
+        ny = y + (rand() - 0.5) * 100;
+      if (isPointWalkable(state, nx, ny)) {
+        x = nx;
+        y = ny;
+        break;
+      }
     }
+  } else if (aliveNodes.length) {
+    const target = aliveNodes[Math.floor(rand() * aliveNodes.length)],
+      angle = rand() * Math.PI * 2;
+    x = Math.max(20, Math.min(state.worldWidth - 20, target.x + Math.cos(angle) * spawnDist));
+    y = Math.max(20, Math.min(state.worldHeight - 20, target.y + Math.sin(angle) * spawnDist));
+  } else {
+    x = state.worldWidth / 2;
+    y = 20;
   }
 
   // 根据波次组装可生成的敌人池：基础类型始终存在，其余按解锁波次过滤
-  const baseTypes: Enemy['type'][] = ['scout', 'heavy', 'swarm'];
-  const unlockableTypes = (Object.keys(ENEMY_UNLOCK_WAVE) as Enemy['type'][]).filter(
-    t => wave >= (ENEMY_UNLOCK_WAVE[t] ?? 0),
+  const possible = state.mission?.enemyPool ?? [
+    'scout',
+    'heavy',
+    'swarm',
+    'stealth',
+    'splitter',
+    'disruptor',
+    'healer',
+    'shielder',
+  ];
+  const pool = possible.filter(
+    (t) => wave >= (state.mission?.enemyUnlocks?.[t] ?? ENEMY_UNLOCK_WAVE[t] ?? 1),
   );
-  const pool = [...baseTypes, ...unlockableTypes];
-  const type = wave < 3 ? 'scout' : pool[Math.floor(rand() * pool.length)];
+  const type =
+    forcedType ??
+    ((wave < 3 && pool.includes('scout')
+      ? 'scout'
+      : pool[Math.floor(rand() * pool.length)]) as Exclude<Enemy['type'], 'boss'>);
 
   const stats = ENEMY_BASE_STATS[type as Exclude<Enemy['type'], 'boss'>];
   const hp = (stats.hp + wave * 5) * difficultyMult;
   return {
     id: `enemy_${enemyIdCounter++}`,
-    x, y,
+    x,
+    y,
     hp,
     maxHp: hp,
     speed: stats.speed + wave * 0.05,
@@ -137,20 +175,52 @@ function createEnemy(state: GameState, wave: number, aliveNodes: typeof state.no
 
 // TARGET_WEIGHT_BY_ENEMY 已迁移至 src/data/spawn.ts
 
+/** Enemy support is resolved by the economy/combat tick, never by render frequency. */
+export function processEnemySupport(state: GameState): void {
+  for (const enemy of state.enemies) enemy.damageReduction = 0;
+  for (const source of state.enemies) {
+    if (source.hp <= 0) continue;
+    if (source.type === 'shielder') {
+      for (const other of state.enemies) {
+        if (other.hp > 0 && dist(source, other) <= ENEMY_SUPPORT.shielder.range)
+          other.damageReduction = ENEMY_SUPPORT.shielder.reduction;
+      }
+    }
+    if (source.type === 'healer' && state.tick % ENEMY_SUPPORT.healer.intervalTicks === 0) {
+      for (const other of state.enemies) {
+        if (other !== source && other.hp > 0 && dist(source, other) <= ENEMY_SUPPORT.healer.range) {
+          other.hp = Math.min(
+            other.maxHp,
+            other.hp +
+              ENEMY_SUPPORT.healer.healBase +
+              state.wave * ENEMY_SUPPORT.healer.healPerWave,
+          );
+        }
+      }
+    }
+  }
+}
+
 export function updateEnemies(state: GameState, dt: number): void {
   for (const enemy of state.enemies) {
+    if (enemy.hp <= 0) continue;
     // 按敌人类型权重寻找有效距离最近的节点
-    const weights = TARGET_WEIGHT_BY_ENEMY[enemy.type] ?? {};
-    let closestNode: { id: string; x: number; y: number; d: number } | null = null;
-    for (const node of state.nodes) {
-      if (node.status === 'destroyed') continue;
-      if (node.owner === 'neutral') continue;
-      const rawDist = dist(enemy, node);
-      const weight = weights[node.type] ?? 1;
-      const effectiveDist = rawDist * weight;
-      if (!closestNode || effectiveDist < closestNode.d) {
-        closestNode = { id: node.id, x: node.x, y: node.y, d: effectiveDist };
+    const existing = state.nodes.find(
+      (n) => n.id === enemy.targetNodeId && n.status !== 'destroyed' && n.owner === 'player',
+    );
+    let closestNode: { id: string; x: number; y: number; d: number } | null = existing
+      ? { id: existing.id, x: existing.x, y: existing.y, d: dist(enemy, existing) }
+      : null;
+    if (!closestNode || state.tick >= (enemy.retargetTick ?? 0)) {
+      const weights = TARGET_WEIGHT_BY_ENEMY[enemy.type] ?? {};
+      closestNode = null;
+      for (const node of state.nodes) {
+        if (node.status === 'destroyed' || node.owner !== 'player') continue;
+        const effectiveDist = dist(enemy, node) * (weights[node.type] ?? 1);
+        if (!closestNode || effectiveDist < closestNode.d)
+          closestNode = { id: node.id, x: node.x, y: node.y, d: effectiveDist };
       }
+      enemy.retargetTick = state.tick + 2;
     }
 
     if (closestNode) {
@@ -163,25 +233,31 @@ export function updateEnemies(state: GameState, dt: number): void {
       if (d > 5) {
         // 星云减速
         const nebulaSlow = getNebulaSlowFactor(enemy.x, enemy.y, state);
-        enemy.x += (dx / d) * enemy.speed * nebulaSlow * dt * 60;
-        enemy.y += (dy / d) * enemy.speed * nebulaSlow * dt * 60;
+        const ox=enemy.x,oy=enemy.y;
+        moveEnemy(state, enemy, closestNode, enemy.speed * nebulaSlow * dt * 60);
+        if(Math.hypot(enemy.x-ox,enemy.y-oy)>.001)enemy.facing=Math.atan2(enemy.y-oy,enemy.x-ox);
       }
 
       // 到达节点，造成伤害
-      const targetNode = state.nodes.find(n => n.id === closestNode!.id);
+      const targetNode = state.nodes.find((n) => n.id === closestNode!.id);
       if (targetNode && d < targetNode.radius + enemy.radius) {
+        if (enemy.type === 'stealth') {
+          if ((enemy.revealedUntil ?? 0) <= state.elapsedSeconds)
+            state.alert={text:'隐匿者接触攻击后短暂暴露 · 前沿侦察可提前拦截',until:state.elapsedSeconds+4};
+          enemy.revealedUntil=state.elapsedSeconds+1.2;
+        }
         let dmg = enemy.damage * dt;
         // 联动：shield 直连同方 repair 时受伤减免
         if (targetNode.type === 'shield') {
           const repair = findShieldRepairLink(state, targetNode);
           if (repair) {
-            dmg *= (1 - COMBAT.shield.synergyRepairDamageReduce);
+            dmg *= 1 - COMBAT.shield.synergyRepairDamageReduce;
             markSynergy(state, 'shield-repair', [targetNode, repair]);
           }
         }
         targetNode.hp -= dmg;
         targetNode.hitFlash = 1;
-        if (rand() < 0.02) sfxNodeHit(); // 低频触发，避免噪音
+        if (Math.random() < 0.02) sfxNodeHit(); // 低频触发，避免噪音
         if (targetNode.hp <= targetNode.maxHp * 0.3) {
           targetNode.status = 'damaged';
         }
@@ -192,15 +268,6 @@ export function updateEnemies(state: GameState, dt: number): void {
           emitDestructionParticles(state, targetNode.x, targetNode.y, targetNode.glowColor);
           // 屏幕震动：核心摧毁更强
           state.screenShake = targetNode.type === 'core' ? 12 : 6;
-          // 所有核心被摧毁时游戏结束
-          if (targetNode.type === 'core') {
-            const remainingCores = state.nodes.filter(
-              n => n.type === 'core' && n.status !== 'destroyed'
-            );
-            if (remainingCores.length === 0) {
-              state.gameOver = true;
-            }
-          }
         }
       }
     }
@@ -220,12 +287,13 @@ export function updateEnemies(state: GameState, dt: number): void {
     for (const zone of state.terrainZones) {
       if (zone.type !== 'wormhole' || !zone.linkedId) continue;
       if (dist(enemy, zone) <= zone.radius) {
-        const linked = state.terrainZones.find(z => z.id === zone.linkedId);
+        const linked = state.terrainZones.find((z) => z.id === zone.linkedId);
         if (linked) {
           // 传送到配对虫洞外侧，避免立刻再次触发
           const angle = rand() * Math.PI * 2;
           enemy.x = linked.x + Math.cos(angle) * (linked.radius + 10);
           enemy.y = linked.y + Math.sin(angle) * (linked.radius + 10);
+          invalidateEnemyRoute(enemy);
           enemy.teleportCooldown = 2; // 2秒传送免疫
           break;
         }
@@ -236,7 +304,7 @@ export function updateEnemies(state: GameState, dt: number): void {
     for (const poly of state.terrainPolygons) {
       if (poly.type !== 'wormhole' || !poly.linkedId) continue;
       if (pointInPolygon(enemy.x, enemy.y, poly)) {
-        const linked = state.terrainPolygons.find(p => p.id === poly.linkedId);
+        const linked = state.terrainPolygons.find((p) => p.id === poly.linkedId);
         if (linked) {
           const angle = rand() * Math.PI * 2;
           // bbox 半边长作为传送偏移参考半径
@@ -244,6 +312,7 @@ export function updateEnemies(state: GameState, dt: number): void {
           const r = Math.max(lb.maxX - lb.minX, lb.maxY - lb.minY) * 0.5;
           enemy.x = linked.centroid.x + Math.cos(angle) * (r + 12);
           enemy.y = linked.centroid.y + Math.sin(angle) * (r + 12);
+          invalidateEnemyRoute(enemy);
           enemy.teleportCooldown = 2;
           break;
         }
@@ -255,8 +324,8 @@ export function updateEnemies(state: GameState, dt: number): void {
   for (const enemy of state.enemies) {
     if (enemy.type !== 'disruptor' || enemy.hp <= 0) continue;
     for (const edge of state.edges) {
-      const s = state.nodes.find(n => n.id === edge.sourceId);
-      const t = state.nodes.find(n => n.id === edge.targetId);
+      const s = state.nodes.find((n) => n.id === edge.sourceId);
+      const t = state.nodes.find((n) => n.id === edge.targetId);
       if (!s || !t) continue;
       if (pointToSegDist(enemy, s, t) < 30) {
         if (edge.disruptedTimer <= 0) sfxDisrupt(); // 仅首次触发音效
@@ -270,21 +339,6 @@ export function updateEnemies(state: GameState, dt: number): void {
     if (edge.disruptedTimer > 0) {
       edge.disruptedTimer -= dt;
       if (edge.disruptedTimer < 0) edge.disruptedTimer = 0;
-    }
-  }
-
-  // 治疗者效果：周期性治疗周围 120 范围内的其他敌人
-  for (const enemy of state.enemies) {
-    if (enemy.type !== 'healer' || enemy.hp <= 0) continue;
-    // 每 60 tick (~1秒) 治疗一次
-    if (state.tick % 60 !== 0) continue;
-    const healRange = 120;
-    const healAmount = 8 + state.wave * 1.5;
-    for (const other of state.enemies) {
-      if (other === enemy || other.hp <= 0) continue;
-      if (dist(enemy, other) <= healRange) {
-        other.hp = Math.min(other.maxHp, other.hp + healAmount);
-      }
     }
   }
 
@@ -311,6 +365,7 @@ export function updateEnemies(state: GameState, dt: number): void {
           radius: 5,
           teleportCooldown: 0,
           hitFlash: 0,
+          damageReduction: 0,
         });
       }
     }
@@ -319,27 +374,34 @@ export function updateEnemies(state: GameState, dt: number): void {
   // 死亡敌人爆炸粒子
   for (const enemy of state.enemies) {
     if (enemy.hp <= 0) {
+      state.enemiesKilled++;
+      // All weapon families settle a death here, once, before the entity is removed.
+      const reward = ENEMY_DEATH_REWARDS[enemy.type] ?? DEFAULT_ENEMY_REWARD;
+      state.score += reward.score;
+      state.resources += state.frontier ? reward.res * .2 : reward.res;
+      state.crystals += state.frontier ? Math.min(1,reward.crystal) : reward.crystal;
+      sfxKill();
       const color = ENEMY_COLORS[enemy.type] ?? '#ff3333';
       const count = enemy.type === 'boss' ? 16 : 8;
       for (let j = 0; j < count; j++) {
-        const angle = rand() * Math.PI * 2;
-        const speed = 1.5 + rand() * 4;
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1.5 + Math.random() * 4;
         state.particles.push({
           x: enemy.x,
           y: enemy.y,
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
-          life: 0.4 + rand() * 0.4,
+          life: 0.4 + Math.random() * 0.4,
           maxLife: 0.8,
           color,
-          size: 2 + rand() * 3,
+          size: 2 + Math.random() * 3,
         });
       }
     }
   }
 
   // 清除死亡敌人
-  state.enemies = state.enemies.filter(e => e.hp > 0);
+  state.enemies = state.enemies.filter((e) => e.hp > 0);
 
   // 添加分裂子体
   if (splitSpawns.length > 0) {
@@ -352,9 +414,9 @@ function updateProjectiles(state: GameState, dt: number): void {
 
   for (let i = 0; i < state.projectiles.length; i++) {
     const proj = state.projectiles[i];
-    const target = state.enemies.find(e => e.id === proj.targetId);
+    const target = state.enemies.find((e) => e.id === proj.targetId);
 
-    if (!target) {
+    if (!target || target.hp <= 0) {
       toRemove.push(i);
       continue;
     }
@@ -363,41 +425,38 @@ function updateProjectiles(state: GameState, dt: number): void {
     const dy = target.y - proj.y;
     const d = Math.sqrt(dx * dx + dy * dy);
 
+    const step = Math.min(d,proj.speed * dt * 60);
+    const next = d ? { x:proj.x+dx/d*step,y:proj.y+dy/d*step } : target;
+    if (!hasFiringLine(state,proj,next)) {
+      toRemove.push(i);
+      continue;
+    }
     if (d < target.radius + 4) {
       // 命中
-      target.hp -= proj.damage;
+      damageEnemy(target, proj.damage);
       target.hitFlash = 1;
       sfxHit();
       toRemove.push(i);
 
       // 爆炸粒子
       for (let j = 0; j < 6; j++) {
-        const angle = rand() * Math.PI * 2;
-        const speed = 1 + rand() * 3;
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1 + Math.random() * 3;
         state.particles.push({
           x: proj.x,
           y: proj.y,
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
-          life: 0.4 + rand() * 0.3,
+          life: 0.4 + Math.random() * 0.3,
           maxLife: 0.7,
           color: proj.color,
-          size: 2 + rand() * 2,
+          size: 2 + Math.random() * 2,
         });
-      }
-
-      // 击杀奖励
-      if (target.hp <= 0) {
-        sfxKill();
-        const reward = ENEMY_DEATH_REWARDS[target.type] ?? DEFAULT_ENEMY_REWARD;
-        state.score += reward.score;
-        state.resources += reward.res;
-        state.crystals += reward.crystal;
       }
     } else {
       // 移动飞弹
-      proj.x += (dx / d) * proj.speed * dt * 60;
-      proj.y += (dy / d) * proj.speed * dt * 60;
+      proj.x = next.x;
+      proj.y = next.y;
     }
   }
 

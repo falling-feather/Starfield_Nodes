@@ -1,190 +1,78 @@
-// ===== 关卡选择界面 =====
 import type { LevelConfig } from './levels';
 import { LEVELS, getUnlockedLevels } from './levels';
-import { COLORS, FONT, withAlpha } from './ui-tokens';
+import { Screen, paginationControls } from './screen';
+import { pageWindow, pageForIndex } from './screen-layout';
+import { missionMap, objectiveLabel, NODE_PRESENTATION } from './presentation';
+import { paintFacilityPortraits } from './facility-art';
+let collection: 'frontier' | 'archive' = 'frontier';
 
 export class LevelSelectScreen {
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private onSelect: (level: LevelConfig) => void;
-  private selectedIdx = 0;
-  private unlockedLevels: LevelConfig[];
-  private clearedIds: number[];
-  private animFrameId = 0;
-  private time = 0;
-  private keyHandler: (e: KeyboardEvent) => void;
-  private clickHandler: (e: MouseEvent) => void;
-  private moveHandler: (e: MouseEvent) => void;
-  /** 点击区域 */
-  private hitAreas: { idx: number; x: number; y: number; w: number; h: number }[] = [];
+  private screen: Screen;
+  private selectedId: number;
+  private resolved = false;
+  private view: 'map' | 'brief' | 'tactic' | 'kit' = 'map';
 
-  constructor(
-    canvas: HTMLCanvasElement,
-    clearedLevelIds: number[],
-    onSelect: (level: LevelConfig) => void,
-  ) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d')!;
-    this.onSelect = onSelect;
-    this.clearedIds = clearedLevelIds;
-    this.unlockedLevels = getUnlockedLevels(clearedLevelIds);
-
-    this.keyHandler = (e: KeyboardEvent) => this.handleKey(e);
-    this.clickHandler = (e: MouseEvent) => this.handleClick(e);
-    this.moveHandler = (e: MouseEvent) => this.handleMove(e);
-    window.addEventListener('keydown', this.keyHandler);
-    this.canvas.addEventListener('click', this.clickHandler);
-    this.canvas.addEventListener('mousemove', this.moveHandler);
-    this.loop();
-  }
-
-  private destroy(): void {
-    window.removeEventListener('keydown', this.keyHandler);
-    this.canvas.removeEventListener('click', this.clickHandler);
-    this.canvas.removeEventListener('mousemove', this.moveHandler);
-    cancelAnimationFrame(this.animFrameId);
-  }
-
-  private handleKey(e: KeyboardEvent): void {
-    const key = e.key.toLowerCase();
-    if (key === 'arrowup' || key === 'w') {
-      this.selectedIdx = Math.max(0, this.selectedIdx - 1);
-    } else if (key === 'arrowdown' || key === 's') {
-      this.selectedIdx = Math.min(this.unlockedLevels.length - 1, this.selectedIdx + 1);
-    } else if (key === 'enter') {
-      const level = this.unlockedLevels[this.selectedIdx];
-      if (level) {
-        this.destroy();
-        this.onSelect(level);
+  constructor(canvas: HTMLCanvasElement, cleared: number[], onSelect: (level: LevelConfig) => void, onBack?: () => void, initialId = 101) {
+    const routes = () => LEVELS.filter(level => collection === 'frontier' ? !!level.tactics?.frontier : !level.tactics?.frontier);
+    this.selectedId = routes().some(level => level.id === initialId) ? initialId : routes()[0].id;
+    const current = () => routes().find(level => level.id === this.selectedId)!;
+    const unlocked = getUnlockedLevels(cleared);
+    const launch = () => { if (this.resolved) return; this.resolved = true; this.screen.destroy(); onSelect(current()); };
+    const back = () => { if (this.resolved) return; this.resolved = true; this.screen.destroy(); onBack?.(); };
+    const changePage = (delta: number) => {
+      const list = routes(), page = pageForIndex(list.findIndex(level => level.id === this.selectedId), list.length, 3);
+      this.selectedId = list[pageWindow(list.length, 3, page + delta).start].id;
+      render();
+      this.screen.root.querySelector<HTMLElement>('.expedition-route.selected')?.focus({ preventScroll: true });
+    };
+    this.screen = new Screen(canvas, 'mission-screen', event => {
+      if (['ArrowRight','ArrowLeft','ArrowDown','ArrowUp'].includes(event.key)) {
+        event.preventDefault();
+        const list = routes(), index = list.findIndex(level => level.id === this.selectedId);
+        this.selectedId = list[(index + (['ArrowRight','ArrowDown'].includes(event.key) ? 1 : -1) + list.length) % list.length].id;
+        render();
+        this.screen.root.querySelector<HTMLElement>('.expedition-route.selected')?.focus({ preventScroll: true });
+      } else if (event.key === 'PageDown' || event.key === 'PageUp') {
+        event.preventDefault(); changePage(event.key === 'PageDown' ? 1 : -1);
+      } else if (event.key === 'Enter') { event.preventDefault(); launch(); }
+      else if (event.key === 'Escape') back();
+    });
+    this.screen.root.addEventListener('click', event => {
+      const button = (event.target as Element).closest<HTMLElement>('[data-action]');
+      if (!button || button instanceof HTMLButtonElement && button.disabled) return;
+      switch (button.dataset.action) {
+        case 'mission': this.selectedId = Number(button.dataset.id); render(); break;
+        case 'collection': collection = button.dataset.collection as typeof collection; this.selectedId = routes()[0].id; render(); break;
+        case 'route-page': changePage(Number(button.dataset.direction)); break;
+        case 'detail': this.view = button.dataset.view as typeof this.view; render(); break;
+        case 'launch': launch(); break;
+        case 'back': case 'home': back(); break;
       }
-    }
-  }
-
-  private handleClick(e: MouseEvent): void {
-    const rect = this.canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    for (const area of this.hitAreas) {
-      if (mx >= area.x && mx <= area.x + area.w && my >= area.y && my <= area.y + area.h) {
-        const level = this.unlockedLevels[area.idx];
-        if (level) {
-          this.destroy();
-          this.onSelect(level);
-        }
-        return;
-      }
-    }
-  }
-
-  private handleMove(e: MouseEvent): void {
-    const rect = this.canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    for (const area of this.hitAreas) {
-      if (mx >= area.x && mx <= area.x + area.w && my >= area.y && my <= area.y + area.h) {
-        this.selectedIdx = area.idx;
-        return;
-      }
-    }
-  }
-
-  private loop(): void {
-    this.time += 0.016;
-    this.render();
-    this.animFrameId = requestAnimationFrame(() => this.loop());
-  }
-
-  private render(): void {
-    const ctx = this.ctx;
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-
-    ctx.save();
-    ctx.fillStyle = COLORS.bg.pure;
-    ctx.fillRect(0, 0, w, h);
-    this.hitAreas = [];
-
-    // 标题
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = 'bold 28px monospace';
-    ctx.fillStyle = COLORS.accent.cyan;
-    ctx.fillText('〈 选择关卡 〉', w / 2, 60);
-
-    // 关卡列表（按屏幕高度自适应）
-    const startY = 100;
-    const availableH = Math.max(280, h - 160);
-    const itemH = Math.max(58, Math.min(80, Math.floor(availableH / Math.max(LEVELS.length, 1))));
-    const panelW = Math.min(760, Math.max(460, w - 120));
-    const panelX = w / 2 - panelW / 2;
-
-    for (let i = 0; i < LEVELS.length; i++) {
-      const level = LEVELS[i];
-      const y = startY + i * itemH;
-      const isUnlocked = this.unlockedLevels.includes(level);
-      const isCleared = this.clearedIds.includes(level.id);
-      const isSelected = isUnlocked && this.unlockedLevels[this.selectedIdx]?.id === level.id;
-
-      // 选中高亮框
-      if (isSelected) {
-        const pulse = Math.sin(this.time * 4) * 0.15 + 0.85;
-        ctx.strokeStyle = withAlpha(COLORS.accent.cyan, 0.6 * pulse);
-        ctx.lineWidth = 2;
-        ctx.strokeRect(panelX, y - 4, panelW, itemH - 8);
-        ctx.fillStyle = withAlpha(COLORS.accent.cyan, 0.05);
-        ctx.fillRect(panelX, y - 4, panelW, itemH - 8);
-      }
-
-      // 记录可点击区域
-      if (isUnlocked) {
-        const uIdx = this.unlockedLevels.indexOf(level);
-        if (uIdx >= 0) {
-          this.hitAreas.push({ idx: uIdx, x: panelX, y: y - 4, w: panelW, h: itemH - 8 });
-        }
-      }
-
-      // 关卡编号
-      ctx.textAlign = 'left';
-      ctx.font = `bold ${Math.max(13, Math.min(16, itemH * 0.24))}px monospace`;
-      if (!isUnlocked) {
-        ctx.fillStyle = COLORS.text.borderFaint;
-      } else if (isCleared) {
-        ctx.fillStyle = COLORS.accent.green;
-      } else {
-        ctx.fillStyle = COLORS.accent.cyanSoft;
-      }
-      const statusIcon = !isUnlocked ? '🔒' : isCleared ? '★' : '○';
-      ctx.fillText(`${statusIcon}  第${level.id}关 — ${level.name}`, panelX + 16, y + itemH * 0.30);
-
-      // 描述
-      ctx.font = FONT.xs;
-      ctx.fillStyle = isUnlocked ? COLORS.text.muted : COLORS.text.borderFaint;
-      ctx.fillText(level.description, panelX + 16, y + itemH * 0.62);
-
-      // 右侧信息
-      if (isUnlocked) {
-        ctx.textAlign = 'right';
-        ctx.font = `11px monospace`;
-        const objText = {
-          survive: `生存${level.targetWaves}波`,
-          boss: `击败Boss(第${level.bossWave}波)`,
-          protect: '保护所有核心',
-          timed: `限时${level.timeLimit}s`,
-        }[level.objective];
-        ctx.fillStyle = COLORS.text.faint;
-        ctx.fillText(objText, panelX + panelW - 16, y + itemH * 0.30);
-
-        ctx.fillStyle = COLORS.text.disabled;
-        ctx.fillText(`${level.worldWidth}×${level.worldHeight} | ×${level.difficultyMult}`, panelX + panelW - 16, y + itemH * 0.62);
-      }
-    }
-
-    // 操作提示
-    ctx.textAlign = 'center';
-    ctx.font = FONT.xs;
-    ctx.fillStyle = COLORS.text.disabled;
-    ctx.fillText('点击选择 · ↑↓ 导航 · Enter 确认', w / 2, h - 40);
-
-    ctx.restore();
+    });
+    const render = () => {
+      const level = current(), tactics = level.tactics!, list = routes();
+      const done = list.filter(route => cleared.includes(route.id)).length;
+      const page = pageWindow(list.length, 3, pageForIndex(list.findIndex(route => route.id === this.selectedId), list.length, 3));
+      this.screen.root.style.setProperty('--mission-accent', tactics.accent);
+      const cards = list.slice(page.start, page.end).map((route, offset) => `<button class="expedition-route ${route.id === this.selectedId ? 'selected' : ''}" data-action="mission" data-id="${route.id}" data-focus-key="mission-${route.id}" aria-pressed="${route.id === this.selectedId}" style="--route-accent:${route.tactics!.accent}">
+        <span class="route-number">${String(page.start + offset + 1).padStart(2,'0')}</span><div><small>${route.tactics?.frontier?.chapter.split(' / ')[1] ?? '经典远征'}</small><h2>${route.name}</h2></div><span class="route-completion" aria-label="${cleared.includes(route.id) ? '已完成' : '可以试航'}">${cleared.includes(route.id) ? '✓' : '↗'}</span></button>`).join('');
+      const content = this.view === 'map'
+        ? `<div class="expedition-chart"><div class="chart-caption"><span>TACTICAL ATLAS</span><span>${level.worldWidth} × ${level.worldHeight}</span></div><div class="chart-map">${missionMap(level)}</div><div class="chart-legend"><span>◇ 任务设施</span><span>⌁ 矿脉</span><span>● 核心</span><span>△ 入侵</span></div></div>`
+        : this.view === 'brief' || this.view === 'tactic'
+        ? `<div class="brief-reading"><h3>${this.view === 'brief' ? '行动情境' : '布局取舍'}</h3><p>${this.view === 'brief' ? tactics.briefing : tactics.challenge}</p></div>`
+        : `<div class="expedition-kit">${(tactics.recommendedNodes ?? []).slice(0,7).map(type => `<div class="kit-card"><canvas width="160" height="128" data-facility="${type}" aria-hidden="true"></canvas><strong>${NODE_PRESENTATION[type].name}</strong></div>`).join('')}</div>`;
+      this.screen.render(`${this.screen.header('星域行动 / MISSION CONTROL', !!onBack)}
+        <section class="expedition-layout"><div class="expedition-routes"><div class="section-heading"><div><p class="eyebrow">CHOOSE YOUR FRONTIER</p><h1>选择你的前线</h1></div><span class="progress-chip">${done} / ${list.length}</span></div>
+        <div class="mode-tabs" role="group" aria-label="航线集合"><button data-action="collection" data-collection="frontier" data-focus-key="collection-frontier" aria-pressed="${collection === 'frontier'}">前沿行动</button><button data-action="collection" data-collection="archive" data-focus-key="collection-archive" aria-pressed="${collection === 'archive'}">历史航线</button></div>
+        <div class="expedition-route-list">${cards}</div>${paginationControls(page, 'route-page', '航线')}<p class="subtle-note">${collection === 'frontier' ? '三张行动均可直接试玩，自由选择路线。' : '保留原进度，任意历史航线均可回访。'}</p></div>
+        <aside class="expedition-detail"><header class="expedition-brief"><div><h2>${level.name}</h2><p>${tactics.tagline}</p></div><div class="brief-budget">${level.startResources}<small>起始资源</small></div></header>
+        <div class="view-tabs" role="group" aria-label="战术资料">${[['map','战术星图'],['brief','行动简报'],['tactic','布局取舍'],['kit','设施建议']].map(([view,label]) => `<button data-action="detail" data-view="${view}" data-focus-key="detail-${view}" aria-pressed="${this.view === view}">${label}</button>`).join('')}</div>
+        <div class="expedition-detail-content">${content}</div><div class="expedition-goal"><small>行动目标</small><strong>${objectiveLabel(level)}</strong></div>
+        <div class="expedition-launch"><span>${!unlocked.includes(level) ? '开放试航' : cleared.includes(level.id) ? '✓ 已完成 · 可重玩' : '可直接试航'}</span><button class="primary-button" data-action="launch">配置设施，进入行动 <span>→</span></button></div></aside></section>
+        <footer class="screen-footer"><span>自由建造 · 路线选择 · 持续供电</span><span>方向键选关 · PageUp / Down 翻页 · Esc 返回</span></footer>`);
+      paintFacilityPortraits(this.screen.root);
+    };
+    this.screen.onResize(render);
+    render();
   }
 }

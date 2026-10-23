@@ -1,11 +1,23 @@
+import { drawEnemyFleet } from './fleet-art';
+import { drawRockMass } from './terrain-art';
+import { drawWorldFacility, drawFrontierSites } from './world-facilities';
+import { FACILITY_ART } from './data/facility-art';
+import { ENEMY_SUPPORT } from './data/spawn';
+import { COMBAT } from './data/balance';
+import { enemyRoute } from './navigation';
+import { UI_FONT, MONO_FONT, minimapRect } from './canvas-ui';
+import { canDetectEnemy, isPositionExplored } from './visibility';
 // ===== Canvas 渲染引擎 =====
-import type { GameState, GameNode, NodeType, Camera, TerrainZone, TerrainPolygon } from './types';
+import type { GameState, GameNode, Camera, TerrainZone, TerrainPolygon } from './types';
 import type { PolygonEditor } from './polygon-editor';
-import { MAX_EDGE_LENGTH, TERRITORY_RADIUS, EXPANDED_TERRITORY_RADIUS } from './data/runtime';
-import { NODE_CONFIGS } from './data/nodes';
+import {
+  MAX_EDGE_LENGTH,
+  TERRITORY_RADIUS,
+  EXPANDED_TERRITORY_RADIUS,
+  TICK_INTERVAL,
+} from './data/runtime';
 import { EDGE_CONFIGS } from './data/edges';
-import { ENEMY_COLORS } from './data/enemies';
-import { dist, isOvercharged } from './graph';
+import { dist, isOvercharged, radarField } from './graph';
 import { FogOfWar } from './fog';
 import { COLORS } from './ui-tokens';
 
@@ -15,6 +27,11 @@ export class Renderer {
   private time: number = 0;
   private starField: { x: number; y: number; size: number; brightness: number }[] = [];
   private shakeIntensity: number = 0;
+  private nodeIndex = new Map<string, GameNode>();
+  private terrainTextures = new Map<string, OffscreenCanvas>();
+  private atlas: HTMLImageElement;
+  maxEdgeLength: number = MAX_EDGE_LENGTH;
+  rangeMultiplier = 1;
   fog: FogOfWar;
 
   constructor(canvas: HTMLCanvasElement, worldWidth: number, worldHeight: number) {
@@ -22,11 +39,13 @@ export class Renderer {
     this.ctx = canvas.getContext('2d')!;
     this.fog = new FogOfWar(worldWidth, worldHeight);
     this.generateStarField();
+    this.atlas = new Image();
+    this.atlas.src = `${import.meta.env.BASE_URL}art/stellar-atlas.webp`;
   }
 
   private generateStarField(): void {
     this.starField = [];
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < 110; i++) {
       this.starField.push({
         x: Math.random(),
         y: Math.random(),
@@ -46,23 +65,26 @@ export class Renderer {
   }
 
   render(state: GameState, dt: number): void {
-    this.time += dt;
+    this.time = state.elapsedSeconds;
+    this.nodeIndex.clear();
+    for (const node of state.nodes) this.nodeIndex.set(node.id, node);
     const ctx = this.ctx;
     const w = state.canvasWidth;
     const h = state.canvasHeight;
     const cam = state.camera;
 
     // 屏幕震动（核心受攻击时 + 外部触发）
-    const core = state.nodes.find(n => n.type === 'core');
-    if (core && core.hp < core.maxHp) {
-      this.shakeIntensity = Math.max(this.shakeIntensity, (1 - core.hp / core.maxHp) * 4);
+    const core = state.nodes.find((n) => n.type === 'core');
+    if (core && core.hitFlash > 0.1 && core.hp < core.maxHp && !state.paused) {
+      this.shakeIntensity = Math.max(this.shakeIntensity, Math.min(2.4, core.hitFlash * 2));
     }
     // 合并外部震动（节点摧毁等）
     if (state.screenShake > 0) {
       this.shakeIntensity = Math.max(this.shakeIntensity, state.screenShake);
       state.screenShake = 0;
     }
-    this.shakeIntensity *= 0.9;
+    this.shakeIntensity *= Math.pow(0.01, dt * Math.max(1, state.timeScale));
+    if (state.paused || state.gameOver || state.levelWon) this.shakeIntensity = 0;
 
     ctx.save();
     if (this.shakeIntensity > 0.5) {
@@ -72,10 +94,28 @@ export class Renderer {
     }
 
     // 清空画布
-    ctx.fillStyle = '#000000';
+    ctx.fillStyle = '#06111e';
     ctx.fillRect(-5, -5, w + 10, h + 10);
 
-    // 星空背景（屏幕空间，微弱视差）
+    if (this.atlas.complete && this.atlas.naturalWidth) {
+      ctx.save();
+      ctx.globalAlpha = 0.16;
+      ctx.drawImage(this.atlas, 0, 0, w, h);
+      ctx.restore();
+    }
+    const accent = state.mission?.accent ?? '#8de0d4';
+    const atmosphere = ctx.createRadialGradient(
+      w * 0.78,
+      h * 0.28,
+      0,
+      w * 0.65,
+      h * 0.5,
+      Math.max(w, h) * 0.8,
+    );
+    atmosphere.addColorStop(0, this.withAlpha(accent, 0.065));
+    atmosphere.addColorStop(1, this.withAlpha(accent, 0));
+    ctx.fillStyle = atmosphere;
+    ctx.fillRect(-5, -5, w + 10, h + 10);
     this.drawStarField(w, h, cam);
 
     // === 进入世界空间 ===
@@ -84,7 +124,7 @@ export class Renderer {
     ctx.scale(cam.zoom, cam.zoom);
 
     // 绘制网格
-    this.drawGrid(state.worldWidth, state.worldHeight);
+    this.drawGrid(state);
 
     // 绘制地形
     this.drawTerrain(state);
@@ -102,7 +142,6 @@ export class Renderer {
     this.drawRepairAuras(state);
 
     // 绘制狙击手射程指示
-    this.drawSniperScopes(state);
 
     // 绘制缓冲器增幅光环
     this.drawBufferAuras(state);
@@ -132,7 +171,7 @@ export class Renderer {
     this.drawToxinClouds(state);
 
     // 绘制电弧链闪电效果
-    this.drawArcChains(state);
+    this.drawStrikeEffects(state);
 
     // 绘制自爆充能光效
     this.drawKamikazeCharge(state);
@@ -141,7 +180,16 @@ export class Renderer {
     this.drawFlowParticles(state);
 
     // 绘制节点
+    const margin = 120;
     for (const node of state.nodes) {
+      if (
+        node.x < cam.x - margin ||
+        node.y < cam.y - margin ||
+        node.x > cam.x + w / cam.zoom + margin ||
+        node.y > cam.y + h / cam.zoom + margin
+      )
+        continue;
+      if (node.owner === 'neutral' && !isPositionExplored(state, node.x, node.y)) continue;
       this.drawNode(node, state);
     }
 
@@ -163,14 +211,14 @@ export class Renderer {
 
     // 绘制选中高亮
     if (state.selectedNodeId) {
-      const sel = state.nodes.find(n => n.id === state.selectedNodeId);
+      const sel = state.nodes.find((n) => n.id === state.selectedNodeId);
       if (sel) this.drawSelectionRing(sel);
     }
 
     // 绘制批量选中高亮
     if (state.selectedNodeIds.length > 0) {
       for (const id of state.selectedNodeIds) {
-        const node = state.nodes.find(n => n.id === id);
+        const node = state.nodes.find((n) => n.id === id);
         if (node) this.drawBatchSelectionRing(node);
       }
     }
@@ -180,6 +228,8 @@ export class Renderer {
 
     // 战争迷雾（在世界空间内绘制）
     this.fog.renderFog(ctx, state);
+    drawFrontierSites(ctx,state);
+    this.drawMissionSignals(state);
 
     ctx.restore(); // 退出世界空间
 
@@ -190,6 +240,43 @@ export class Renderer {
     ctx.restore(); // 结束震动偏移
   }
 
+  private drawMissionSignals(state: GameState): void {
+    const ctx = this.ctx,
+      cam = state.camera;
+    const objective = state.mission?.secondaryObjective;
+    const signals = [...(state.mission?.entryPoints ?? [])];
+    if (objective?.kind === 'observatory')
+      signals.push({ ...objective.position, label: '远端观测点' });
+    for (const entry of signals) {
+      const active =
+        state.wave >= (entry.fromWave ?? 1) && state.wave <= (entry.untilWave ?? Infinity);
+      if (!active) continue;
+      const wx = entry.x * state.worldWidth,
+        wy = entry.y * state.worldHeight,
+        sx = (wx - cam.x) * cam.zoom,
+        sy = (wy - cam.y) * cam.zoom;
+      const x = Math.max(70, Math.min(state.canvasWidth - 80, sx));
+      let y = Math.max(225, Math.min(state.canvasHeight - 190, sy));
+      // Keep boundary signals clear of the objective and optional boss panels.
+      if (x < 360) y = Math.max(350, y);
+      ctx.save();
+      ctx.translate(cam.x, cam.y);
+      ctx.scale(1 / cam.zoom, 1 / cam.zoom);
+      // Convert back to screen coordinates within the world transform.
+      ctx.translate(x, y);
+      ctx.strokeStyle = '#d8a18499';
+      ctx.fillStyle = '#d8aa8c';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(0, 0, 10 + Math.sin(this.time * 2) * 2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.font = `10px ${UI_FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(entry.label, 0, 25);
+      ctx.restore();
+    }
+  }
+
   private drawStarField(w: number, h: number, cam: Camera): void {
     const ctx = this.ctx;
     for (const star of this.starField) {
@@ -197,34 +284,37 @@ export class Renderer {
       ctx.fillStyle = `rgba(255,255,255,${Math.max(0.1, flicker)})`;
       // 微弱视差效果
       const parallax = 0.1;
-      const sx = ((star.x * w * 2 - cam.x * parallax) % w + w) % w;
-      const sy = ((star.y * h * 2 - cam.y * parallax) % h + h) % h;
+      const sx = (((star.x * w * 2 - cam.x * parallax) % w) + w) % w;
+      const sy = (((star.y * h * 2 - cam.y * parallax) % h) + h) % h;
       ctx.fillRect(sx, sy, star.size, star.size);
     }
   }
 
-  private drawGrid(w: number, h: number): void {
-    const ctx = this.ctx;
-    ctx.strokeStyle = 'rgba(0,255,255,0.03)';
+  private drawGrid(state: GameState): void {
+    const ctx = this.ctx,
+      cam = state.camera,
+      size = 80;
+    const left = Math.max(0, Math.floor(cam.x / size) * size),
+      top = Math.max(0, Math.floor(cam.y / size) * size);
+    const right = Math.min(state.worldWidth, cam.x + state.canvasWidth / cam.zoom),
+      bottom = Math.min(state.worldHeight, cam.y + state.canvasHeight / cam.zoom);
+    ctx.strokeStyle = '#7ba5bd10';
     ctx.lineWidth = 0.5;
-    const gridSize = 60;
-    for (let x = 0; x < w; x += gridSize) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
-      ctx.stroke();
+    ctx.beginPath();
+    for (let x = left; x <= right; x += size) {
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
     }
-    for (let y = 0; y < h; y += gridSize) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-      ctx.stroke();
+    for (let y = top; y <= bottom; y += size) {
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
     }
+    ctx.stroke();
   }
 
   private drawTerritories(state: GameState): void {
     const ctx = this.ctx;
-    const cores = state.nodes.filter(n => n.type === 'core' && n.status !== 'destroyed');
+    const cores = state.nodes.filter((n) => n.type === 'core' && n.status !== 'destroyed');
     if (cores.length === 0) return;
 
     const colors = [
@@ -253,17 +343,39 @@ export class Renderer {
   private drawTerrain(state: GameState): void {
     for (const zone of state.terrainZones) {
       switch (zone.type) {
-        case 'nebula': this.drawNebula(zone); break;
-        case 'asteroid': this.drawAsteroid(zone); break;
-        case 'wormhole': this.drawWormhole(zone, state); break;
+        case 'nebula':
+          this.drawNebula(zone);
+          break;
+        case 'asteroid':
+          this.drawAsteroid(zone);
+          break;
+        case 'wormhole':
+          this.drawWormhole(zone, state);
+          break;
       }
     }
     // V1.3.0: 多边形地形
+    const cam = state.camera,
+      right = cam.x + state.canvasWidth / cam.zoom,
+      bottom = cam.y + state.canvasHeight / cam.zoom;
     for (const poly of state.terrainPolygons) {
+      if (
+        poly.bbox.maxX < cam.x - 60 ||
+        poly.bbox.minX > right + 60 ||
+        poly.bbox.maxY < cam.y - 60 ||
+        poly.bbox.minY > bottom + 60
+      )
+        continue;
       switch (poly.type) {
-        case 'nebula': this.drawNebulaPolygon(poly); break;
-        case 'asteroid': this.drawAsteroidPolygon(poly); break;
-        case 'wormhole': this.drawWormholePolygon(poly, state); break;
+        case 'nebula':
+          this.drawNebulaPolygon(poly);
+          break;
+        case 'asteroid':
+          this.drawAsteroidPolygon(poly);
+          break;
+        case 'wormhole':
+          this.drawWormholePolygon(poly, state);
+          break;
       }
     }
   }
@@ -279,91 +391,104 @@ export class Renderer {
   }
 
   private drawNebulaPolygon(poly: TerrainPolygon): void {
-    const ctx = this.ctx;
-    const cx = poly.centroid.x, cy = poly.centroid.y;
-    const b = poly.bbox;
-    const r = Math.max(b.maxX - b.minX, b.maxY - b.minY) * 0.5;
-    const pulse = Math.sin(this.time * 0.5 + cx * 0.01) * 0.04 + 0.14;
+    const ctx = this.ctx,
+      b = poly.bbox,
+      w = b.maxX - b.minX,
+      h = b.maxY - b.minY;
+    let texture = this.terrainTextures.get(poly.id);
+    if (!texture) {
+      const scale = Math.min(1, 900 / Math.max(w, h));
+      texture = new OffscreenCanvas(Math.ceil(w * scale), Math.ceil(h * scale));
+      const t = texture.getContext('2d')!;
+      t.scale(scale, scale);
+      t.translate(-b.minX, -b.minY);
+      t.beginPath();
+      poly.vertices.forEach((p, i) => (i ? t.lineTo(p.x, p.y) : t.moveTo(p.x, p.y)));
+      t.closePath();
+      t.clip();
+      t.fillStyle = '#203c5333';
+      t.fillRect(b.minX, b.minY, w, h);
+      for (let i = 0; i < 12; i++) {
+        const u = (Math.sin(i * 12.9898 + poly.centroid.x) * 43758.5453) % 1,
+          v = (Math.sin(i * 7.173 + poly.centroid.y) * 15731.7) % 1;
+        const x = b.minX + Math.abs(u) * w,
+          y = b.minY + Math.abs(v) * h,
+          r = Math.max(w, h) * (0.22 + (i % 4) * 0.06);
+        const g = t.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, 'rgba(98,150,180,.14)');
+        g.addColorStop(0.5, 'rgba(73,118,157,.08)');
+        g.addColorStop(1, 'rgba(42,81,120,0)');
+        t.fillStyle = g;
+        t.fillRect(b.minX, b.minY, w, h);
+      }
+      this.terrainTextures.set(poly.id, texture);
+    }
     ctx.save();
-    this.tracePolygon(poly);
-    ctx.clip();
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    grad.addColorStop(0, `rgba(100,50,180,${pulse})`);
-    grad.addColorStop(0.5, `rgba(70,30,150,${pulse * 0.7})`);
-    grad.addColorStop(1, `rgba(40,15,100,${pulse * 0.25})`);
-    ctx.fillStyle = grad;
-    ctx.fillRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY);
-    ctx.restore();
-    // 边界描边
-    ctx.save();
-    ctx.strokeStyle = 'rgba(150,100,220,0.35)';
-    ctx.lineWidth = 1.2;
-    this.tracePolygon(poly);
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(150,100,220,0.4)';
-    ctx.font = '10px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('星云区', cx, cy);
-    ctx.restore();
-  }
-
-  private drawAsteroidPolygon(poly: TerrainPolygon): void {
-    const ctx = this.ctx;
-    const cx = poly.centroid.x, cy = poly.centroid.y;
-    const b = poly.bbox;
-    const r = Math.max(b.maxX - b.minX, b.maxY - b.minY) * 0.5;
-    ctx.save();
-    this.tracePolygon(poly);
-    ctx.clip();
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    grad.addColorStop(0, 'rgba(80,60,40,0.22)');
-    grad.addColorStop(0.7, 'rgba(60,45,30,0.14)');
-    grad.addColorStop(1, 'rgba(40,30,20,0.05)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY);
-    ctx.restore();
-    // 危险虚线
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255,100,50,0.3)';
-    ctx.lineWidth = 1.4;
-    ctx.setLineDash([5, 6]);
+    ctx.drawImage(texture, b.minX, b.minY, w, h);
+    ctx.strokeStyle = '#94b9db3d';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 7]);
     this.tracePolygon(poly);
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(255,140,80,0.5)';
-    ctx.font = '10px monospace';
+    ctx.fillStyle = '#86a8c278';
+    ctx.font = `11px ${UI_FONT}`;
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('小行星带', cx, cy);
+    ctx.fillText('星云 · 增幅与减速', poly.centroid.x, poly.centroid.y);
     ctx.restore();
   }
 
-  private drawWormholePolygon(poly: TerrainPolygon, _state: GameState): void {
-    const ctx = this.ctx;
-    const cx = poly.centroid.x, cy = poly.centroid.y;
-    const b = poly.bbox;
-    const r = Math.max(b.maxX - b.minX, b.maxY - b.minY) * 0.5;
+  private drawAsteroidPolygon(poly:TerrainPolygon):void {drawRockMass(this.ctx,poly);}
+
+  private drawWormholePolygon(poly: TerrainPolygon, state: GameState): void {
+    const ctx = this.ctx,
+      c = poly.centroid,
+      r = Math.min(poly.bbox.maxX - poly.bbox.minX, poly.bbox.maxY - poly.bbox.minY) * 0.42;
+    const gates = state.terrainPolygons.filter((p) => p.type === 'wormhole'),
+      index = gates.indexOf(poly);
+    const active = state.nodes.some(
+      (n) =>
+        n.type === 'relay' &&
+        n.connected &&
+        n.currentEnergy >= n.activationThreshold &&
+        Math.hypot(n.x - c.x, n.y - c.y) < r,
+    );
     ctx.save();
-    this.tracePolygon(poly);
-    ctx.clip();
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    grad.addColorStop(0, 'rgba(80,200,255,0.25)');
-    grad.addColorStop(0.6, 'rgba(40,140,220,0.12)');
-    grad.addColorStop(1, 'rgba(20,80,160,0.04)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY);
-    ctx.restore();
-    ctx.save();
-    ctx.strokeStyle = 'rgba(120,210,255,0.45)';
-    ctx.lineWidth = 1.2;
+    const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r * 1.5);
+    g.addColorStop(0, '#020b17e8');
+    g.addColorStop(0.48, active ? '#5cbcb84d' : '#52799f26');
+    g.addColorStop(0.75, '#6db5cb18');
+    g.addColorStop(1, '#6db5cb00');
+    ctx.fillStyle = g;
+    ctx.fillRect(c.x - r * 1.5, c.y - r * 1.5, r * 3, r * 3);
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath();
+      ctx.ellipse(
+        c.x,
+        c.y,
+        r * (0.35 + i * 0.13),
+        r * (0.18 + i * 0.1),
+        this.time * 0.13 + i * 0.25,
+        0,
+        Math.PI * 2,
+      );
+      ctx.strokeStyle = active ? '#9de3d59c' : '#7eaec96b';
+      ctx.lineWidth = i === 3 ? 2 : 1;
+      ctx.stroke();
+    }
+    ctx.strokeStyle = '#8fc5d13b';
+    ctx.setLineDash([3, 7]);
     this.tracePolygon(poly);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(160,230,255,0.5)';
-    ctx.font = '10px monospace';
+    ctx.setLineDash([]);
+    ctx.fillStyle = active ? '#b3e8df' : '#7fa5b9';
+    ctx.font = `11px ${UI_FONT}`;
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('虫洞', cx, cy);
+    ctx.fillText(
+      `虫洞 ${String.fromCharCode(65 + index)} · ${active ? '上行接通' : '等待中继'}`,
+      c.x,
+      c.y + r + 24,
+    );
     ctx.restore();
   }
 
@@ -386,8 +511,9 @@ export class Renderer {
     // 漂浮星尘点缀
     const seed = Math.floor(zone.x * 7 + zone.y * 13);
     for (let i = 0; i < 8; i++) {
-      const angle = ((seed + i * 137.5) % 360) * Math.PI / 180 + this.time * 0.1 * ((i % 2) * 2 - 1);
-      const d = ((seed * (i + 1)) % 100) / 100 * r * 0.7;
+      const angle =
+        (((seed + i * 137.5) % 360) * Math.PI) / 180 + this.time * 0.1 * ((i % 2) * 2 - 1);
+      const d = (((seed * (i + 1)) % 100) / 100) * r * 0.7;
       const sx = zone.x + Math.cos(angle) * d;
       const sy = zone.y + Math.sin(angle) * d;
       ctx.fillStyle = `rgba(180,120,255,${0.15 + Math.sin(this.time + i) * 0.08})`;
@@ -432,8 +558,8 @@ export class Renderer {
     // 小岩石碎片（确定性伪随机）
     const seed = Math.floor(zone.x * 7 + zone.y * 13);
     for (let i = 0; i < 14; i++) {
-      const angle = ((seed + i * 137.5) % 360) * Math.PI / 180;
-      const d = ((seed * (i + 1) + i * 97) % 100) / 100 * r * 0.8;
+      const angle = (((seed + i * 137.5) % 360) * Math.PI) / 180;
+      const d = (((seed * (i + 1) + i * 97) % 100) / 100) * r * 0.8;
       const rx = zone.x + Math.cos(angle) * d;
       const ry = zone.y + Math.sin(angle) * d;
       const size = 2 + ((seed + i * 31) % 4);
@@ -445,7 +571,8 @@ export class Renderer {
         const rr = size * (0.6 + ((seed + i + j) % 4) * 0.15);
         const px = rx + Math.cos(a) * rr;
         const py = ry + Math.sin(a) * rr;
-        if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        if (j === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
       }
       ctx.closePath();
       ctx.fill();
@@ -477,7 +604,7 @@ export class Renderer {
 
     // 旋转环
     for (let ring = 3; ring >= 0; ring--) {
-      const ringR = r * (ring + 1) / 4;
+      const ringR = (r * (ring + 1)) / 4;
       const alpha = 0.25 - ring * 0.04;
       ctx.strokeStyle = `rgba(0,200,255,${alpha})`;
       ctx.lineWidth = 1.5;
@@ -488,7 +615,7 @@ export class Renderer {
 
     // 配对连线（只绘制一次，id 较小的那端画连线）
     if (zone.linkedId && zone.id < zone.linkedId) {
-      const linked = state.terrainZones.find(z => z.id === zone.linkedId);
+      const linked = state.terrainZones.find((z) => z.id === zone.linkedId);
       if (linked) {
         ctx.strokeStyle = 'rgba(0,200,255,0.06)';
         ctx.lineWidth = 1;
@@ -511,313 +638,84 @@ export class Renderer {
   }
 
   private drawEdges(state: GameState): void {
-    const ctx = this.ctx;
-
+    const ctx = this.ctx,
+      cam = state.camera;
+    ctx.save();
     for (const edge of state.edges) {
-      const source = state.nodes.find(n => n.id === edge.sourceId);
-      const target = state.nodes.find(n => n.id === edge.targetId);
-      if (!source || !target) continue;
-
-      const disrupted = edge.disruptedTimer > 0;
-      const active = edge.active && !disrupted;
-      const cfg = EDGE_CONFIGS[edge.type];
-
-      const dx = target.x - source.x;
-      const dy = target.y - source.y;
-      const len = Math.sqrt(dx * dx + dy * dy);
-      if (len < 1) continue;
-
-      if (disrupted) {
-        // 被干扰的边：红色闪烁虚线
-        const flicker = Math.sin(this.time * 12) * 0.3 + 0.5;
-        ctx.strokeStyle = `rgba(255,100,255,${flicker})`;
-        ctx.lineWidth = 2;
-        ctx.setLineDash([3, 6]);
-        ctx.lineDashOffset = -this.time * 40;
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
+      const a = this.nodeIndex.get(edge.sourceId),
+        b = this.nodeIndex.get(edge.targetId);
+      if (!a || !b || a.status === 'destroyed' || b.status === 'destroyed') continue;
+      const right = cam.x + state.canvasWidth / cam.zoom,
+        bottom = cam.y + state.canvasHeight / cam.zoom;
+      if (
+        (a.x < cam.x - 30 && b.x < cam.x - 30) ||
+        (a.x > right + 30 && b.x > right + 30) ||
+        (a.y < cam.y - 30 && b.y < cam.y - 30) ||
+        (a.y > bottom + 30 && b.y > bottom + 30)
+      )
         continue;
-      }
-
-      const alpha = active ? 0.6 : 0.2;
-      const lw = active ? cfg.lineWidth : 1;
-      const flowSpeed = 30 * cfg.flowSpeedMult;
-
-      // === 底层发光（仅活跃边） ===
-      if (active) {
-        ctx.save();
-        const glowColor = cfg.color || source.glowColor;
-        ctx.strokeStyle = this.withAlpha(glowColor, 0.12);
-        ctx.lineWidth = lw + 6;
-        ctx.setLineDash([]);
+      const interrupted = edge.disruptedTimer > 0,
+        powered = a.connected && b.connected,
+        color = EDGE_CONFIGS[edge.type].color || '#8ed9cd';
+      const flow = Math.min(1, Math.abs(edge.energyFlow) / edge.throughput),
+        selected = state.selectedNodeId === a.id || state.selectedNodeId === b.id;
+      ctx.lineWidth = edge.type === 'heavy' ? 3 : 1.5;
+      ctx.strokeStyle = interrupted
+        ? '#df9988'
+        : powered
+          ? this.withAlpha(color, 0.35 + flow * 0.5)
+          : '#516c7a';
+      ctx.setLineDash(interrupted ? [4, 7] : powered ? [] : [3, 6]);
+      ctx.lineDashOffset = -this.time * (interrupted ? 12 : 4);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (flow > 0.02 && !interrupted) {
+        ctx.strokeStyle = this.withAlpha(color, 0.08 + flow * 0.06);
+        ctx.lineWidth = 7;
         ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
         ctx.stroke();
-        ctx.restore();
-      }
-
-      // === 联动高亮：buffer ↔ collector 同方直连 ===
-      if (active
-        && source.owner === target.owner
-        && source.owner !== 'neutral'
-        && ((source.type === 'buffer' && target.type === 'collector')
-          || (source.type === 'collector' && target.type === 'buffer'))) {
-        ctx.save();
-        const pulse = 0.45 + Math.sin(this.time * 4) * 0.15;
-        ctx.strokeStyle = `rgba(255, 215, 96, ${pulse})`;
-        ctx.lineWidth = lw + 2;
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      // === 联动高亮：portal ↔ interceptor 同方直连 ===
-      if (active
-        && source.owner === target.owner
-        && source.owner !== 'neutral'
-        && ((source.type === 'portal' && target.type === 'interceptor')
-          || (source.type === 'interceptor' && target.type === 'portal'))) {
-        ctx.save();
-        const pulse = 0.45 + Math.sin(this.time * 5 + 1) * 0.18;
-        ctx.strokeStyle = `rgba(255, 170, 255, ${pulse})`;
-        ctx.lineWidth = lw + 2;
-        ctx.setLineDash([4, 3]);
-        ctx.lineDashOffset = -this.time * 60;
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.restore();
-      }
-
-      // === 联动高亮：tesla ↔ relay 同方直连（电网中转） ===
-      if (active
-        && source.owner === target.owner
-        && source.owner !== 'neutral'
-        && ((source.type === 'tesla' && target.type === 'relay')
-          || (source.type === 'relay' && target.type === 'tesla'))) {
-        ctx.save();
-        const pulse = 0.40 + Math.sin(this.time * 8 + 2) * 0.20;
-        ctx.strokeStyle = `rgba(120, 220, 255, ${pulse})`;
-        ctx.lineWidth = lw + 2;
-        ctx.setLineDash([2, 4]);
-        ctx.lineDashOffset = -this.time * 90;
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.restore();
-      }
-
-      // === 联动高亮：shield ↔ repair 同方直连（再生护甲） ===
-      if (active
-        && source.owner === target.owner
-        && source.owner !== 'neutral'
-        && ((source.type === 'shield' && target.type === 'repair')
-          || (source.type === 'repair' && target.type === 'shield'))) {
-        ctx.save();
-        const pulse = 0.40 + Math.sin(this.time * 3) * 0.18;
-        ctx.strokeStyle = `rgba(140, 255, 180, ${pulse})`;
-        ctx.lineWidth = lw + 2;
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        // 内层细高光
-        ctx.strokeStyle = `rgba(220, 255, 230, ${pulse * 0.5})`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      // === 联动高亮：energy ↔ buffer 同方直连（V1.1.8 能量共振） ===
-      if (active
-        && source.owner === target.owner
-        && source.owner !== 'neutral'
-        && ((source.type === 'energy' && target.type === 'buffer')
-          || (source.type === 'buffer' && target.type === 'energy'))) {
-        ctx.save();
-        // 电紫快速短虚线，flow 方向跟随时间
-        const pulse = 0.55 + Math.sin(this.time * 4) * 0.22;
-        ctx.strokeStyle = `rgba(200, 130, 255, ${pulse})`;
-        ctx.lineWidth = lw + 1.5;
-        ctx.setLineDash([3, 3]);
-        ctx.lineDashOffset = -this.time * 120;
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.restore();
-      }
-
-      // === 联动高亮：energy ↔ relay 同方直连（V1.1.9 能量网络） ===
-      if (active
-        && source.owner === target.owner
-        && source.owner !== 'neutral'
-        && ((source.type === 'energy' && target.type === 'relay')
-          || (source.type === 'relay' && target.type === 'energy'))) {
-        ctx.save();
-        // 蓝白电流向 relay 流动
-        const pulse = 0.50 + Math.sin(this.time * 5) * 0.20;
-        ctx.strokeStyle = `rgba(120, 200, 255, ${pulse})`;
-        ctx.lineWidth = lw + 1.5;
-        ctx.setLineDash([6, 2]);
-        ctx.lineDashOffset = -this.time * 150;
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        // 内层亮白细线
-        ctx.strokeStyle = `rgba(220, 240, 255, ${pulse * 0.6})`;
-        ctx.lineWidth = 1;
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      // === 联动高亮：magnet ↔ radar 同方直连（V1.2.3 重力扫描） ===
-      if (active
-        && source.owner === target.owner
-        && source.owner !== 'neutral'
-        && ((source.type === 'magnet' && target.type === 'radar')
-          || (source.type === 'radar' && target.type === 'magnet'))) {
-        ctx.save();
-        // 紫粉色慢呼吸 + 内层 sweep
-        const pulse = 0.45 + Math.sin(this.time * 2.5) * 0.20;
-        ctx.strokeStyle = `rgba(208, 156, 255, ${pulse})`;
-        ctx.lineWidth = lw + 1.5;
-        ctx.setLineDash([5, 4]);
-        ctx.lineDashOffset = -this.time * 60;
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.restore();
-      }
-
-      if (edge.type === 'amplify' && active) {
-        // 增幅线：双线 + 金色脉冲
-        const nx = -dy / len * 3; // 法线偏移
-        const ny = dx / len * 3;
-
-        ctx.strokeStyle = `rgba(204,102,255,${alpha})`;
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([6, 3]);
-        ctx.lineDashOffset = -this.time * flowSpeed;
-
-        ctx.beginPath();
-        ctx.moveTo(source.x + nx, source.y + ny);
-        ctx.lineTo(target.x + nx, target.y + ny);
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.moveTo(source.x - nx, source.y - ny);
-        ctx.lineTo(target.x - nx, target.y - ny);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // 金色脉冲点
-        const pulse = (this.time * 1.5) % 1;
-        const px = source.x + dx * pulse;
-        const py = source.y + dy * pulse;
-        ctx.beginPath();
-        ctx.arc(px, py, 3, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255,215,0,${0.8 - pulse * 0.6})`;
-        ctx.fill();
-      } else {
-        // 标准/高速/大容量线
-        if (cfg.color && active) {
-          ctx.strokeStyle = this.withAlpha(cfg.color, alpha);
-        } else {
-          const gradient = ctx.createLinearGradient(source.x, source.y, target.x, target.y);
-          if (active) {
-            gradient.addColorStop(0, this.withAlpha(source.glowColor, alpha));
-            gradient.addColorStop(1, this.withAlpha(target.glowColor, alpha));
-          } else {
-            gradient.addColorStop(0, `rgba(100,100,100,${alpha})`);
-            gradient.addColorStop(1, `rgba(100,100,100,${alpha})`);
-          }
-          ctx.strokeStyle = gradient;
-        }
-
-        ctx.lineWidth = lw;
-
-        if (active) {
-          if (edge.type === 'fast') {
-            ctx.setLineDash([3, 2, 8, 2]); // 快速三段
-          } else if (edge.type === 'heavy') {
-            ctx.setLineDash([12, 4]); // 粗长段
-          } else {
-            ctx.setLineDash([8, 4]);
-          }
-          ctx.lineDashOffset = -this.time * flowSpeed;
-        } else {
-          ctx.setLineDash([4, 8]);
-          ctx.lineDashOffset = 0;
-        }
-
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // 能量脉冲点（活跃标准/高速/大容量边）
-        if (active) {
-          const pulseColor = cfg.color || source.glowColor;
-          const pulseCount = edge.type === 'heavy' ? 2 : 1;
-          for (let p = 0; p < pulseCount; p++) {
-            const t = ((this.time * cfg.flowSpeedMult * 0.8) + p * 0.5) % 1;
-            const px = source.x + dx * t;
-            const py = source.y + dy * t;
-            const dotSize = edge.type === 'heavy' ? 3 : 2;
-            const dotAlpha = 0.7 - t * 0.5;
-            ctx.beginPath();
-            ctx.arc(px, py, dotSize, 0, Math.PI * 2);
-            ctx.fillStyle = this.withAlpha(pulseColor, dotAlpha);
-            ctx.fill();
-          }
+        const count = 1 + Math.floor(flow * 2);
+        for (let i = 0; i < count; i++) {
+          let t =
+            (this.time * (0.22 + flow * 0.36) * EDGE_CONFIGS[edge.type].flowSpeedMult + i / count) %
+            1;
+          if (edge.energyFlow < 0) t = 1 - t;
+          ctx.fillStyle = this.withAlpha(color, 0.7);
+          ctx.beginPath();
+          ctx.arc(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, 2 + flow, 0, Math.PI * 2);
+          ctx.fill();
         }
       }
-
-      // === 端点装饰（活跃边） ===
-      if (active) {
-        const dotColor = cfg.color || source.glowColor;
-        ctx.fillStyle = this.withAlpha(dotColor, 0.5);
-        ctx.beginPath();
-        ctx.arc(source.x, source.y, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(target.x, target.y, 2.5, 0, Math.PI * 2);
-        ctx.fill();
+      const x = (a.x + b.x) / 2,
+        y = (a.y + b.y) / 2;
+      if (interrupted) {
+        ctx.fillStyle = '#e7ad97';
+        ctx.font = `13px ${MONO_FONT}`;
+        ctx.textAlign = 'center';
+        ctx.fillText('×', x, y - 6);
+      } else if (selected) {
+        ctx.fillStyle = '#081725e8';
+        ctx.fillRect(x - 32, y - 20, 64, 17);
+        ctx.fillStyle = flow > 0.85 ? '#e3c28b' : '#8bb5c0';
+        ctx.font = `10px ${MONO_FONT}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(`${(Math.abs(edge.energyFlow)*1000/TICK_INTERVAL).toFixed(1)}/${edge.throughput*1000/TICK_INTERVAL}/s`, x, y - 8);
       }
     }
+    ctx.restore();
   }
 
   private drawFlowParticles(state: GameState): void {
     const ctx = this.ctx;
 
     // Build edge and node maps for O(1) lookup
-    const edgeMap = new Map(state.edges.map(e => [e.id, e]));
-    const nodeMap = new Map(state.nodes.map(n => [n.id, n]));
+    const edgeMap = new Map(state.edges.map((e) => [e.id, e]));
+    const nodeMap = this.nodeIndex;
 
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -829,8 +727,8 @@ export class Renderer {
       const target = nodeMap.get(edge.targetId);
       if (!source || !target) continue;
 
-      const x = source.x + (target.x - source.x) * fp.progress;
-      const y = source.y + (target.y - source.y) * fp.progress;
+      const x = source.x + (target.x - source.x) * (fp.reverse ? 1 - fp.progress : fp.progress);
+      const y = source.y + (target.y - source.y) * (fp.reverse ? 1 - fp.progress : fp.progress);
 
       const alpha = 1 - Math.abs(fp.progress - 0.5) * 2;
       // 光晕
@@ -853,310 +751,7 @@ export class Renderer {
   }
 
   private drawNode(node: GameNode, state: GameState): void {
-    const ctx = this.ctx;
-    const isDestroyed = node.status === 'destroyed';
-    const pulse = Math.sin(this.time * 3 + node.pulsePhase) * 0.15 + 0.85;
-    const energyRatio = node.currentEnergy / node.maxEnergy;
-    const isActive = !isDestroyed && node.currentEnergy >= node.activationThreshold;
-
-    ctx.save();
-
-    if (isDestroyed) {
-      // 残骸：暗淡的破碎圆环
-      ctx.globalAlpha = 0.2;
-      ctx.strokeStyle = '#333333';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 5]);
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#222222';
-      ctx.font = `${node.radius * 0.6}px monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('✕', node.x, node.y);
-      ctx.restore();
-      return;
-    }
-
-    // 未连接节点降低透明度
-    if (!node.connected) {
-      ctx.globalAlpha = 0.45;
-    }
-
-    // 中立节点 — 灰蓝色调
-    const isNeutral = node.owner === 'neutral';
-    const nodeGlowColor = isNeutral ? '#6688aa' : node.glowColor;
-
-    // 外层光晕
-    const glowRadius = node.radius * (1.5 + pulse * 0.3);
-    const glowGrad = ctx.createRadialGradient(
-      node.x, node.y, node.radius * 0.5,
-      node.x, node.y, glowRadius
-    );
-    const glowAlpha = isActive ? 0.3 * pulse : 0.1;
-    glowGrad.addColorStop(0, this.withAlpha(nodeGlowColor, glowAlpha));
-    glowGrad.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = glowGrad;
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 超载视觉效果
-    const oc = isOvercharged(node);
-    if (oc) {
-      const ocPulse = Math.sin(this.time * 8 + node.pulsePhase) * 0.3 + 0.7;
-      // 外层金色光环
-      const ocRadius = node.radius * (2.0 + ocPulse * 0.5);
-      const ocGrad = ctx.createRadialGradient(
-        node.x, node.y, node.radius,
-        node.x, node.y, ocRadius
-      );
-      ocGrad.addColorStop(0, `rgba(255,200,0,${0.4 * ocPulse})`);
-      ocGrad.addColorStop(0.5, `rgba(255,255,255,${0.2 * ocPulse})`);
-      ocGrad.addColorStop(1, 'rgba(255,200,0,0)');
-      ctx.fillStyle = ocGrad;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, ocRadius, 0, Math.PI * 2);
-      ctx.fill();
-
-      // 旋转能量环
-      ctx.strokeStyle = `rgba(255,220,100,${0.6 * ocPulse})`;
-      ctx.lineWidth = 2;
-      const rotAngle = this.time * 4;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius + 4, rotAngle, rotAngle + Math.PI * 1.2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius + 4, rotAngle + Math.PI, rotAngle + Math.PI + Math.PI * 1.2);
-      ctx.stroke();
-    }
-
-    // 蓄力指示器（即将超载 - buildup > 0）
-    if (!oc && node.overchargeBuildup > 0 && node.overchargeCooldown === 0) {
-      const buildupRatio = node.overchargeBuildup / 3;
-      ctx.strokeStyle = `rgba(255,200,0,${0.3 + buildupRatio * 0.4})`;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius + 3, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * buildupRatio);
-      ctx.stroke();
-    }
-
-    // 主体圆圈
-    ctx.shadowBlur = isActive ? 15 : 6;
-    ctx.shadowColor = nodeGlowColor;
-
-    // 能量环
-    ctx.strokeStyle = this.withAlpha(nodeGlowColor, isActive ? 0.8 : 0.3);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // 等级外观 — 等级越高边框越复杂
-    if (node.level >= 2 && !node.evolved) {
-      const lvAlpha = Math.min(0.6, 0.15 + node.level * 0.08);
-      ctx.strokeStyle = this.withAlpha(node.glowColor, lvAlpha);
-      ctx.lineWidth = 0.8;
-
-      // Lv2+: 外环刻度线
-      const ticks = Math.min(node.level * 2, 12);
-      for (let i = 0; i < ticks; i++) {
-        const a = (i / ticks) * Math.PI * 2 + this.time * 0.3;
-        const inner = node.radius + 2;
-        const outer = node.radius + 2 + node.level * 0.8;
-        ctx.beginPath();
-        ctx.moveTo(node.x + Math.cos(a) * inner, node.y + Math.sin(a) * inner);
-        ctx.lineTo(node.x + Math.cos(a) * outer, node.y + Math.sin(a) * outer);
-        ctx.stroke();
-      }
-
-      // Lv3+: 内部六角网格点
-      if (node.level >= 3) {
-        ctx.fillStyle = this.withAlpha(node.glowColor, 0.15);
-        const hexR = node.radius * 0.45;
-        for (let i = 0; i < 6; i++) {
-          const a = (i / 6) * Math.PI * 2;
-          ctx.beginPath();
-          ctx.arc(node.x + Math.cos(a) * hexR, node.y + Math.sin(a) * hexR, 1.5, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      // Lv4+: 角装饰
-      if (node.level >= 4) {
-        ctx.strokeStyle = this.withAlpha(node.glowColor, 0.3);
-        ctx.lineWidth = 1;
-        const cornerR = node.radius + 5;
-        const cornerLen = Math.PI * 0.15;
-        for (let i = 0; i < 4; i++) {
-          const a = (i / 4) * Math.PI * 2 - Math.PI / 4;
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, cornerR, a - cornerLen, a + cornerLen);
-          ctx.stroke();
-        }
-      }
-    }
-
-    // 进化外环（双层菱形风格）
-    if (node.evolved) {
-      ctx.strokeStyle = this.withAlpha(COLORS.text.primary, 0.5 + pulse * 0.2);
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius + 6, 0, Math.PI * 2);
-      ctx.stroke();
-      // 四角装饰点
-      for (let i = 0; i < 4; i++) {
-        const a = (i / 4) * Math.PI * 2 - Math.PI / 4;
-        const px = node.x + Math.cos(a) * (node.radius + 6);
-        const py = node.y + Math.sin(a) * (node.radius + 6);
-        ctx.fillStyle = COLORS.text.primary;
-        ctx.beginPath();
-        ctx.arc(px, py, 2, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    // 能量填充（扇形）
-    if (energyRatio > 0) {
-      ctx.fillStyle = this.withAlpha(nodeGlowColor, 0.15 + energyRatio * 0.2);
-      ctx.beginPath();
-      ctx.moveTo(node.x, node.y);
-      ctx.arc(node.x, node.y, node.radius - 2, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * energyRatio);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    // HP 条 (受损时显示)
-    if (node.hp < node.maxHp) {
-      const barWidth = node.radius * 2;
-      const barHeight = 3;
-      const barX = node.x - barWidth / 2;
-      const barY = node.y - node.radius - 8;
-      const hpRatio = node.hp / node.maxHp;
-
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = 'rgba(255,0,0,0.4)';
-      ctx.fillRect(barX, barY, barWidth, barHeight);
-      ctx.fillStyle = hpRatio > 0.5 ? COLORS.accent.green : hpRatio > 0.25 ? '#ffaa00' : COLORS.accent.red;
-      ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
-    }
-
-    // 节点类型图标（几何符号）
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = this.withAlpha(nodeGlowColor, isActive ? 0.9 : 0.5);
-    ctx.font = `${node.radius * 0.7}px monospace`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const icons: Record<NodeType, string> = {
-      core: '◆',
-      energy: '⚡',
-      turret: '⊕',
-      mine: '⛏',
-      shield: '◈',
-      relay: '◎',
-      tesla: '☇',
-      beacon: '📡',
-      factory: '⚙',
-      magnet: '✦',
-      trap: '💥',
-      repair: '🔧',
-      sniper: '⌖',
-      buffer: '⇧',
-      collector: '⊛',
-      interceptor: '⊞',
-      radar: '⦿',
-      portal: '⊙',
-      blackhole: '◐',
-      echo: '⟳',
-      toxin: '☣',
-      arc: '↯',
-      kamikaze: '💣',
-    };
-    const evolvedIcons: Partial<Record<NodeType, string>> = {
-      turret: '⊗',
-      mine: '⚒',
-      shield: '◉',
-      energy: '☢',
-      tesla: '⚡',
-      factory: '✈',
-      magnet: '◎',
-      repair: '⚕',
-      sniper: '☠',
-      buffer: '⬡',
-      collector: '✦',
-      interceptor: '⊠',
-      radar: '⊙',
-      portal: '⌘',
-      blackhole: '⬤',
-      echo: '⥁',
-      toxin: '⚗',
-      arc: '⇝',
-      kamikaze: '☄',
-    };
-    const icon = node.evolved && evolvedIcons[node.type] ? evolvedIcons[node.type]! : icons[node.type];
-    if (node.evolved) {
-      ctx.fillStyle = COLORS.text.primary;
-    }
-    ctx.fillText(icon, node.x, node.y);
-
-    // 中立节点标签
-    if (isNeutral) {
-      ctx.fillStyle = '#88aacc';
-      ctx.font = '9px monospace';
-      ctx.fillText('中立', node.x, node.y + node.radius + 12);
-    }
-
-    // 受击闪红
-    if (node.hitFlash > 0) {
-      ctx.shadowBlur = 0;
-      // 内部红色填充
-      ctx.fillStyle = `rgba(255,60,60,${node.hitFlash * 0.45})`;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-      ctx.fill();
-      // 红色边框加粗
-      ctx.strokeStyle = `rgba(255,40,40,${node.hitFlash * 0.8})`;
-      ctx.lineWidth = 3 * node.hitFlash;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-      ctx.stroke();
-      // 外层红色冲击波
-      const shockR = node.radius * (1.5 + (1 - node.hitFlash) * 1.5);
-      ctx.strokeStyle = `rgba(255,80,80,${node.hitFlash * 0.4})`;
-      ctx.lineWidth = 2 * node.hitFlash;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, shockR, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // V1.2.2：联动首次触发金色脉冲环（外扩动画 + 渐隐）
-    if (node.synergyFlash !== undefined && node.synergyFlash > 0) {
-      ctx.shadowBlur = 0;
-      const f = node.synergyFlash;
-      const color = node.synergyFlashColor ?? '#ffd760';
-      // 三层光环：外扩 + 衰减
-      for (let layer = 0; layer < 3; layer++) {
-        const t = (1 - f) + layer * 0.18;
-        const r = node.radius * (1.4 + t * 1.6);
-        const a = f * (0.55 - layer * 0.18);
-        if (a <= 0) continue;
-        ctx.strokeStyle = this.withAlpha(color, a);
-        ctx.lineWidth = 2.5 * f;
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      // 内层高亮描边
-      ctx.strokeStyle = this.withAlpha(color, f * 0.85);
-      ctx.lineWidth = 2 * f;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius + 1, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    ctx.restore();
+    drawWorldFacility(this.ctx,node,state,this.rangeMultiplier);
   }
 
   private drawSelectionRing(node: GameNode): void {
@@ -1191,42 +786,55 @@ export class Renderer {
   private drawHealerAuras(state: GameState): void {
     const ctx = this.ctx;
     ctx.save();
-    const t = state.tick * 0.03;
-    for (const enemy of state.enemies) {
-      if (enemy.type !== 'healer' || enemy.hp <= 0) continue;
-      const healRange = 120;
-      const pulse = 0.3 + Math.sin(t * 2) * 0.15;
-
-      // 光环圈
-      const grad = ctx.createRadialGradient(enemy.x, enemy.y, 0, enemy.x, enemy.y, healRange);
-      grad.addColorStop(0, `rgba(68, 255, 136, ${pulse * 0.15})`);
-      grad.addColorStop(0.7, `rgba(68, 255, 136, ${pulse * 0.08})`);
-      grad.addColorStop(1, 'rgba(68, 255, 136, 0)');
-      ctx.fillStyle = grad;
+    for (const source of state.enemies) {
+      if (
+        !canDetectEnemy(state, source) ||
+        (source.type !== 'healer' && source.type !== 'shielder')
+      )
+        continue;
+      const healing = source.type === 'healer',
+        radius = healing ? ENEMY_SUPPORT.healer.range : ENEMY_SUPPORT.shielder.range,
+        color = healing ? '#92d2ad' : '#91bce0';
+      const glow = ctx.createRadialGradient(source.x, source.y, 10, source.x, source.y, radius);
+      glow.addColorStop(0, this.withAlpha(color, 0.08));
+      glow.addColorStop(1, this.withAlpha(color, 0));
+      ctx.fillStyle = glow;
+      ctx.fillRect(source.x - radius, source.y - radius, radius * 2, radius * 2);
+      ctx.strokeStyle = this.withAlpha(color, 0.25);
+      ctx.lineWidth = 1;
+      ctx.setLineDash(healing ? [2, 7] : [6, 5]);
       ctx.beginPath();
-      ctx.arc(enemy.x, enemy.y, healRange, 0, Math.PI * 2);
-      ctx.fill();
-
-      // 旋转十字标识
-      ctx.strokeStyle = `rgba(68, 255, 136, ${pulse})`;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.arc(enemy.x, enemy.y, healRange, 0, Math.PI * 2);
+      ctx.arc(source.x, source.y, radius, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
-
-      // 治疗连线：对范围内其他敌人画绿色细线
+      if (healing) {
+        const phase =
+          (state.elapsedSeconds / ((ENEMY_SUPPORT.healer.intervalTicks * TICK_INTERVAL) / 1000)) %
+          1;
+        ctx.strokeStyle = this.withAlpha(color, (1 - phase) * 0.4);
+        ctx.beginPath();
+        ctx.arc(source.x, source.y, 12 + phase * (radius - 12), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `500 13px ${UI_FONT}`;
+      ctx.fillStyle = color;
+      ctx.fillText(healing ? '＋' : '◇', source.x, source.y - radius * 0.2);
       for (const other of state.enemies) {
-        if (other === enemy || other.hp <= 0 || other.hp >= other.maxHp) continue;
-        if (dist(enemy, other) <= healRange) {
-          ctx.strokeStyle = `rgba(68, 255, 136, ${0.2 + Math.sin(t * 3 + other.x) * 0.1})`;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(enemy.x, enemy.y);
-          ctx.lineTo(other.x, other.y);
-          ctx.stroke();
-        }
+        if (
+          other === source ||
+          !canDetectEnemy(state, other) ||
+          Math.hypot(other.x - source.x, other.y - source.y) > radius
+        )
+          continue;
+        if (healing ? other.hp >= other.maxHp : other.damageReduction <= 0) continue;
+        ctx.strokeStyle = this.withAlpha(color, 0.17);
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(other.x, other.y);
+        ctx.stroke();
       }
     }
     ctx.restore();
@@ -1237,8 +845,8 @@ export class Renderer {
     const ctx = this.ctx;
     ctx.save();
     for (const enemy of state.enemies) {
-      if (enemy.hp <= 0 || !enemy.targetNodeId) continue;
-      const target = state.nodes.find(n => n.id === enemy.targetNodeId);
+      if (!canDetectEnemy(state, enemy) || !enemy.targetNodeId) continue;
+      const target = state.nodes.find((n) => n.id === enemy.targetNodeId);
       if (!target || target.status === 'destroyed') continue;
 
       const d = dist(enemy, target);
@@ -1255,158 +863,14 @@ export class Renderer {
       ctx.lineDashOffset = -this.time * 20;
       ctx.beginPath();
       ctx.moveTo(enemy.x, enemy.y);
-      ctx.lineTo(target.x, target.y);
+      for (const point of enemyRoute(enemy)) ctx.lineTo(point.x, point.y);
       ctx.stroke();
     }
     ctx.setLineDash([]);
     ctx.restore();
   }
 
-  private drawEnemies(state: GameState): void {
-    const ctx = this.ctx;
-
-    // 预计算信标位置（用于隐形体可见性判定）
-    const beacons = state.nodes.filter(
-      n => n.type === 'beacon' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
-
-    for (const enemy of state.enemies) {
-      // 隐形体：只有信标范围内可见
-      if (enemy.type === 'stealth') {
-        const nearBeacon = beacons.some(b => dist(b, enemy) <= 500);
-        if (!nearBeacon) continue; // 不渲染
-      }
-
-      const hpRatio = enemy.hp / enemy.maxHp;
-      const color = ENEMY_COLORS[enemy.type] ?? '#ff3333';
-
-      ctx.save();
-      ctx.shadowBlur = enemy.type === 'boss' ? 20 : 10;
-      ctx.shadowColor = color;
-
-      // 隐形体半透明效果
-      if (enemy.type === 'stealth') ctx.globalAlpha = 0.5;
-
-      // 敌人形状
-      ctx.fillStyle = this.withAlpha(color, 0.6);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = enemy.type === 'boss' ? 3 : 1.5;
-
-      if (enemy.type === 'boss') {
-        // Boss: 六角星
-        ctx.beginPath();
-        const r = enemy.radius;
-        for (let i = 0; i < 6; i++) {
-          const outerA = (i * Math.PI * 2) / 6 - Math.PI / 2;
-          const innerA = outerA + Math.PI / 6;
-          const ox = enemy.x + Math.cos(outerA) * r;
-          const oy = enemy.y + Math.sin(outerA) * r;
-          const ix = enemy.x + Math.cos(innerA) * r * 0.5;
-          const iy = enemy.y + Math.sin(innerA) * r * 0.5;
-          if (i === 0) ctx.moveTo(ox, oy);
-          else ctx.lineTo(ox, oy);
-          ctx.lineTo(ix, iy);
-        }
-        ctx.closePath();
-      } else if (enemy.type === 'heavy') {
-        // 菱形
-        ctx.beginPath();
-        ctx.moveTo(enemy.x, enemy.y - enemy.radius);
-        ctx.lineTo(enemy.x + enemy.radius, enemy.y);
-        ctx.lineTo(enemy.x, enemy.y + enemy.radius);
-        ctx.lineTo(enemy.x - enemy.radius, enemy.y);
-        ctx.closePath();
-      } else if (enemy.type === 'stealth') {
-        // 隐形体: 虚线圆
-        ctx.beginPath();
-        ctx.setLineDash([4, 4]);
-        ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
-      } else if (enemy.type === 'splitter') {
-        // 分裂虫: 五角形
-        ctx.beginPath();
-        for (let i = 0; i < 5; i++) {
-          const a = (i * Math.PI * 2) / 5 - Math.PI / 2;
-          const px = enemy.x + Math.cos(a) * enemy.radius;
-          const py = enemy.y + Math.sin(a) * enemy.radius;
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-      } else if (enemy.type === 'disruptor') {
-        // 干扰者: X 形
-        ctx.beginPath();
-        const r = enemy.radius;
-        const w = r * 0.3;
-        // 右上
-        ctx.moveTo(enemy.x + w, enemy.y); ctx.lineTo(enemy.x + r, enemy.y - r + w); ctx.lineTo(enemy.x + r - w, enemy.y - r);
-        // 左上
-        ctx.lineTo(enemy.x, enemy.y - w); ctx.lineTo(enemy.x - r + w, enemy.y - r); ctx.lineTo(enemy.x - r, enemy.y - r + w);
-        // 左下
-        ctx.lineTo(enemy.x - w, enemy.y); ctx.lineTo(enemy.x - r, enemy.y + r - w); ctx.lineTo(enemy.x - r + w, enemy.y + r);
-        // 右下
-        ctx.lineTo(enemy.x, enemy.y + w); ctx.lineTo(enemy.x + r - w, enemy.y + r); ctx.lineTo(enemy.x + r, enemy.y + r - w);
-        ctx.closePath();
-      } else if (enemy.type === 'healer') {
-        // 治疗者: 十字形
-        ctx.beginPath();
-        const r = enemy.radius;
-        const w = r * 0.35;
-        ctx.moveTo(enemy.x - w, enemy.y - r);
-        ctx.lineTo(enemy.x + w, enemy.y - r);
-        ctx.lineTo(enemy.x + w, enemy.y - w);
-        ctx.lineTo(enemy.x + r, enemy.y - w);
-        ctx.lineTo(enemy.x + r, enemy.y + w);
-        ctx.lineTo(enemy.x + w, enemy.y + w);
-        ctx.lineTo(enemy.x + w, enemy.y + r);
-        ctx.lineTo(enemy.x - w, enemy.y + r);
-        ctx.lineTo(enemy.x - w, enemy.y + w);
-        ctx.lineTo(enemy.x - r, enemy.y + w);
-        ctx.lineTo(enemy.x - r, enemy.y - w);
-        ctx.lineTo(enemy.x - w, enemy.y - w);
-        ctx.closePath();
-      } else {
-        // 三角形
-        ctx.beginPath();
-        const target = state.nodes.find(n => n.id === enemy.targetNodeId);
-        let angle = 0;
-        if (target) {
-          angle = Math.atan2(target.y - enemy.y, target.x - enemy.x);
-        }
-        for (let i = 0; i < 3; i++) {
-          const a = angle + (i * Math.PI * 2) / 3 - Math.PI / 2;
-          const px = enemy.x + Math.cos(a) * enemy.radius;
-          const py = enemy.y + Math.sin(a) * enemy.radius;
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-      }
-
-      ctx.fill();
-      ctx.stroke();
-
-      // HP 条
-      if (hpRatio < 1) {
-        ctx.shadowBlur = 0;
-        const barW = enemy.radius * 2;
-        ctx.fillStyle = 'rgba(255,0,0,0.5)';
-        ctx.fillRect(enemy.x - barW / 2, enemy.y - enemy.radius - 6, barW, 2);
-        ctx.fillStyle = COLORS.accent.red;
-        ctx.fillRect(enemy.x - barW / 2, enemy.y - enemy.radius - 6, barW * hpRatio, 2);
-      }
-
-      // 受击闪白
-      if (enemy.hitFlash > 0) {
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = `rgba(255,255,255,${enemy.hitFlash * 0.7})`;
-        ctx.beginPath();
-        ctx.arc(enemy.x, enemy.y, enemy.radius + 1, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      ctx.restore();
-    }
-  }
+  private drawEnemies(state:GameState):void {drawEnemyFleet(this.ctx,state);}
 
   private drawProjectiles(state: GameState): void {
     const ctx = this.ctx;
@@ -1454,12 +918,12 @@ export class Renderer {
   }
 
   private drawDragLine(state: GameState): void {
-    const source = state.nodes.find(n => n.id === state.draggingFrom);
+    const source = state.nodes.find((n) => n.id === state.draggingFrom);
     if (!source) return;
 
     const ctx = this.ctx;
     const d = dist(source, { x: state.mouseX, y: state.mouseY });
-    const valid = d <= MAX_EDGE_LENGTH;
+    const valid = d <= this.maxEdgeLength;
 
     const ecfg = EDGE_CONFIGS[state.selectedEdgeType];
     const edgeColor = ecfg.color || '#00ffff';
@@ -1478,7 +942,7 @@ export class Renderer {
     ctx.strokeStyle = 'rgba(0,255,255,0.08)';
     ctx.lineWidth = 0.5;
     ctx.beginPath();
-    ctx.arc(source.x, source.y, MAX_EDGE_LENGTH, 0, Math.PI * 2);
+    ctx.arc(source.x, source.y, this.maxEdgeLength, 0, Math.PI * 2);
     ctx.stroke();
 
     ctx.restore();
@@ -1487,14 +951,14 @@ export class Renderer {
   // ===== 特斯拉电弧效果 =====
   private drawTeslaArcs(state: GameState): void {
     const ctx = this.ctx;
-    const teslaNodes = state.nodes.filter(n => n.type === 'tesla' && n.status !== 'destroyed');
+    const teslaNodes = this.effectNodes(state, 'tesla');
     if (teslaNodes.length === 0) return;
 
-    const nodeMap = new Map(state.nodes.map(n => [n.id, n]));
+    const nodeMap = this.nodeIndex;
 
     for (const tesla of teslaNodes) {
       const teslaEdges = state.edges.filter(
-        e => e.sourceId === tesla.id || e.targetId === tesla.id
+        (e) => e.disruptedTimer <= 0 && (e.sourceId === tesla.id || e.targetId === tesla.id),
       );
 
       for (const edge of teslaEdges) {
@@ -1534,14 +998,19 @@ export class Renderer {
   // ===== 维修站治疗光环 =====
   private drawRepairAuras(state: GameState): void {
     const ctx = this.ctx;
-    const repairNodes = state.nodes.filter(
-      n => n.type === 'repair' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
+    const repairNodes = this.effectNodes(state, 'repair');
     if (repairNodes.length === 0) return;
 
     for (const repair of repairNodes) {
       const ev = repair.evolved;
-      const range = ev ? 220 : 180;
+      const range = isOvercharged(repair)
+        ? ev
+          ? COMBAT.repairPulse.range.e
+          : COMBAT.repairPulse.range.n
+        : ev
+          ? COMBAT.repair.range.e
+          : COMBAT.repair.range.n;
+      if(state.selectedNodeId!==repair.id&&!state.nodes.some(n=>n.owner==='player'&&n.hp<n.maxHp&&n.status!=='destroyed'&&dist(n,repair)<=range))continue;
       const pulse = Math.sin(this.time * 2 + repair.pulsePhase) * 0.3 + 0.7;
 
       // 外圈治疗范围（虚线圈）
@@ -1557,8 +1026,12 @@ export class Renderer {
 
       // 外层柔和光环
       const outerGrad = ctx.createRadialGradient(
-        repair.x, repair.y, range * 0.5,
-        repair.x, repair.y, range
+        repair.x,
+        repair.y,
+        range * 0.5,
+        repair.x,
+        repair.y,
+        range,
       );
       outerGrad.addColorStop(0, `rgba(68,255,136,${0.06 * pulse})`);
       outerGrad.addColorStop(1, 'rgba(68,255,136,0)');
@@ -1569,8 +1042,12 @@ export class Renderer {
 
       // 内层渐变光环（更亮）
       const auraGrad = ctx.createRadialGradient(
-        repair.x, repair.y, repair.radius * 0.5,
-        repair.x, repair.y, range * 0.6
+        repair.x,
+        repair.y,
+        repair.radius * 0.5,
+        repair.x,
+        repair.y,
+        range * 0.6,
       );
       auraGrad.addColorStop(0, `rgba(68,255,136,${0.18 * pulse})`);
       auraGrad.addColorStop(0.5, `rgba(68,255,136,${0.08 * pulse})`);
@@ -1617,94 +1094,10 @@ export class Renderer {
   }
 
   // ===== 狙击手射程指示 =====
-  private drawSniperScopes(state: GameState): void {
-    const ctx = this.ctx;
-    const sniperNodes = state.nodes.filter(
-      n => n.type === 'sniper' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
-    if (sniperNodes.length === 0) return;
-
-    for (const sniper of sniperNodes) {
-      const ev = sniper.evolved;
-      const range = (250 + sniper.level * 30) * (ev ? 1.5 : 1);
-      const pulse = Math.sin(this.time * 3 + sniper.pulsePhase) * 0.2 + 0.8;
-
-      ctx.save();
-
-      // 射程圈（淡红色虚线）
-      ctx.strokeStyle = `rgba(255,102,68,${0.2 * pulse})`;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([8, 12]);
-      ctx.lineDashOffset = -this.time * 20;
-      ctx.beginPath();
-      ctx.arc(sniper.x, sniper.y, range, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // 十字准星（旋转）
-      const rot = this.time * 0.5;
-      ctx.strokeStyle = `rgba(255,102,68,${0.4 * pulse})`;
-      ctx.lineWidth = 1;
-      const scopeR = sniper.radius + 12;
-      const scopeOuter = sniper.radius + 20;
-      for (let i = 0; i < 4; i++) {
-        const a = rot + (i / 4) * Math.PI * 2;
-        ctx.beginPath();
-        ctx.moveTo(sniper.x + Math.cos(a) * scopeR, sniper.y + Math.sin(a) * scopeR);
-        ctx.lineTo(sniper.x + Math.cos(a) * scopeOuter, sniper.y + Math.sin(a) * scopeOuter);
-        ctx.stroke();
-      }
-
-      // 瞄准线 — 找到当前目标（血量最高的在射程内敌人）
-      let target: { x: number; y: number } | null = null;
-      let maxHp = 0;
-      for (const enemy of state.enemies) {
-        const d = Math.sqrt((sniper.x - enemy.x) ** 2 + (sniper.y - enemy.y) ** 2);
-        if (d <= range && enemy.hp > maxHp) {
-          maxHp = enemy.hp;
-          target = { x: enemy.x, y: enemy.y };
-        }
-      }
-
-      if (target) {
-        // 激光瞄准线
-        ctx.strokeStyle = `rgba(255,102,68,${0.15 + pulse * 0.1})`;
-        ctx.lineWidth = 1;
-        ctx.shadowBlur = 4;
-        ctx.shadowColor = '#ff6644';
-        ctx.setLineDash([4, 8]);
-        ctx.beginPath();
-        ctx.moveTo(sniper.x, sniper.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // 目标标记（小十字）
-        ctx.strokeStyle = `rgba(255,102,68,${0.5 * pulse})`;
-        ctx.lineWidth = 1.5;
-        ctx.shadowBlur = 6;
-        const crossSize = 8;
-        ctx.beginPath();
-        ctx.moveTo(target.x - crossSize, target.y);
-        ctx.lineTo(target.x + crossSize, target.y);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(target.x, target.y - crossSize);
-        ctx.lineTo(target.x, target.y + crossSize);
-        ctx.stroke();
-      }
-
-      ctx.shadowBlur = 0;
-      ctx.restore();
-    }
-  }
-
   // ===== 自爆充能光效 =====
   private drawKamikazeCharge(state: GameState): void {
     const ctx = this.ctx;
-    const kamikazes = state.nodes.filter(
-      n => n.type === 'kamikaze' && n.status !== 'destroyed'
-    );
+    const kamikazes = this.effectNodes(state, 'kamikaze');
     if (kamikazes.length === 0) return;
 
     for (const k of kamikazes) {
@@ -1720,10 +1113,7 @@ export class Renderer {
       const alpha = 0.1 + chargeRatio * 0.3;
       const pulseSize = k.radius * (1.5 + chargeRatio * 2);
 
-      const chargeGrad = ctx.createRadialGradient(
-        k.x, k.y, k.radius * 0.5,
-        k.x, k.y, pulseSize
-      );
+      const chargeGrad = ctx.createRadialGradient(k.x, k.y, k.radius * 0.5, k.x, k.y, pulseSize);
       chargeGrad.addColorStop(0, `rgba(${r},${g},${b},${alpha + 0.1})`);
       chargeGrad.addColorStop(0.6, `rgba(${r},${g},${b},${alpha * 0.5})`);
       chargeGrad.addColorStop(1, `rgba(${r},${g},${b},0)`);
@@ -1760,109 +1150,81 @@ export class Renderer {
   }
 
   // ===== 电弧链闪电效果 =====
-  private drawArcChains(state: GameState): void {
-    const ctx = this.ctx;
-    const arcs = state.nodes.filter(
-      n => n.type === 'arc' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
+  private effectNodes(state: GameState, type: GameNode['type']): GameNode[] {
+    return state.nodes.filter(
+      (node) =>
+        node.type === type &&
+        node.owner === 'player' &&
+        node.status !== 'destroyed' &&
+        node.currentEnergy >= node.activationThreshold,
     );
-    if (arcs.length === 0) return;
+  }
 
-    for (const arc of arcs) {
-      const ev = arc.evolved;
-      const range = ev ? 200 : 160;
-
+  private drawStrikeEffects(state: GameState): void {
+    const ctx = this.ctx;
+    for (const strike of state.strikeEffects) {
       ctx.save();
-
-      // 范围圈（微弱电光）
-      ctx.strokeStyle = 'rgba(68,170,255,0.15)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(arc.x, arc.y, range, 0, Math.PI * 2);
-      ctx.stroke();
-
-      // 模拟链式闪电路径
-      const bounceRange = ev ? 100 : 80;
-      const maxBounces = ev ? 4 : 2;
-      const enemies = state.enemies.filter(e => e.hp > 0);
-
-      // 找第一个目标
-      let first: typeof enemies[0] | null = null;
-      let minD = Infinity;
-      for (const e of enemies) {
-        const d = Math.hypot(arc.x - e.x, arc.y - e.y);
-        if (d <= range && d < minD) { first = e; minD = d; }
+      if(strike.kind==='drone'){
+        const a=strike.points[0],b=strike.points[strike.points.length-1],t=1-strike.life/strike.maxLife;
+        const x=a.x+(b.x-a.x)*t,y=a.y+(b.y-a.y)*t;
+        ctx.translate(x,y);ctx.rotate(Math.atan2(b.y-a.y,b.x-a.x));ctx.globalAlpha=Math.min(1,strike.life*10);
+        ctx.beginPath();ctx.moveTo(10,0);ctx.lineTo(-7,-6);ctx.lineTo(-3,0);ctx.lineTo(-7,6);ctx.closePath();ctx.fillStyle='#c8d8dd';ctx.fill();ctx.fillStyle=strike.color;ctx.fillRect(-8,-1,4,2);ctx.restore();continue;
       }
-      if (!first) { ctx.restore(); continue; }
-
-      // 画闪电链
-      const chain: { x: number; y: number }[] = [{ x: arc.x, y: arc.y }, { x: first.x, y: first.y }];
-      const hit = new Set([first.id]);
-      let current = first;
-      for (let b = 0; b < maxBounces; b++) {
-        let next: typeof enemies[0] | null = null;
-        let nd = Infinity;
-        for (const e of enemies) {
-          if (hit.has(e.id)) continue;
-          const d = Math.hypot(current.x - e.x, current.y - e.y);
-          if (d <= bounceRange && d < nd) { next = e; nd = d; }
-        }
-        if (!next) break;
-        chain.push({ x: next.x, y: next.y });
-        hit.add(next.id);
-        current = next;
-      }
-
-      // 绘制锯齿闪电线
-      ctx.strokeStyle = `rgba(68,170,255,${0.5 + 0.2 * Math.sin(this.time * 8)})`;
-      ctx.lineWidth = ev ? 2.5 : 2;
+      ctx.globalAlpha = Math.max(0, strike.life / strike.maxLife);
+      ctx.strokeStyle = strike.color;
+      ctx.shadowColor = strike.color;
       ctx.shadowBlur = 8;
-      ctx.shadowColor = '#44aaff';
-      for (let i = 0; i < chain.length - 1; i++) {
-        const from = chain[i];
-        const to = chain[i + 1];
-        const dx = to.x - from.x;
-        const dy = to.y - from.y;
-        const segments = 6;
-        ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
-        for (let s = 1; s < segments; s++) {
-          const t = s / segments;
-          const jitter = 8 * (1 - Math.abs(t - 0.5) * 2);
-          const nx = -dy / Math.hypot(dx, dy);
-          const ny = dx / Math.hypot(dx, dy);
-          const offset = (Math.random() - 0.5) * 2 * jitter;
-          ctx.lineTo(
-            from.x + dx * t + nx * offset,
-            from.y + dy * t + ny * offset
-          );
-        }
-        ctx.lineTo(to.x, to.y);
-        ctx.stroke();
+      ctx.lineWidth = strike.kind === 'beam' ? 2 : 1.6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      const first = strike.points[0];
+      ctx.moveTo(first.x, first.y);
+      for (let i = 1; i < strike.points.length; i++) {
+        const a = strike.points[i - 1],
+          b = strike.points[i],
+          dx = b.x - a.x,
+          dy = b.y - a.y,
+          length = Math.max(1, Math.hypot(dx, dy));
+        if (strike.kind === 'arc')
+          for (let j = 1; j < 5; j++) {
+            const t = j / 5,
+              jitter = Math.sin(this.time * 22 + i * 9 + j * 17) * Math.min(6, length * 0.035);
+            ctx.lineTo(
+              a.x + dx * t - (dy / length) * jitter,
+              a.y + dy * t + (dx / length) * jitter,
+            );
+          }
+        ctx.lineTo(b.x, b.y);
       }
-
-      ctx.shadowBlur = 0;
+      ctx.stroke();
       ctx.restore();
     }
   }
-
   // ===== 毒雾区域效果 =====
   private drawToxinClouds(state: GameState): void {
     const ctx = this.ctx;
-    const toxins = state.nodes.filter(
-      n => n.type === 'toxin' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
+    const toxins = this.effectNodes(state, 'toxin');
     if (toxins.length === 0) return;
 
     for (const toxin of toxins) {
       const ev = toxin.evolved;
-      const range = ev ? 200 : 140;
+      const range = isOvercharged(toxin)
+        ? COMBAT.toxin.range.oc
+        : ev
+          ? COMBAT.toxin.range.e
+          : COMBAT.toxin.range.n;
 
       ctx.save();
 
       // 毒雾渐变圆
       const fogGrad = ctx.createRadialGradient(
-        toxin.x, toxin.y, toxin.radius,
-        toxin.x, toxin.y, range
+        toxin.x,
+        toxin.y,
+        toxin.radius,
+        toxin.x,
+        toxin.y,
+        range,
       );
       fogGrad.addColorStop(0, 'rgba(102,204,68,0.15)');
       fogGrad.addColorStop(0.5, 'rgba(80,180,50,0.08)');
@@ -1904,9 +1266,7 @@ export class Renderer {
   // ===== 回声塔波纹效果 =====
   private drawEchoWaves(state: GameState): void {
     const ctx = this.ctx;
-    const echos = state.nodes.filter(
-      n => n.type === 'echo' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
+    const echos = this.effectNodes(state, 'echo');
     if (echos.length === 0) return;
 
     for (const echo of echos) {
@@ -1920,8 +1280,14 @@ export class Renderer {
         if (edge.sourceId === echo.id) neighborId = edge.targetId;
         else if (edge.targetId === echo.id) neighborId = edge.sourceId;
         if (!neighborId) continue;
-        const neighbor = state.nodes.find(n => n.id === neighborId);
-        if (!neighbor || neighbor.status === 'destroyed' || neighbor.type === 'echo' || neighbor.type === 'core') continue;
+        const neighbor = state.nodes.find((n) => n.id === neighborId);
+        if (
+          !neighbor ||
+          neighbor.status === 'destroyed' ||
+          neighbor.type === 'echo' ||
+          neighbor.type === 'core'
+        )
+          continue;
 
         // 波纹沿连线从 echo 向 neighbor 扩散
         const dx = neighbor.x - echo.x;
@@ -1932,7 +1298,7 @@ export class Renderer {
         // 脉冲点沿连线移动
         const pulseCount = ev ? 3 : 2;
         for (let p = 0; p < pulseCount; p++) {
-          const t = ((this.time * 1.2 + p / pulseCount) % 1);
+          const t = (this.time * 1.2 + p / pulseCount) % 1;
           const px = echo.x + dx * t;
           const py = echo.y + dy * t;
           const alpha = 0.4 * (1 - Math.abs(t - 0.5) * 2);
@@ -1965,23 +1331,26 @@ export class Renderer {
   // ===== 黑洞引力场效果 =====
   private drawBlackholeFields(state: GameState): void {
     const ctx = this.ctx;
-    const bhs = state.nodes.filter(
-      n => n.type === 'blackhole' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
+    const bhs = this.effectNodes(state, 'blackhole');
     if (bhs.length === 0) return;
 
     for (const bh of bhs) {
       const ev = bh.evolved;
-      const range = ev ? 160 : 120;
-      const crushRange = ev ? 60 : 40;
+      const range = isOvercharged(bh)
+        ? COMBAT.blackhole.range.oc
+        : ev
+          ? COMBAT.blackhole.range.e
+          : COMBAT.blackhole.range.n;
+      const crushRange = isOvercharged(bh)
+        ? COMBAT.blackhole.crushRange.oc
+        : ev
+          ? COMBAT.blackhole.crushRange.e
+          : COMBAT.blackhole.crushRange.n;
 
       ctx.save();
 
       // 外圈 — 暗紫扭曲引力场
-      const outerGrad = ctx.createRadialGradient(
-        bh.x, bh.y, crushRange,
-        bh.x, bh.y, range
-      );
+      const outerGrad = ctx.createRadialGradient(bh.x, bh.y, crushRange, bh.x, bh.y, range);
       outerGrad.addColorStop(0, 'rgba(136,68,170,0.12)');
       outerGrad.addColorStop(1, 'rgba(136,68,170,0)');
       ctx.fillStyle = outerGrad;
@@ -2003,10 +1372,7 @@ export class Renderer {
       }
 
       // 中心黑核 — 强烈暗色
-      const coreGrad = ctx.createRadialGradient(
-        bh.x, bh.y, 0,
-        bh.x, bh.y, crushRange
-      );
+      const coreGrad = ctx.createRadialGradient(bh.x, bh.y, 0, bh.x, bh.y, crushRange);
       coreGrad.addColorStop(0, 'rgba(20,0,30,0.6)');
       coreGrad.addColorStop(0.6, 'rgba(80,30,120,0.3)');
       coreGrad.addColorStop(1, 'rgba(136,68,170,0)');
@@ -2032,14 +1398,16 @@ export class Renderer {
   // ===== 传送门漩涡效果 =====
   private drawPortalVortex(state: GameState): void {
     const ctx = this.ctx;
-    const portals = state.nodes.filter(
-      n => n.type === 'portal' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
+    const portals = this.effectNodes(state, 'portal');
     if (portals.length === 0) return;
 
     for (const portal of portals) {
       const ev = portal.evolved;
-      const range = ev ? 200 : 150;
+      const range = isOvercharged(portal)
+        ? COMBAT.portal.range.oc
+        : ev
+          ? COMBAT.portal.range.e
+          : COMBAT.portal.range.n;
 
       ctx.save();
 
@@ -2076,8 +1444,12 @@ export class Renderer {
       // 中心光晕
       const pulseAlpha = 0.15 + 0.1 * Math.sin(this.time * 4);
       const coreGrad = ctx.createRadialGradient(
-        portal.x, portal.y, 0,
-        portal.x, portal.y, portal.radius * 2.5
+        portal.x,
+        portal.y,
+        0,
+        portal.x,
+        portal.y,
+        portal.radius * 2.5,
       );
       coreGrad.addColorStop(0, `rgba(204,136,255,${pulseAlpha + 0.15})`);
       coreGrad.addColorStop(0.5, `rgba(160,100,220,${pulseAlpha})`);
@@ -2095,14 +1467,11 @@ export class Renderer {
   // ===== 雷达扫描效果 =====
   private drawRadarSweeps(state: GameState): void {
     const ctx = this.ctx;
-    const radars = state.nodes.filter(
-      n => n.type === 'radar' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
+    const radars = this.effectNodes(state, 'radar');
     if (radars.length === 0) return;
 
     for (const radar of radars) {
-      const ev = radar.evolved;
-      const range = ev ? 280 : 200;
+      const range = radarField(state, radar).range;
 
       ctx.save();
 
@@ -2117,8 +1486,12 @@ export class Renderer {
       const sweepAngle = this.time * 1.5;
       const sweepWidth = Math.PI * 0.35;
       const sweepGrad = ctx.createRadialGradient(
-        radar.x, radar.y, radar.radius,
-        radar.x, radar.y, range
+        radar.x,
+        radar.y,
+        radar.radius,
+        radar.x,
+        radar.y,
+        range,
       );
       sweepGrad.addColorStop(0, 'rgba(170,221,255,0.15)');
       sweepGrad.addColorStop(0.7, 'rgba(170,221,255,0.05)');
@@ -2137,10 +1510,7 @@ export class Renderer {
       ctx.shadowColor = '#aaddff';
       ctx.beginPath();
       ctx.moveTo(radar.x, radar.y);
-      ctx.lineTo(
-        radar.x + Math.cos(sweepAngle) * range,
-        radar.y + Math.sin(sweepAngle) * range
-      );
+      ctx.lineTo(radar.x + Math.cos(sweepAngle) * range, radar.y + Math.sin(sweepAngle) * range);
       ctx.stroke();
 
       // 同心圆距离标记
@@ -2160,14 +1530,12 @@ export class Renderer {
   // ===== 拦截器防御场 =====
   private drawInterceptorFields(state: GameState): void {
     const ctx = this.ctx;
-    const interceptors = state.nodes.filter(
-      n => n.type === 'interceptor' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
+    const interceptors = this.effectNodes(state, 'interceptor');
     if (interceptors.length === 0) return;
 
     for (const node of interceptors) {
       const ev = node.evolved;
-      const range = ev ? 170 : 130;
+      const range = ev ? COMBAT.interceptor.range.e : COMBAT.interceptor.range.n;
       const pulse = Math.sin(this.time * 3 + node.pulsePhase) * 0.2 + 0.8;
 
       ctx.save();
@@ -2194,8 +1562,12 @@ export class Renderer {
 
       // 内层淡蓝渐变
       const grad = ctx.createRadialGradient(
-        node.x, node.y, node.radius,
-        node.x, node.y, range * 0.6
+        node.x,
+        node.y,
+        node.radius,
+        node.x,
+        node.y,
+        range * 0.6,
       );
       grad.addColorStop(0, `rgba(102,170,255,${0.08 * pulse})`);
       grad.addColorStop(1, 'rgba(102,170,255,0)');
@@ -2212,14 +1584,16 @@ export class Renderer {
   // ===== 采集器收集特效 =====
   private drawCollectorFields(state: GameState): void {
     const ctx = this.ctx;
-    const collectors = state.nodes.filter(
-      n => n.type === 'collector' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
+    const collectors = this.effectNodes(state, 'collector');
     if (collectors.length === 0) return;
 
     for (const col of collectors) {
       const ev = col.evolved;
-      const range = ev ? 240 : 180;
+      const range = isOvercharged(col)
+        ? COMBAT.collector.range.oc
+        : ev
+          ? COMBAT.collector.range.e
+          : COMBAT.collector.range.n;
       const pulse = Math.sin(this.time * 2 + col.pulsePhase) * 0.2 + 0.8;
 
       ctx.save();
@@ -2235,10 +1609,7 @@ export class Renderer {
       ctx.setLineDash([]);
 
       // 内层吸引渐变
-      const grad = ctx.createRadialGradient(
-        col.x, col.y, col.radius,
-        col.x, col.y, range * 0.5
-      );
+      const grad = ctx.createRadialGradient(col.x, col.y, col.radius, col.x, col.y, range * 0.5);
       grad.addColorStop(0, `rgba(136,221,255,${0.1 * pulse})`);
       grad.addColorStop(1, 'rgba(136,221,255,0)');
       ctx.fillStyle = grad;
@@ -2259,7 +1630,7 @@ export class Renderer {
         const r = range * (1 - phase) * 0.8;
         const px = col.x + Math.cos(angle) * r;
         const py = col.y + Math.sin(angle) * r;
-        const alpha = phase < 0.2 ? phase * 5 : (phase > 0.8 ? (1 - phase) * 5 : 1);
+        const alpha = phase < 0.2 ? phase * 5 : phase > 0.8 ? (1 - phase) * 5 : 1;
         ctx.fillStyle = `rgba(136,221,255,${0.4 * alpha * pulse})`;
         ctx.fillText('◆', px, py);
       }
@@ -2308,12 +1679,17 @@ export class Renderer {
   // ===== 缓冲器增幅光环 =====
   private drawBufferAuras(state: GameState): void {
     const ctx = this.ctx;
-    const bufferNodes = state.nodes.filter(
-      n => n.type === 'buffer' && n.status !== 'destroyed' && n.currentEnergy >= n.activationThreshold
-    );
-    if (bufferNodes.length === 0) return;    for (const buffer of bufferNodes) {
+    const bufferNodes = this.effectNodes(state, 'buffer');
+    if (bufferNodes.length === 0) return;
+    for (const buffer of bufferNodes) {
       const ev = buffer.evolved;
-      const range = ev ? 200 : 160;
+      const range = isOvercharged(buffer)
+        ? ev
+          ? COMBAT.bufferPulse.range.e
+          : COMBAT.bufferPulse.range.n
+        : ev
+          ? COMBAT.buffer.range.e
+          : COMBAT.buffer.range.n;
       const pulse = Math.sin(this.time * 2.5 + buffer.pulsePhase) * 0.25 + 0.75;
 
       ctx.save();
@@ -2330,8 +1706,12 @@ export class Renderer {
 
       // 内层金色渐变
       const auraGrad = ctx.createRadialGradient(
-        buffer.x, buffer.y, buffer.radius * 0.5,
-        buffer.x, buffer.y, range * 0.65
+        buffer.x,
+        buffer.y,
+        buffer.radius * 0.5,
+        buffer.x,
+        buffer.y,
+        range * 0.65,
       );
       auraGrad.addColorStop(0, `rgba(255,204,0,${0.12 * pulse})`);
       auraGrad.addColorStop(0.6, `rgba(255,220,80,${0.05 * pulse})`);
@@ -2391,18 +1771,28 @@ export class Renderer {
   private drawMinimap(state: GameState): void {
     const ctx = this.ctx;
     const cam = state.camera;
-    const mapW = 180;
-    const mapH = Math.floor(mapW * state.worldHeight / state.worldWidth);
-    const mx = state.canvasWidth - mapW - 10;
-    const my = state.canvasHeight - mapH - 60; // 在底部面板上方
+    const rect = minimapRect(
+      state.canvasWidth,
+      state.canvasHeight,
+      state.worldWidth,
+      state.worldHeight,
+    );
+    const mapW = rect.w,
+      mapH = rect.h,
+      mx = rect.x,
+      my = rect.y;
     const scaleX = mapW / state.worldWidth;
     const scaleY = mapH / state.worldHeight;
 
     ctx.save();
     ctx.globalAlpha = 0.85;
 
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#a2bfce';
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.fillText('战术航图 · 点击定位', mx + mapW, my - 10);
     // 背景
-    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillStyle = 'rgba(5,18,30,0.9)';
     ctx.strokeStyle = 'rgba(0,255,255,0.3)';
     ctx.lineWidth = 1;
     ctx.fillRect(mx, my, mapW, mapH);
@@ -2425,12 +1815,33 @@ export class Renderer {
       ctx.fill();
     }
 
+    for (const poly of state.terrainPolygons) {
+      ctx.fillStyle =
+        poly.type === 'asteroid'
+          ? 'rgba(171,163,135,.24)'
+          : poly.type === 'nebula'
+            ? 'rgba(103,145,191,.18)'
+            : 'rgba(116,205,216,.3)';
+      ctx.beginPath();
+      poly.vertices.forEach((p, i) =>
+        i
+          ? ctx.lineTo(mx + p.x * scaleX, my + p.y * scaleY)
+          : ctx.moveTo(mx + p.x * scaleX, my + p.y * scaleY),
+      );
+      ctx.closePath();
+      ctx.fill();
+    }
+    for(const d of state.mission?.frontier?.deposits??[]){ctx.fillStyle=d.home?'#abaf8c':'#d8bd88';ctx.fillRect(mx+d.x*scaleX-2,my+d.y*scaleY-2,4,4);}
+    for(const site of state.mission?.frontier?.stations??[]){
+      const xx=mx+site.x*scaleX,yy=my+site.y*scaleY,done=(state.frontier?.progress[site.id]??0)>=site.seconds;
+      ctx.beginPath();ctx.moveTo(xx,yy-4);ctx.lineTo(xx+4,yy);ctx.lineTo(xx,yy+4);ctx.lineTo(xx-4,yy);ctx.closePath();ctx.fillStyle=done?'#a4d5bd':'#a8c4e2';ctx.fill();
+    }
     // 绘制连线
     ctx.strokeStyle = 'rgba(0,255,255,0.2)';
     ctx.lineWidth = 0.5;
     for (const edge of state.edges) {
-      const s = state.nodes.find(n => n.id === edge.sourceId);
-      const t = state.nodes.find(n => n.id === edge.targetId);
+      const s = state.nodes.find((n) => n.id === edge.sourceId);
+      const t = state.nodes.find((n) => n.id === edge.targetId);
       if (!s || !t) continue;
       ctx.beginPath();
       ctx.moveTo(mx + s.x * scaleX, my + s.y * scaleY);
@@ -2440,16 +1851,26 @@ export class Renderer {
 
     // 绘制节点
     for (const node of state.nodes) {
-      if (node.status === 'destroyed') continue;
-      ctx.fillStyle = node.glowColor;
+      if (
+        node.status === 'destroyed' ||
+        (node.owner === 'neutral' && !isPositionExplored(state, node.x, node.y))
+      )
+        continue;
+      ctx.fillStyle = node.owner === 'neutral' ? '#889aa8' : FACILITY_ART[node.type].color;
       ctx.beginPath();
-      ctx.arc(mx + node.x * scaleX, my + node.y * scaleY, node.type === 'core' ? 3 : 1.5, 0, Math.PI * 2);
+      ctx.arc(
+        mx + node.x * scaleX,
+        my + node.y * scaleY,
+        node.type === 'core' ? 3 : 1.5,
+        0,
+        Math.PI * 2,
+      );
       ctx.fill();
     }
 
     // 绘制敌人
     for (const enemy of state.enemies) {
-      if (enemy.type === 'stealth') continue; // 隐形体不在小地图显示
+      if (!canDetectEnemy(state, enemy)) continue;
       if (enemy.type === 'boss') {
         ctx.fillStyle = '#ff0000';
         ctx.beginPath();
@@ -2465,10 +1886,11 @@ export class Renderer {
     }
 
     // 视口矩形
-    const vpX = mx + cam.x * scaleX;
-    const vpY = my + cam.y * scaleY;
-    const vpW = (state.canvasWidth / cam.zoom) * scaleX;
-    const vpH = (state.canvasHeight / cam.zoom) * scaleY;
+    const left=Math.max(0,cam.x),top=Math.max(0,cam.y),right=Math.min(state.worldWidth,cam.x+state.canvasWidth/cam.zoom),bottom=Math.min(state.worldHeight,cam.y+state.canvasHeight/cam.zoom);
+    const vpX = mx + left * scaleX;
+    const vpY = my + top * scaleY;
+    const vpW = Math.max(0,right-left)*scaleX;
+    const vpH = Math.max(0,bottom-top)*scaleY;
     ctx.strokeStyle = COLORS.text.primary;
     ctx.lineWidth = 1;
     ctx.strokeRect(vpX, vpY, vpW, vpH);
@@ -2508,7 +1930,8 @@ export class Renderer {
       const color = typeColor[p.type] ?? '#ffffff';
       ctx.beginPath();
       p.vertices.forEach(([x, y], i) => {
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       });
       ctx.closePath();
       ctx.fillStyle = color + '33';
@@ -2519,7 +1942,10 @@ export class Renderer {
       // 顶点点（被拖动的顶点高亮成绿色）
       for (let vi = 0; vi < p.vertices.length; vi++) {
         const [x, y] = p.vertices[vi];
-        const isDrag = editor.dragTarget && editor.dragTarget.draftIdx === idx && editor.dragTarget.vertexIdx === vi;
+        const isDrag =
+          editor.dragTarget &&
+          editor.dragTarget.draftIdx === idx &&
+          editor.dragTarget.vertexIdx === vi;
         ctx.fillStyle = isDrag ? '#00ff88' : color;
         ctx.beginPath();
         ctx.arc(x, y, (isDrag ? 5 : 3) / cam.zoom, 0, Math.PI * 2);
@@ -2544,7 +1970,8 @@ export class Renderer {
       ctx.lineWidth = 1.5 / cam.zoom;
       ctx.beginPath();
       editor.pendingVertices.forEach(([x, y], i) => {
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       });
       ctx.stroke();
       ctx.restore();
@@ -2576,8 +2003,9 @@ export class Renderer {
     ctx.textBaseline = 'middle';
     ctx.fillText(
       `[多边形编辑器] 类型=${editor.currentType}  顶点=${editor.pendingVertices.length}  草稿=${editor.drafts.length}  ` +
-      `| N/A/W=切类型  Click=加点/拖顶点  R-Click=删顶点  Enter=闭合  Backspace=撤销  Esc=清进行中  Ctrl+L=载入  Ctrl+S=导出  Ctrl+D=清空  Ctrl+E=退出`,
-      8, 14,
+        `| N/A/W=切类型  Click=加点/拖顶点  R-Click=删顶点  Enter=闭合  Backspace=撤销  Esc=清进行中  Ctrl+L=载入  Ctrl+S=导出  Ctrl+D=清空  Ctrl+E=退出`,
+      8,
+      14,
     );
     ctx.restore();
   }

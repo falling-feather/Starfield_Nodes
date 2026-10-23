@@ -1,7 +1,100 @@
 // ===== 星域节点 - 核心类型定义 =====
 
-export type NodeType = 'core' | 'energy' | 'turret' | 'mine' | 'shield' | 'relay' | 'tesla' | 'beacon' | 'factory' | 'magnet' | 'trap' | 'repair' | 'sniper' | 'buffer' | 'collector' | 'interceptor' | 'radar' | 'portal' | 'blackhole' | 'echo' | 'toxin' | 'arc' | 'kamikaze';
+export type NodeType =
+  | 'core'
+  | 'energy'
+  | 'turret'
+  | 'mine'
+  | 'shield'
+  | 'relay'
+  | 'tesla'
+  | 'beacon'
+  | 'factory'
+  | 'magnet'
+  | 'trap'
+  | 'repair'
+  | 'sniper'
+  | 'buffer'
+  | 'collector'
+  | 'interceptor'
+  | 'radar'
+  | 'portal'
+  | 'blackhole'
+  | 'echo'
+  | 'toxin'
+  | 'arc'
+  | 'kamikaze';
 export type NodeStatus = 'normal' | 'damaged' | 'destroyed';
+
+export interface Point {
+  x: number;
+  y: number;
+}
+export interface MissionEntry extends Point {
+  label: string;
+  fromWave?: number;
+  untilWave?: number;
+}
+export interface MineralDeposit extends Point {
+  id: string;
+  label: string;
+  radius: number;
+  perSecond: number;
+  home?: boolean;
+}
+export interface FrontierStation extends Point {
+  id: string;
+  label: string;
+  nodeType: 'beacon' | 'relay';
+  radius: number;
+  seconds: number;
+  energyPerTick: number;
+  after?: string;
+  needsGate?: boolean;
+}
+export interface FrontierConfig {
+  chapter: string;
+  deposits: MineralDeposit[];
+  stations: FrontierStation[];
+  goal: { kind: 'harvest'; amount: number } | { kind: 'stations'; count: number };
+  preparationSeconds: number;
+  attackSeconds: number;
+  waveSeconds: number;
+}
+export interface FrontierState {
+  harvested: number;
+  progress: Record<string, number>;
+  mined: Record<string, number>;
+  recovered: number;
+  workingTicks: number;
+  powerWaitTicks: number;
+  lastWorked: Record<string,number>;
+}
+export interface MissionTactics {
+  frontier?: FrontierConfig;
+  tagline: string;
+  briefing: string;
+  challenge: string;
+  accent: string;
+  visionMultiplier: number;
+  entryPoints: MissionEntry[];
+  enemyPool: Exclude<EnemyType, 'boss'>[];
+  enemyUnlocks?: Partial<Record<EnemyType, number>>;
+  interferenceEvery?: number;
+  bossStyle?: 'siege' | 'rupture' | 'eclipse';
+  bossName?: string;
+  secondaryObjective?: { kind: 'observatory'; position: Point } | { kind: 'wormhole-network' };
+  recommendedNodes?: NodeType[];
+}
+export interface VisibilityState {
+  cols: number;
+  rows: number;
+  cellSize: number;
+  visible: Uint8Array;
+  explored: Uint8Array;
+  sources: (Point & { radius: number; detector: boolean })[];
+  revision: number;
+}
 
 export interface GameNode {
   id: string;
@@ -9,6 +102,7 @@ export interface GameNode {
   y: number;
   type: NodeType;
   level: number;
+  investment: number;
   currentEnergy: number;
   maxEnergy: number;
   status: NodeStatus;
@@ -19,10 +113,11 @@ export interface GameNode {
   radius: number;
   glowColor: string;
   pulsePhase: number;
+  facing?: number;
   // 能量超载
-  overchargeBuildup: number;   // 连续高能tick计数
-  overchargeTicks: number;     // 超载剩余tick
-  overchargeCooldown: number;  // 冷却剩余tick
+  overchargeBuildup: number; // 连续高能tick计数
+  overchargeTicks: number; // 超载剩余tick
+  overchargeCooldown: number; // 冷却剩余tick
   // 进化
   evolved: boolean;
   // 连接状态（是否连通到核心）
@@ -83,6 +178,7 @@ export interface Edge {
   type: EdgeType;
   throughput: number; // 带宽吞吐量 (能量/tick)
   flowProgress: number; // 流动动画进度 0~1
+  energyFlow: number; // 本步实际源→目标能流，负数代表反向
   active: boolean;
   /** 干扰剩余时间（秒），>0 时链路中断 */
   disruptedTimer: number;
@@ -90,7 +186,6 @@ export interface Edge {
 
 // EDGE_CONFIGS / DEFAULT_EDGE_COLORS 已迁至 src/data/edges.ts，请直接 import
 // EDGE_CONFIGS / DEFAULT_EDGE_COLORS moved to ./data/edges — import 从 data/edges 即可
-
 
 export interface Enemy {
   id: string;
@@ -101,7 +196,16 @@ export interface Enemy {
   speed: number;
   damage: number;
   targetNodeId: string | null;
-  type: 'scout' | 'heavy' | 'swarm' | 'boss' | 'stealth' | 'splitter' | 'disruptor' | 'healer' | 'shielder';
+  type:
+    | 'scout'
+    | 'heavy'
+    | 'swarm'
+    | 'boss'
+    | 'stealth'
+    | 'splitter'
+    | 'disruptor'
+    | 'healer'
+    | 'shielder';
   radius: number;
   /** 虫洞传送免疫冷却 (秒) */
   teleportCooldown: number;
@@ -109,6 +213,10 @@ export interface Enemy {
   hitFlash: number;
   /** 护盾者光环减伤 0~1，每tick重算 */
   damageReduction: number;
+  retargetTick?: number;
+  revealedUntil?: number;
+  facing?: number;
+  bossPhase?: number;
 }
 
 export interface Particle {
@@ -124,10 +232,19 @@ export interface Particle {
 
 export interface FlowParticle {
   edgeId: string;
+  reverse: boolean;
   progress: number; // 0~1 沿边的进度
   speed: number;
   size: number;
   color: string;
+}
+
+export interface StrikeEffect {
+  points: Point[];
+  kind: 'beam' | 'arc' | 'drone';
+  color: string;
+  life: number;
+  maxLife: number;
 }
 
 export interface Projectile {
@@ -140,20 +257,28 @@ export interface Projectile {
 }
 
 export interface Camera {
-  x: number;      // 视口左上角在世界坐标中的 x
-  y: number;      // 视口左上角在世界坐标中的 y
-  zoom: number;   // 缩放级别 (1 = 100%)
+  x: number; // 视口左上角在世界坐标中的 x
+  y: number; // 视口左上角在世界坐标中的 y
+  zoom: number; // 缩放级别 (1 = 100%)
   targetX: number; // 平滑移动目标
   targetY: number;
   targetZoom: number;
 }
 
 export interface GameState {
+  frontier?: FrontierState;
+  visibility: VisibilityState;
+  mission?: MissionTactics;
+  elapsedSeconds: number;
+  signalBlackoutUntil?: number;
+  alert?: { text: string; until: number };
+  protectedCoreIds?: Set<string>;
   nodes: GameNode[];
   edges: Edge[];
   enemies: Enemy[];
   particles: Particle[];
   flowParticles: FlowParticle[];
+  strikeEffects: StrikeEffect[];
   projectiles: Projectile[];
   tick: number;
   wave: number;
@@ -165,7 +290,7 @@ export interface GameState {
   levelWon: boolean;
   paused: boolean;
   selectedNodeId: string | null;
-  selectedNodeIds: string[];       // 框选的多个节点
+  selectedNodeIds: string[]; // 框选的多个节点
   draggingFrom: string | null;
   selectedEdgeType: EdgeType;
   mouseX: number;
@@ -190,14 +315,22 @@ export interface GameState {
   enemiesKilled: number;
   /** 局内累计玩家建造节点数（不含初始/敌人节点） */
   nodesBuilt: number;
-  /** 局内累计资源花费（建造扣费总和） */
+  /** 局内累计资源支出：建造、链路、升级、招募、研究与核心扩展。 */
   resourcesSpent: number;
   /** V1.1.7：已发现的联动 id 集合（跨局永久） */
   discoveredSynergies: Set<string>;
   /** V1.2.1：本帧待处理的「首次发现」事件，由 graph/entities push、game.ts 在 tick 后消费给 UI 派发 toast */
   pendingSynergyEvents: string[];
   /** V1.4.2：跨虫洞虚拟连线 / aura 效果（renderer 每帧重画并衰减 ttl） */
-  crossWormholeFx?: { ax: number; ay: number; bx: number; by: number; color: string; ttl: number; kind: 'relay' | 'buffer' }[];
+  crossWormholeFx?: {
+    ax: number;
+    ay: number;
+    bx: number;
+    by: number;
+    color: string;
+    ttl: number;
+    kind: 'relay' | 'buffer';
+  }[];
 }
 
 /** 漂浮星云 — 暂时遮挡视野 */
@@ -205,20 +338,18 @@ export interface WeatherCloud {
   x: number;
   y: number;
   radius: number;
-  vx: number;        // 漂移速度
+  vx: number; // 漂移速度
   vy: number;
-  opacity: number;    // 0-1
-  life: number;       // 剩余寿命 (ticks)
+  opacity: number; // 0-1
+  life: number; // 剩余寿命 (ticks)
 }
 
 // NODE_CONFIGS / DEFAULT_NODE_GLOW 已迁至 src/data/nodes.ts，请直接 import
-
 
 /** 敌人类型联合 */
 export type EnemyType = Enemy['type'];
 
 // ENEMY_COLORS / DEFAULT_ENEMY_COLORS 已迁至 src/data/enemies.ts，请直接 import
-
 
 // MAX_EDGE_LENGTH / TICK_INTERVAL / CORE_ENERGY_PRODUCTION /
 // ENEMY_SPAWN_BASE_INTERVAL 已迁至 src/data/runtime.ts，请直接 import
